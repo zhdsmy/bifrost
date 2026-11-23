@@ -109,7 +109,7 @@ Hooks and internal calls (dispatcher, under `with_lock state`):
 
 | Call | Function (owner) |
 |---|---|
-| `start` (`init.d/S99bifrost.sh`, WAN up) | `hook_start` (P2): start when `bifrost_enable=1` and not running |
+| `start` (`init.d/S99bifrost.sh`, WAN up) | `hook_start` (P2): first `core_recover` (P1, finishes or rolls back a core update cut off by a reboot; `BIFROST_ERR` logged, start continues), then start when `bifrost_enable=1` and not running |
 | `start_nat` (`init.d/N99bifrost.sh`) | `hook_start_nat` (P2): `fw_apply` when the daemon runs |
 | `stop` | `hook_stop` (P2): `daemon_stop` |
 | `local watchdog` (cru, every 2 min, lock wait 0) | `watchdog_run` (P2) |
