@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   ApiError,
   dash,
@@ -12,6 +16,7 @@ import {
   analyzeKeyExpiry,
   describeState,
   formatBytes,
+  formatDateTime,
   formatHandshakeAge,
 } from "../src/core/format.ts";
 import {
@@ -19,18 +24,28 @@ import {
   findOverlappingPeerRoutes,
   isAccessingFromTailnet,
   isHttpLoginServer,
+  isSafeHttpUrl,
+  validArch,
   validAuthKey,
+  validBool01,
   validCidr4,
   validCidr4List,
+  validDnsName,
   validHostname,
   validIpv4,
+  validLang,
   validLoginServer,
   validMirror,
+  validMode,
+  validName,
+  validParam,
   validPort,
+  validSnat,
   validTailnetIp,
   validUint,
 } from "../src/core/validate.ts";
 import {
+  getKumoTranslations,
   t,
   translateCheck,
   translateError,
@@ -39,76 +54,95 @@ import {
 } from "../src/i18n/index.ts";
 import { en } from "../src/i18n/en.ts";
 import { zhCN } from "../src/i18n/zh-CN.ts";
+import { createPreviewServer, sanitizeScriptResponse } from "../preview/server.mjs";
+import { once } from "node:events";
 
-describe("validate.ts parity with plugin/bifrost/lib/validate.sh", () => {
-  it("validates unsigned ints and ports", () => {
-    assert.equal(validUint("0"), true);
-    assert.equal(validUint("41641"), true);
-    assert.equal(validUint("01"), false);
-    assert.equal(validUint("-1"), false);
-    assert.equal(validUint(""), false);
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(__dirname, "../..");
+const SRC_ROOT = resolve(__dirname, "../src");
 
-    assert.equal(validPort("1024"), true);
-    assert.equal(validPort("41641"), true);
-    assert.equal(validPort("65535"), true);
-    assert.equal(validPort("1023"), false);
-    assert.equal(validPort("65536"), false);
-    assert.equal(validPort("041641"), false);
+function extractShellValidateCases() {
+  // Reuse the shell suite's generated one-argument cases without creating a router sandbox.
+  const suite = readFileSync(join(REPO_ROOT, "tests/shell/t_validate.sh"), "utf8");
+  const driver = `
+set -eu
+t_setup() { :; }
+t_load() { . plugin/bifrost/lib/env.sh; }
+t_done() { :; }
+emit() {
+  if [ "$#" -eq 4 ]; then printf '%s\\037%s\\037%s\\037%s\\036' "$@"; fi
+}
+ok() { emit 1 "$@"; }
+no() { emit 0 "$@"; }
+`;
+  const raw = execFileSync("/bin/sh", {
+    cwd: REPO_ROOT,
+    input: suite.replace(". tests/shell/lib.sh", driver),
+    encoding: "utf8",
+  });
+  return raw
+    .split("\x1e")
+    .filter(Boolean)
+    .map((record) => {
+      const [expected, label, fn, value] = record.split("\x1f");
+      return { expected: expected === "1", label, fn, value };
+    });
+}
+
+describe("validate.ts parity with plugin/bifrost/lib/validate.sh (via tests/shell/t_validate.sh)", () => {
+  const tsValidators = {
+    valid_uint: validUint,
+    valid_port: validPort,
+    valid_bool01: validBool01,
+    valid_snat: validSnat,
+    valid_lang: validLang,
+    valid_mode: validMode,
+    valid_arch: validArch,
+    valid_name: validName,
+    valid_param: validParam,
+    valid_ipv4: validIpv4,
+    valid_cidr4: validCidr4,
+    valid_cidr4_list: validCidr4List,
+    valid_hostname: validHostname,
+    valid_dns_name: validDnsName,
+    valid_login_server: validLoginServer,
+    valid_authkey: validAuthKey,
+    valid_mirror: validMirror,
+    valid_tailnet_ip: validTailnetIp,
+  };
+
+  it("matches the one-argument validator test vectors in tests/shell/t_validate.sh", () => {
+    const cases = extractShellValidateCases();
+    assert.ok(cases.length >= 100, `expected >= 100 cases from t_validate.sh, got ${cases.length}`);
+
+    const seenFns = new Set();
+    for (const c of cases) {
+      const validator = tsValidators[c.fn];
+      assert.ok(validator, `unmapped shell validator in t_validate.sh: ${c.fn}`);
+      seenFns.add(c.fn);
+      assert.equal(
+        validator(c.value),
+        c.expected,
+        `mismatch for ${c.fn}(${JSON.stringify(c.value)}) [${c.label}]`,
+      );
+    }
+    for (const fn of Object.keys(tsValidators)) {
+      assert.ok(seenFns.has(fn), `expected t_validate.sh to cover ${fn}`);
+    }
   });
 
-  it("validates IPv4, canonical CIDRs, and CIDR lists", () => {
-    assert.equal(validIpv4("192.168.1.1"), true);
-    assert.equal(validIpv4("256.0.0.1"), false);
-    assert.equal(validIpv4("192.168.01.1"), false);
-
-    assert.equal(validCidr4("192.168.1.0/24"), true);
-    assert.equal(validCidr4("10.0.0.0/8"), true);
-    assert.equal(validCidr4("192.0.2.1/32"), true);
-    assert.equal(validCidr4("0.0.0.0/0"), false);
-    assert.equal(validCidr4("192.168.1.1/24"), false);
-    assert.equal(validCidr4("192.168.1.0/33"), false);
-
-    assert.equal(validCidr4List("192.168.1.0/24,198.51.100.0/24"), true);
-    assert.equal(validCidr4List("192.168.1.0/24,192.168.1.0/24"), false);
-    assert.equal(validCidr4List(""), false);
-    const seventeen = Array.from({ length: 17 }, (_, i) => `10.0.${i}.0/24`).join(",");
-    assert.equal(validCidr4List(seventeen), false);
-    const sixteen = Array.from({ length: 16 }, (_, i) => `10.0.${i}.0/24`).join(",");
-    assert.equal(validCidr4List(sixteen), true);
-  });
-
-  it("validates hostnames, login servers, auth keys, mirrors, and tailnet IPs", () => {
-    assert.equal(validHostname("router"), true);
-    assert.equal(validHostname("home-router-01"), true);
-    assert.equal(validHostname("-router"), false);
-    assert.equal(validHostname("router-"), false);
-    assert.equal(validHostname("a".repeat(64)), false);
-
-    assert.equal(validLoginServer("https://hs.example.org"), true);
-    assert.equal(validLoginServer("http://192.0.2.10:8080/ts"), true);
-    assert.equal(validLoginServer("ftp://hs.example.org"), false);
-    assert.equal(validLoginServer("https://hs.example.org?q=1"), false);
-    assert.equal(validLoginServer("https://user@hs.example.org"), false);
-    assert.equal(validLoginServer("https://hs.example.org:99999"), false);
+  it("validates http(s) URL safety and http login server warning helper", () => {
     assert.equal(isHttpLoginServer("http://192.0.2.10:8080"), true);
     assert.equal(isHttpLoginServer("https://hs.example.org"), false);
 
-    assert.equal(validAuthKey("bifrost_test_key_0001"), true);
-    assert.equal(validAuthKey("short_key"), false);
-    assert.equal(validAuthKey("bad key with space 123456"), false);
-
-    assert.equal(validMirror("https://mirror.example.org/"), true);
-    assert.equal(validMirror("https://mirror.example.org/sub/"), true);
-    assert.equal(validMirror("https://mirror.example.org"), false);
-    assert.equal(validMirror("http://mirror.example.org/"), false);
-    assert.equal(validMirror("https:///"), false);
-
-    assert.equal(validTailnetIp("100.64.0.1"), true);
-    assert.equal(validTailnetIp("100.127.255.254"), true);
-    assert.equal(validTailnetIp("100.63.0.1"), false);
-    assert.equal(validTailnetIp("100.128.0.1"), false);
-    assert.equal(validTailnetIp("fd7a:115c:a1e0::1"), true);
-    assert.equal(validTailnetIp("192.168.1.1"), false);
+    assert.equal(isSafeHttpUrl("https://login.tailscale.com/a/demo"), true);
+    assert.equal(isSafeHttpUrl("http://192.0.2.10:8080/register/1"), true);
+    assert.equal(isSafeHttpUrl("javascript:alert(1)"), false);
+    assert.equal(isSafeHttpUrl("JAVASCRIPT:alert(1)"), false);
+    assert.equal(isSafeHttpUrl("data:text/html,<script>alert(1)</script>"), false);
+    assert.equal(isSafeHttpUrl("ftp://example.org/a"), false);
+    assert.equal(isSafeHttpUrl(""), false);
+    assert.equal(isSafeHttpUrl("not a url"), false);
   });
 
   it("detects CIDR overlaps and tailnet access origins", () => {
@@ -155,9 +189,80 @@ describe("validate.ts parity with plugin/bifrost/lib/validate.sh", () => {
   });
 });
 
-describe("i18n dictionaries and translators", () => {
+describe("preview server contract compliance (valid_param and safe responses)", () => {
+  it("sanitizes responses containing forbidden & + % = characters", () => {
+    assert.equal(sanitizeScriptResponse({ ok: true, value: "router-1" }), '{"ok":true,"value":"router-1"}');
+    for (const bad of ["a&b", "a+b", "a%20b", "a=b"]) {
+      assert.equal(
+        sanitizeScriptResponse({ ok: true, value: bad }),
+        '{"ok":false,"code":"internal"}',
+      );
+    }
+  });
+
+  it("enforces valid_name and valid_param on POST /_api/ params", async (ctx) => {
+    const server = createPreviewServer({ initialState: "running" });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    ctx.after(() => new Promise((resolveClose) => server.close(resolveClose)));
+    const base = `http://127.0.0.1:${server.address().port}`;
+
+    const callApi = async (params) => {
+      const res = await fetch(`${base}/_api/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+        body: JSON.stringify({ id: 1, method: "bifrost_config.sh", params, fields: {} }),
+      });
+      const env = await res.json();
+      return JSON.parse(env.result);
+    };
+
+    assert.deepEqual(await callApi(["BadAction"]), { ok: false, code: "invalid_param" });
+    assert.deepEqual(await callApi(["set", "hostname", "bad;cmd"]), { ok: false, code: "invalid_param" });
+    assert.deepEqual(await callApi(["set", "hostname", "bad host"]), { ok: false, code: "invalid_param" });
+    assert.deepEqual(await callApi(["set", "hostname", "ok-router"]), { ok: true, value: "ok-router" });
+  });
+});
+
+describe("i18n dictionaries, translators, and unused key guard", () => {
   it("keeps zh-CN and en keys strictly aligned", () => {
     assert.deepEqual(Object.keys(en).sort(), Object.keys(zhCN).sort());
+  });
+
+  it("has no unused static message keys in zh-CN / en", () => {
+    const walk = (dir) => {
+      const out = [];
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) out.push(...walk(full));
+        else if (/\.(ts|tsx)$/.test(entry.name)) out.push(full);
+      }
+      return out;
+    };
+    const sourceText = walk(SRC_ROOT)
+      .filter((p) => !p.endsWith("zh-CN.ts") && !p.endsWith("en.ts"))
+      .map((p) => readFileSync(p, "utf8"))
+      .join("\n");
+
+    const dynamicPrefixes = ["err.", "phase.", "state.", "check."];
+    const unused = Object.keys(zhCN).filter(
+      (key) =>
+        !dynamicPrefixes.some((p) => key.startsWith(p)) &&
+        !sourceText.includes(`"${key}"`) &&
+        !sourceText.includes(`'${key}'`),
+    );
+    assert.deepEqual(unused, []);
+  });
+
+  it("builds Kumo translations strictly from the dictionaries", () => {
+    const zhKumo = getKumoTranslations("zh-CN");
+    const enKumo = getKumoTranslations("en");
+    assert.equal(zhKumo.label?.optional, zhCN["common.optional"]);
+    assert.equal(zhKumo.layerDialog?.close, zhCN["common.close"]);
+    assert.equal(zhKumo.breadcrumbs?.label, zhCN["kumo.breadcrumbLabel"]);
+    assert.equal(enKumo.label?.optional, en["common.optional"]);
+    assert.equal(enKumo.layerDialog?.close, en["common.close"]);
+    assert.equal(enKumo.breadcrumbs?.label, en["kumo.breadcrumbLabel"]);
   });
 
   it("replaces {name} placeholders only", () => {
@@ -224,7 +329,7 @@ describe("i18n dictionaries and translators", () => {
   });
 });
 
-describe("api.ts envelope parsing and request contract", () => {
+describe("api.ts envelope parsing, request contract, and pollJob recovery", () => {
   it("converts empty params to dash", () => {
     assert.equal(dash(""), "-");
     assert.equal(dash("abc"), "abc");
@@ -275,19 +380,22 @@ describe("api.ts envelope parsing and request contract", () => {
     }
   });
 
-  it("polls job until running becomes false", async () => {
+  it("polls job until running becomes false and retries transient errors", async () => {
     let step = 0;
     const origFetch = globalThis.fetch;
     globalThis.fetch = async () => {
       step++;
-      const running = step < 3;
+      if (step === 1 || step === 2) {
+        return new Response("temporary outage", { status: 503 });
+      }
+      const running = step < 4;
       return new Response(
         JSON.stringify({
           schema: 1,
           job: "update",
           running,
           phase: running ? "download" : "done",
-          progress: running ? step * 30 : 100,
+          progress: running ? 50 : 100,
           ok: running ? null : true,
           code: null,
           started: 1,
@@ -301,11 +409,33 @@ describe("api.ts envelope parsing and request contract", () => {
       const seen = [];
       const finalState = await pollJob("update", {
         intervalMs: 5,
+        maxConsecutiveErrors: 4,
         onUpdate: (s) => seen.push(s.phase),
       });
-      assert.deepEqual(seen, ["download", "download", "done"]);
+      assert.deepEqual(seen, ["download", "done"]);
       assert.equal(finalState.running, false);
       assert.equal(finalState.ok, true);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("rejects malformed job files and bounds a stalled read", async (ctx) => {
+    ctx.mock.method(globalThis, "fetch", async () => new Response("null"));
+    await assert.rejects(pollJob("update", { maxConsecutiveErrors: 1 }), { code: "invalid_response" });
+    ctx.mock.method(AbortSignal, "timeout", () => AbortSignal.abort(new DOMException("Timed out", "TimeoutError")));
+    globalThis.fetch = async (_url, init) => { init.signal.throwIfAborted(); };
+    await assert.rejects(pollJob("update", { maxConsecutiveErrors: 1 }), { code: "timeout" });
+  });
+
+  it("throws after maxConsecutiveErrors persistent poll failures", async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response("down", { status: 503 });
+    try {
+      await assert.rejects(
+        () => pollJob("update", { intervalMs: 5, maxConsecutiveErrors: 3 }),
+        (err) => err instanceof ApiError && err.code === "http_error" && err.httpStatus === 503,
+      );
     } finally {
       globalThis.fetch = origFetch;
     }
@@ -320,8 +450,16 @@ describe("format.ts state mapping and formatting", () => {
     error: null,
     plugin: { version: "0.1.0", enabled: true },
     core: {
-      tailscale: "1.104.7", revision: 1, serial: 7, arch: "arm",
-      kernel_arch: "aarch64", size: 25100448, installed: 1795000000, prev: true, update: null,
+      tailscale: "1.104.7",
+      revision: 1,
+      serial: 7,
+      arch: "arm",
+      kernel_arch: "aarch64",
+      size: 25100448,
+      installed: 1795000000,
+      prev: true,
+      update: null,
+      build: { go: "1.27.4", commit: "cbc74fe48ef1", omit: ["ts_omit_aws"] },
     },
     daemon: { running: true, pid: 1234, restarts: 0 },
     conflict: { original_installed: false, original_running: false },
@@ -330,8 +468,15 @@ describe("format.ts state mapping and formatting", () => {
     routes: [],
     exit_node: { advertised: false, approved: false },
     settings: {
-      port: 41641, local_access: true, lan_masq: true, snat: "auto",
-      snat_effective: false, magicdns: false, no_logs: true, no_logs_forced: false, mirror: "",
+      port: 41641,
+      local_access: true,
+      lan_masq: true,
+      snat: "auto",
+      snat_effective: false,
+      magicdns: false,
+      no_logs: true,
+      no_logs_forced: false,
+      mirror: "",
     },
     lan: { ip: "192.168.1.1", cidr: "192.168.1.0/24", sw_mode: 1 },
     dns: { conf_dir: true, active: false },
@@ -341,23 +486,52 @@ describe("format.ts state mapping and formatting", () => {
     peers: [],
   };
 
-  it("maps every PageState to expected primary action and view flags", () => {
-    assert.equal(describeState({ ...baseStatus, state: "disabled" }).primaryAction, "enable");
-    assert.equal(describeState({ ...baseStatus, state: "conflict" }).primaryAction, "migrate");
-    assert.equal(describeState({ ...baseStatus, state: "core_missing" }).primaryAction, "goto_core");
-    assert.equal(describeState({ ...baseStatus, state: "starting" }).primaryAction, "disable");
-    assert.equal(describeState({ ...baseStatus, state: "needs_login" }).showLoginView, true);
-    assert.equal(describeState({ ...baseStatus, state: "needs_approval" }).badgeVariant, "warning");
-    assert.equal(describeState({ ...baseStatus, state: "stopped" }).primaryAction, "connect");
-    assert.equal(describeState({ ...baseStatus, state: "running" }).showOverviewDetails, true);
-    assert.equal(describeState({ ...baseStatus, state: "error" }).badgeVariant, "error");
+  it("maps every PageState to expected primary action, disable/auth flags, and view flags", () => {
+    const disabled = describeState({ ...baseStatus, state: "disabled" });
+    assert.equal(disabled.primaryAction, "enable");
+
+    const conflict = describeState({ ...baseStatus, state: "conflict" });
+    assert.equal(conflict.primaryAction, "migrate");
+    assert.equal(conflict.showMigrateCard, true);
+
+    const missing = describeState({ ...baseStatus, state: "core_missing" });
+    assert.equal(missing.primaryAction, "goto_core");
+
+    const starting = describeState({ ...baseStatus, state: "starting" });
+    assert.equal(starting.primaryAction, "disable");
+
+    const needsLogin = describeState({ ...baseStatus, state: "needs_login" });
+    assert.equal(needsLogin.primaryAction, "disable");
+    assert.equal(needsLogin.showLoginView, true);
+
+    const needsApproval = describeState({ ...baseStatus, state: "needs_approval" });
+    assert.equal(needsApproval.badgeVariant, "warning");
+    assert.equal(needsApproval.primaryAction, "disable");
+
+    const stopped = describeState({ ...baseStatus, state: "stopped" });
+    assert.equal(stopped.primaryAction, "connect");
+    assert.equal(stopped.secondaryAction, "disable");
+
+    const running = describeState({ ...baseStatus, state: "running" });
+    assert.equal(running.showOverviewDetails, true);
+    assert.equal(running.showAuthActions, true);
+    assert.equal(running.primaryAction, "disable");
+
+    const err = describeState({ ...baseStatus, state: "error" });
+    assert.equal(err.badgeVariant, "error");
+    assert.equal(err.primaryAction, "enable");
+
     assert.equal(
-      describeState({ ...baseStatus, state: "disabled", conflict: { original_installed: true, original_running: false } }).showMigrateCard,
+      describeState({
+        ...baseStatus,
+        state: "disabled",
+        conflict: { original_installed: true, original_running: false },
+      }).showMigrateCard,
       true,
     );
   });
 
-  it("analyzes key expiry and formats sizes/ages", () => {
+  it("analyzes key expiry and formats sizes/dates/ages via dictionary", () => {
     const now = Date.parse("2026-11-23T00:00:00Z");
     assert.equal(analyzeKeyExpiry("2026-12-01T00:00:00Z", now)?.expiringSoon, true);
     assert.equal(analyzeKeyExpiry("2027-05-01T00:00:00Z", now)?.expiringSoon, false);
@@ -365,7 +539,17 @@ describe("format.ts state mapping and formatting", () => {
 
     assert.equal(formatBytes(512), "512 B");
     assert.equal(formatBytes(2048), "2.0 KB");
-    assert.equal(formatHandshakeAge(0, 100, "zh-CN"), "无");
-    assert.equal(formatHandshakeAge(90, 100, "en"), "10s ago");
+    assert.equal(formatDateTime(0), "—");
+    assert.match(formatDateTime(1795000000), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+
+    const tZh = (k, vars) => t("zh-CN", k, vars);
+    const tEn = (k, vars) => t("en", k, vars);
+    const nowSec = 500_000;
+    assert.equal(formatHandshakeAge(0, nowSec, tZh), "无");
+    assert.equal(formatHandshakeAge(nowSec - 10, nowSec, tEn), "10s ago");
+    assert.equal(formatHandshakeAge(0, nowSec, tEn), "Never");
+    assert.equal(formatHandshakeAge(nowSec - 180, nowSec, tZh), "3 分钟前");
+    assert.equal(formatHandshakeAge(nowSec - 7200, nowSec, tEn), "2h ago");
+    assert.equal(formatHandshakeAge(nowSec - 172800, nowSec, tZh), "2 天前");
   });
 });

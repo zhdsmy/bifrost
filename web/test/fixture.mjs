@@ -11,13 +11,15 @@ export async function openPreview(t, options = {}) {
     viewport = { width: 1280, height: 900 },
     colorScheme = "light",
     fastJobPoll = false,
+    insecureHttp = false,
     ...serverOptions
   } = options;
 
   const server = createPreviewServer(serverOptions);
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  const host = insecureHttp ? "bifrost.test" : "127.0.0.1";
+  const origin = `http://${host}:${server.address().port}`;
   t.after(() => new Promise((resolve) => server.close(resolve)));
 
   const browser = await chromium.launch();
@@ -28,6 +30,14 @@ export async function openPreview(t, options = {}) {
     colorScheme,
     reducedMotion: "reduce",
   });
+  if (insecureHttp) {
+    // Keep a non-trustworthy HTTP origin in the browser, with all I/O on loopback.
+    await context.route(`${origin}/**`, async (route) => {
+      const localUrl = new URL(route.request().url());
+      localUrl.hostname = "127.0.0.1";
+      await route.fulfill({ response: await route.fetch({ url: localUrl.href }) });
+    });
+  }
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
 

@@ -12,6 +12,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { JobProgress } from "../components/JobProgress";
 import { DetailItem, DetailList, SectionCard } from "../components/SectionCard";
 import { api } from "../core/api";
+import { copyText } from "../core/clipboard";
 import { formatKb } from "../core/format";
 import type { DiagData, JobState, NetcheckJobData } from "../core/types";
 
@@ -51,13 +52,13 @@ export function DiagnosticsPage() {
 
   async function copyDiagnostics() {
     if (!logsText) return;
-    try {
-      await navigator.clipboard.writeText(logsText);
+    const ok = await copyText(logsText);
+    if (ok) {
       setCopied(true);
       notify({ title: t("diag.logs.copied"), variant: "success" });
       setTimeout(() => setCopied(false), 2000);
-    } catch {
-      notify({ title: t("err.internal"), variant: "error" });
+    } else {
+      notify({ title: t("common.copyFailed"), variant: "error" });
     }
   }
 
@@ -81,14 +82,13 @@ export function DiagnosticsPage() {
 
   return (
     <div className="grid gap-4">
-      {/* Network check */}
       <SectionCard
         title={t("diag.section.netcheck")}
         description={t("diag.netcheck.desc")}
         action={
           <Button
             variant="secondary"
-            disabled={busy}
+            disabled={busy || netcheckJob?.running}
             loading={netcheckJob?.running}
             onClick={() => {
               void runJob<NetcheckJobData>("netcheck", () => api.netcheck());
@@ -125,10 +125,12 @@ export function DiagnosticsPage() {
                     : t("common.no")}
               </DetailItem>
               <DetailItem label={t("diag.netcheck.portmap")}>
-                {report.portmap || t("common.none")}
+                <span data-raw-value="true">{report.portmap || t("common.none")}</span>
               </DetailItem>
               <DetailItem label={t("diag.netcheck.preferred")}>
-                <Badge variant="info">{report.preferred_derp || "—"}</Badge>
+                <Badge variant="info">
+                  <span data-raw-value="true">{report.preferred_derp || "—"}</span>
+                </Badge>
               </DetailItem>
             </DetailList>
 
@@ -148,7 +150,9 @@ export function DiagnosticsPage() {
                     <Table.Body>
                       {report.derp.map((d) => (
                         <Table.Row key={d.code}>
-                          <Table.Cell className="font-mono">{d.code}</Table.Cell>
+                          <Table.Cell className="font-mono">
+                            <span data-raw-value="true">{d.code}</span>
+                          </Table.Cell>
                           <Table.Cell className="tabular-nums">{d.latency_ms} ms</Table.Cell>
                         </Table.Row>
                       ))}
@@ -163,7 +167,6 @@ export function DiagnosticsPage() {
         )}
       </SectionCard>
 
-      {/* Environment checks */}
       <SectionCard title={t("diag.section.env")}>
         <DetailList>
           <DetailItem label={t("diag.env.tun")}>{renderTriBool(diag?.tun)}</DetailItem>
@@ -194,7 +197,6 @@ export function DiagnosticsPage() {
         </DetailList>
       </SectionCard>
 
-      {/* Logs & Copy diagnostics */}
       <SectionCard
         title={t("diag.section.logs")}
         description={t("diag.logs.desc")}
@@ -236,7 +238,6 @@ export function DiagnosticsPage() {
         </pre>
       </SectionCard>
 
-      {/* Danger zone: Purge login state */}
       <SectionCard title={t("diag.section.danger")}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="grid min-w-0 flex-1 gap-0.5">
@@ -268,6 +269,7 @@ export function DiagnosticsPage() {
         onConfirm={async () => {
           setPurgeAnchor(null);
           await runJob("daemon", () => api.purge(), {
+            suppressLoginFailure: true,
             onDone: (final) => {
               if (final.ok) notify({ title: t("common.actionSuccess"), variant: "success" });
             },

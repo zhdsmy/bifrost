@@ -37,6 +37,10 @@ export function validArch(value: string): boolean {
   return value === "arm" || value === "arm64";
 }
 
+export function validName(value: string): boolean {
+  return value.length >= 1 && value.length <= 32 && /^[a-z][a-z0-9_-]*$/.test(value);
+}
+
 export function validParam(value: string): boolean {
   return value.length >= 1 && value.length <= 512 && /^[A-Za-z0-9._:/,~=@-]+$/.test(value);
 }
@@ -82,6 +86,22 @@ export function validHostname(value: string): boolean {
   return value.length >= 1 && value.length <= 63 && /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(value);
 }
 
+export function validDnsName(value: string): boolean {
+  if (!value || value.length > 253) return false;
+  if (
+    value.startsWith(".") ||
+    value.endsWith(".") ||
+    value.includes("..") ||
+    value.startsWith("-") ||
+    value.endsWith("-") ||
+    value.includes(".-") ||
+    value.includes("-.")
+  ) {
+    return false;
+  }
+  return /^[a-z0-9.-]+$/.test(value);
+}
+
 export function validLoginServer(value: string): boolean {
   if (!(value.startsWith("http://") || value.startsWith("https://"))) return false;
   if (value.length > 255) return false;
@@ -104,6 +124,16 @@ export function validLoginServer(value: string): boolean {
 
 export function isHttpLoginServer(value: string): boolean {
   return value.startsWith("http://");
+}
+
+export function isSafeHttpUrl(value: string): boolean {
+  if (!value) return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 export function validAuthKey(value: string): boolean {

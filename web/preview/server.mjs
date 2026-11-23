@@ -19,6 +19,8 @@ import {
   validLoginServer,
   validMirror,
   validMode,
+  validName,
+  validParam,
   validPort,
   validSnat,
   validTailnetIp,
@@ -43,6 +45,15 @@ function undash(v) {
   return v === "-" ? "" : v;
 }
 
+// Mirror common.sh respond(): reject response text containing & + % = (PLAN 2.4 item 14).
+export function sanitizeScriptResponse(payload) {
+  const encoded = JSON.stringify(payload);
+  if (/[&+%=]/.test(encoded)) {
+    return '{"ok":false,"code":"internal"}';
+  }
+  return encoded;
+}
+
 export function createPreviewServer({
   initialState = process.env.BIFROST_STATE || "running",
   lang,
@@ -51,9 +62,11 @@ export function createPreviewServer({
   resources = new URL("../dist/res/", import.meta.url),
   jobStepMs = 60,
   mutateStatus,
-  coreCheckUpToDate = false,
+  initialJobs,
   migrateMode = "ok",
   loginExpires = false,
+  loginStayWaiting = false,
+  onSetReadBack,
 } = {}) {
   const dbus = {};
   if (lang !== undefined) dbus.bifrost_ui_lang = lang;
@@ -62,10 +75,53 @@ export function createPreviewServer({
   const status = createStatusFixture(initialState);
   if (mutateStatus) mutateStatus(status);
 
-  const diag = { ...SAMPLE_DIAG, fw_complete: status.daemon.running ? true : null, conflict: status.conflict.original_running };
-  let logsText = SAMPLE_LOGS_TEXT;
-  const jobs = new Map();
-  const activeTimers = new Set();
+  const diag = {
+    ...SAMPLE_DIAG,
+    fw_complete: status.daemon.running ? true : null,
+    conflict: status.conflict.original_running,
+  };
+  const logsText = SAMPLE_LOGS_TEXT;
+  const jobs = new Map(Object.entries(structuredClone(initialJobs ?? {})));
+  const jobTimers = new Map();
+
+  function clearJobTimer(jobName) {
+    const t = jobTimers.get(jobName);
+    if (t) {
+      clearTimeout(t);
+      jobTimers.delete(jobName);
+    }
+  }
+
+  function runJobSteps(jobName, state, steps, onFinish) {
+    let idx = 0;
+    const advance = () => {
+      jobTimers.delete(jobName);
+      if (idx < steps.length) {
+        const step = steps[idx++];
+        state.phase = step.phase;
+        state.progress = step.progress ?? null;
+        if (step.data) Object.assign(state.data, step.data);
+        if (step.effect) step.effect();
+        if (step.waitForever) return;
+        jobTimers.set(jobName, setTimeout(advance, jobStepMs));
+        return;
+      }
+      const outcome = onFinish(state);
+      state.running = false;
+      state.finished = SAMPLE_NOW + 5;
+      if (outcome.ok) {
+        state.ok = true;
+        state.code = null;
+        state.phase = "done";
+        state.progress = 100;
+      } else {
+        state.ok = false;
+        state.code = outcome.code ?? "internal";
+      }
+    };
+
+    jobTimers.set(jobName, setTimeout(advance, jobStepMs));
+  }
 
   function scheduleJob(jobName, initialData, steps, onFinish) {
     const existing = jobs.get(jobName);
@@ -84,45 +140,27 @@ export function createPreviewServer({
       data: { ...initialData },
     };
     jobs.set(jobName, state);
-
-    let idx = 0;
-    const advance = () => {
-      if (idx < steps.length) {
-        const step = steps[idx++];
-        state.phase = step.phase;
-        state.progress = step.progress ?? null;
-        if (step.data) Object.assign(state.data, step.data);
-        if (step.effect) step.effect();
-        const timer = setTimeout(() => {
-          activeTimers.delete(timer);
-          advance();
-        }, jobStepMs);
-        activeTimers.add(timer);
-        return;
-      }
-      const outcome = onFinish(state);
-      state.running = false;
-      state.finished = SAMPLE_NOW + 5;
-      if (outcome.ok) {
-        state.ok = true;
-        state.code = outcome.code ?? null;
-        state.phase = "done";
-        state.progress = 100;
-      } else {
-        state.ok = false;
-        state.code = outcome.code ?? "internal";
-      }
-    };
-
-    const timer = setTimeout(() => {
-      activeTimers.delete(timer);
-      advance();
-    }, jobStepMs);
-    activeTimers.add(timer);
+    runJobSteps(jobName, state, steps, onFinish);
     return true;
   }
 
+  function cancelWaitingLogin() {
+    const login = jobs.get("login");
+    if (login?.running) {
+      clearJobTimer("login");
+      login.running = false;
+      login.ok = false;
+      login.code = "cli_failed";
+      login.finished = SAMPLE_NOW + 3;
+    }
+  }
+
   function handleAction(action, args) {
+    if (!validName(action)) return { ok: false, code: "invalid_param" };
+    for (const p of args) {
+      if (!validParam(p)) return { ok: false, code: "invalid_param" };
+    }
+
     switch (action) {
       case "ui": {
         if (args.length !== 2) return { ok: false, code: "invalid_param" };
@@ -171,13 +209,20 @@ export function createPreviewServer({
           "daemon",
           { action: "stop" },
           [
-            { phase: "stopping", progress: 40 },
+            {
+              phase: "stopping",
+              progress: 40,
+              effect: () => {
+                cancelWaitingLogin();
+              },
+            },
             { phase: "cleanup", progress: 80 },
           ],
           () => {
             status.plugin.enabled = false;
             status.daemon = { running: false, pid: null, restarts: 0 };
             status.state = "disabled";
+            status.auth_url = "";
             status.self = null;
             status.prefs = null;
             status.routes = [];
@@ -216,13 +261,20 @@ export function createPreviewServer({
           "daemon",
           { action: "purge" },
           [
-            { phase: "stopping", progress: 35 },
+            {
+              phase: "stopping",
+              progress: 35,
+              effect: () => {
+                cancelWaitingLogin();
+              },
+            },
             { phase: "purge", progress: 75 },
           ],
           () => {
             status.plugin.enabled = false;
             status.daemon = { running: false, pid: null, restarts: 0 };
             status.state = "disabled";
+            status.auth_url = "";
             status.self = null;
             status.prefs = null;
             status.routes = [];
@@ -247,6 +299,7 @@ export function createPreviewServer({
             {
               phase: "running",
               progress: 50,
+              waitForever: loginStayWaiting && !authKey,
               effect: () => {
                 if (!authKey) {
                   status.state = "needs_login";
@@ -316,10 +369,11 @@ export function createPreviewServer({
         if (prefsKeys.has(key) && (!status.daemon.running || !status.prefs)) {
           return { ok: false, code: "not_running" };
         }
+        const readBack = (k, v) => (onSetReadBack ? onSetReadBack(k, v) : v);
         switch (key) {
           case "advertise_routes": {
             if (value !== "" && !validCidr4List(value)) return { ok: false, code: "invalid_param" };
-            const list = value ? value.split(",") : [];
+            const list = readBack(key, value ? value.split(",") : []);
             status.prefs.advertise_routes = list;
             status.routes = list.map((cidr) => ({
               cidr,
@@ -329,55 +383,61 @@ export function createPreviewServer({
           }
           case "advertise_exit_node": {
             if (!validBool01(value)) return { ok: false, code: "invalid_param" };
-            const b = value === "1";
+            const b = readBack(key, value === "1");
             status.prefs.advertise_exit_node = b;
             status.exit_node = { advertised: b, approved: false };
             return { ok: true, value: b };
           }
           case "accept_routes": {
             if (!validBool01(value)) return { ok: false, code: "invalid_param" };
-            const b = value === "1";
+            const b = readBack(key, value === "1");
             status.prefs.accept_routes = b;
             return { ok: true, value: b };
           }
           case "hostname": {
             if (value !== "" && !validHostname(value)) return { ok: false, code: "invalid_param" };
-            status.prefs.hostname = value;
-            if (status.self) status.self.hostname = value || "router";
-            return { ok: true, value };
+            const finalVal = readBack(key, value);
+            status.prefs.hostname = finalVal;
+            if (status.self) status.self.hostname = finalVal || "router";
+            return { ok: true, value: finalVal };
           }
           case "local_access": {
             if (!validBool01(value)) return { ok: false, code: "invalid_param" };
-            status.settings.local_access = value === "1";
-            return { ok: true, value: status.settings.local_access };
+            const b = readBack(key, value === "1");
+            status.settings.local_access = b;
+            return { ok: true, value: b };
           }
           case "lan_masq": {
             if (!validBool01(value)) return { ok: false, code: "invalid_param" };
-            status.settings.lan_masq = value === "1";
-            return { ok: true, value: status.settings.lan_masq };
+            const b = readBack(key, value === "1");
+            status.settings.lan_masq = b;
+            return { ok: true, value: b };
           }
           case "snat": {
             if (!validSnat(value)) return { ok: false, code: "invalid_param" };
-            status.settings.snat = value;
+            const finalVal = readBack(key, value);
+            status.settings.snat = finalVal;
             status.settings.snat_effective =
-              value === "on" || (value === "auto" && status.lan.sw_mode !== 1);
-            return { ok: true, value };
+              finalVal === "on" || (finalVal === "auto" && status.lan.sw_mode !== 1);
+            return { ok: true, value: finalVal };
           }
           case "magicdns": {
             if (!validBool01(value)) return { ok: false, code: "invalid_param" };
             if (value === "1" && !status.dns.conf_dir) return { ok: false, code: "no_conf_dir" };
-            status.settings.magicdns = value === "1";
-            status.dns.active = status.settings.magicdns && status.daemon.running;
-            return { ok: true, value: status.settings.magicdns };
+            const b = readBack(key, value === "1");
+            status.settings.magicdns = b;
+            status.dns.active = b && status.daemon.running;
+            return { ok: true, value: b };
           }
           case "mirror": {
             if (value !== "" && !validMirror(value)) return { ok: false, code: "invalid_param" };
-            status.settings.mirror = value;
-            return { ok: true, value };
+            const finalVal = readBack(key, value);
+            status.settings.mirror = finalVal;
+            return { ok: true, value: finalVal };
           }
           case "port": {
             if (!validPort(value)) return { ok: false, code: "invalid_param" };
-            const nextPort = Number(value);
+            const nextPort = Number(readBack(key, Number(value)));
             const ok = scheduleJob(
               "daemon",
               { action: "restart" },
@@ -395,7 +455,7 @@ export function createPreviewServer({
           }
           case "no_logs": {
             if (!validBool01(value)) return { ok: false, code: "invalid_param" };
-            const nextVal = value === "1";
+            const nextVal = readBack(key, value === "1");
             const ok = scheduleJob(
               "daemon",
               { action: "restart" },
@@ -462,19 +522,27 @@ export function createPreviewServer({
         if (args.length !== 0) return { ok: false, code: "invalid_param" };
         const ok = scheduleJob(
           "update",
-          { action: "check", latest: null, kept_prev: status.core.prev },
+          { action: "check", latest: null, up_to_date: false, kept_prev: status.core.prev },
           [
             { phase: "manifest", progress: 40 },
             { phase: "verify_manifest", progress: 80 },
           ],
           (st) => {
-            if (coreCheckUpToDate || status.core.serial >= SAMPLE_LATEST_CORE.serial) {
+            if (status.core.serial > SAMPLE_LATEST_CORE.serial) {
               status.core.update = null;
               st.data.latest = null;
-              return { ok: true, code: "up_to_date" };
+              st.data.up_to_date = false;
+              return { ok: false, code: "old_serial" };
+            }
+            if (status.core.serial === SAMPLE_LATEST_CORE.serial) {
+              status.core.update = null;
+              st.data.latest = { ...SAMPLE_LATEST_CORE };
+              st.data.up_to_date = true;
+              return { ok: true };
             }
             status.core.update = { ...SAMPLE_LATEST_CORE };
             st.data.latest = { ...SAMPLE_LATEST_CORE };
+            st.data.up_to_date = false;
             return { ok: true };
           },
         );
@@ -485,7 +553,7 @@ export function createPreviewServer({
         if (args.length !== 0) return { ok: false, code: "invalid_param" };
         const ok = scheduleJob(
           "update",
-          { action: "update", latest: SAMPLE_LATEST_CORE, kept_prev: true },
+          { action: "update", latest: SAMPLE_LATEST_CORE, up_to_date: false, kept_prev: true },
           [
             { phase: "manifest", progress: 15 },
             { phase: "verify_manifest", progress: 30 },
@@ -513,7 +581,7 @@ export function createPreviewServer({
         if (!status.core.prev) return { ok: false, code: "no_prev" };
         const ok = scheduleJob(
           "update",
-          { action: "rollback", latest: null, kept_prev: false },
+          { action: "rollback", latest: null, up_to_date: false, kept_prev: false },
           [
             { phase: "unpack", progress: 40 },
             { phase: "swap", progress: 75 },
@@ -538,7 +606,7 @@ export function createPreviewServer({
         }
         const ok = scheduleJob(
           "update",
-          { action: "arch", latest: null, kept_prev: true },
+          { action: "arch", latest: null, up_to_date: false, kept_prev: true },
           [
             { phase: "download", progress: 40 },
             { phase: "swap", progress: 80 },
@@ -612,18 +680,32 @@ export function createPreviewServer({
         const { id, method, params, fields } = body;
         if (!Number.isInteger(id) || id < 0) return send("text/plain", "Invalid id", 400);
         if (fields && Object.keys(fields).length > 0) {
-          return send("application/json", JSON.stringify({ id, result: JSON.stringify({ ok: false, code: "invalid_param" }) }));
+          return send(
+            "application/json",
+            JSON.stringify({ id, result: sanitizeScriptResponse({ ok: false, code: "invalid_param" }) }),
+          );
         }
         if (method === "bifrost_status.sh") {
           status.time = SAMPLE_NOW;
-          return send("application/json", JSON.stringify({ id, result: JSON.stringify({ ok: true }) }));
+          return send(
+            "application/json",
+            JSON.stringify({ id, result: sanitizeScriptResponse({ ok: true }) }),
+          );
         }
         if (method !== "bifrost_config.sh" || !Array.isArray(params) || typeof params[0] !== "string") {
-          return send("application/json", JSON.stringify({ id, result: JSON.stringify({ ok: false, code: "invalid_param" }) }));
+          return send(
+            "application/json",
+            JSON.stringify({ id, result: sanitizeScriptResponse({ ok: false, code: "invalid_param" }) }),
+          );
         }
         const [action, ...rest] = params;
-        const payload = handleAction(action, rest.map(String));
-        return send("application/json", JSON.stringify({ id, result: JSON.stringify(payload) }));
+        const payload = rest.every((value) => typeof value === "string")
+          ? handleAction(action, rest)
+          : { ok: false, code: "invalid_param" };
+        return send(
+          "application/json",
+          JSON.stringify({ id, result: sanitizeScriptResponse(payload) }),
+        );
       }
 
       if (req.method !== "GET") return send("text/plain", "Method not allowed", 405);
@@ -684,8 +766,8 @@ export function createPreviewServer({
   });
 
   server.on("close", () => {
-    for (const timer of activeTimers) clearTimeout(timer);
-    activeTimers.clear();
+    for (const timer of jobTimers.values()) clearTimeout(timer);
+    jobTimers.clear();
   });
 
   return server;

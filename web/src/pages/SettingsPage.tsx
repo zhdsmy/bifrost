@@ -1,17 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { PlusIcon } from "@phosphor-icons/react/dist/csr/Plus";
-import { XIcon } from "@phosphor-icons/react/dist/csr/X";
-import { Badge } from "@cloudflare/kumo/components/badge";
 import { Banner } from "@cloudflare/kumo/components/banner";
-import { Button } from "@cloudflare/kumo/components/button";
-import { Checkbox } from "@cloudflare/kumo/components/checkbox";
-import { Input } from "@cloudflare/kumo/components/input";
 import { Select } from "@cloudflare/kumo/components/select";
-import { Switch } from "@cloudflare/kumo/components/switch";
 import { useApp } from "../app/context";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { JobProgress } from "../components/JobProgress";
 import { SectionCard } from "../components/SectionCard";
+import { SwitchSettingRow, TextSettingRow } from "../components/SettingRows";
 import { api } from "../core/api";
 import type { SettingKey, SnatMode } from "../core/types";
 import {
@@ -22,6 +16,7 @@ import {
   validMirror,
   validPort,
 } from "../core/validate";
+import { AdvertiseRoutesField } from "./settings/AdvertiseRoutesField";
 
 interface PendingConfirm {
   anchor: HTMLElement | null;
@@ -37,11 +32,11 @@ export function SettingsPage() {
 
   const daemonRunning = status?.daemon.running ?? false;
   const prefs = status?.prefs ?? null;
+  const prefsReady = daemonRunning && prefs !== null;
   const settings = status?.settings;
   const lanCidr = status?.lan.cidr ?? "";
 
   const [routesDraft, setRoutesDraft] = useState<string[]>([]);
-  const [routeInput, setRouteInput] = useState("");
   const [hostnameDraft, setHostnameDraft] = useState("");
   const [portDraft, setPortDraft] = useState("41641");
   const [mirrorDraft, setMirrorDraft] = useState("");
@@ -49,11 +44,11 @@ export function SettingsPage() {
   const [savingKey, setSavingKey] = useState<SettingKey | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<SettingKey, string>>>({});
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+
   const acceptRoutesRef = useRef<HTMLSpanElement>(null);
   const localAccessRef = useRef<HTMLSpanElement>(null);
   const noLogsRef = useRef<HTMLSpanElement>(null);
 
-  // Sync draft text fields from read-back status values whenever they change on the router.
   const syncedRoutesKey = (prefs?.advertise_routes ?? []).join(",");
   useEffect(() => {
     setRoutesDraft(syncedRoutesKey ? syncedRoutesKey.split(",") : []);
@@ -77,6 +72,7 @@ export function SettingsPage() {
   if (!status || !settings) return null;
 
   const isDisabled = busy || savingKey !== null;
+  const prefsDisabled = !prefsReady || isDisabled;
 
   function setFieldError(key: SettingKey, message: string | undefined) {
     setFieldErrors((prev) => ({ ...prev, [key]: message }));
@@ -108,46 +104,6 @@ export function SettingsPage() {
       notify({ title: msg, variant: "error" });
     } finally {
       setSavingKey(null);
-    }
-  }
-
-  function addRoute() {
-    const trimmed = routeInput.trim();
-    if (!validCidr4(trimmed)) {
-      setFieldError("advertise_routes", t("validate.cidr"));
-      return;
-    }
-    if (routesDraft.includes(trimmed)) {
-      setFieldError("advertise_routes", t("validate.cidrDuplicate"));
-      return;
-    }
-    if (routesDraft.length >= 16) {
-      setFieldError("advertise_routes", t("validate.cidrMax"));
-      return;
-    }
-    setFieldError("advertise_routes", undefined);
-    setRoutesDraft((prev) => [...prev, trimmed]);
-    setRouteInput("");
-  }
-
-  function removeRoute(cidr: string) {
-    setFieldError("advertise_routes", undefined);
-    setRoutesDraft((prev) => prev.filter((item) => item !== cidr));
-  }
-
-  function toggleLanRoute(checked: boolean) {
-    if (!lanCidr || !validCidr4(lanCidr)) return;
-    setFieldError("advertise_routes", undefined);
-    if (checked) {
-      if (!routesDraft.includes(lanCidr)) {
-        if (routesDraft.length >= 16) {
-          setFieldError("advertise_routes", t("validate.cidrMax"));
-          return;
-        }
-        setRoutesDraft((prev) => [lanCidr, ...prev]);
-      }
-    } else {
-      setRoutesDraft((prev) => prev.filter((item) => item !== lanCidr));
     }
   }
 
@@ -249,7 +205,6 @@ export function SettingsPage() {
     void commitSetting("mirror", trimmed);
   }
 
-  const routeApprovalMap = new Map(status.routes.map((r) => [r.cidr, r.approved]));
   const snatItems: Record<SnatMode, string> = {
     auto: t("settings.snat.auto"),
     on: t("settings.snat.on"),
@@ -258,221 +213,74 @@ export function SettingsPage() {
 
   return (
     <div className="grid gap-4">
-      {!daemonRunning && (
+      {!daemonRunning ? (
         <Banner variant="alert" description={t("settings.daemonRequiredBanner")} />
+      ) : (
+        !prefsReady && (
+          <Banner variant="alert" description={t("settings.prefsUnavailableBanner")} />
+        )
       )}
 
       {jobs.daemon?.running && <JobProgress job={jobs.daemon} />}
 
-      {/* Group 1: Routing */}
       <SectionCard title={t("settings.group.routing")}>
         <div className="grid gap-5">
-          {/* Advertise Routes */}
-          <div className="grid gap-3 border-b border-kumo-line pb-5">
-            <div className="grid gap-1">
-              <h3 className="text-sm font-medium text-kumo-strong">
-                {t("settings.advertiseRoutes.label")}
-              </h3>
-              <p className="text-xs text-kumo-subtle">{t("settings.advertiseRoutes.desc")}</p>
-            </div>
-
-            {lanCidr && validCidr4(lanCidr) && (
-              <Checkbox
-                label={t("settings.advertiseRoutes.useLan", { cidr: lanCidr })}
-                checked={routesDraft.includes(lanCidr)}
-                disabled={!daemonRunning || isDisabled}
-                onCheckedChange={(checked) => toggleLanRoute(checked)}
-              />
-            )}
-
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="min-w-0 flex-1">
-                <Input
-                  id="setting-advertise-routes-input"
-                  aria-label={t("settings.advertiseRoutes.label")}
-                  placeholder={t("settings.advertiseRoutes.placeholder")}
-                  className="w-full"
-                  value={routeInput}
-                  disabled={!daemonRunning || isDisabled}
-                  onChange={(e) => {
-                    setRouteInput(e.target.value);
-                    setFieldError("advertise_routes", undefined);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      addRoute();
-                    }
-                  }}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </div>
-              <Button
-                variant="secondary"
-                disabled={!daemonRunning || isDisabled || routeInput.trim() === ""}
-                onClick={addRoute}
-              >
-                <PlusIcon size={16} aria-hidden />
-                {t("settings.advertiseRoutes.add")}
-              </Button>
-            </div>
-
-            {routesDraft.length === 0 ? (
-              <p className="text-xs text-kumo-subtle">{t("settings.advertiseRoutes.empty")}</p>
-            ) : (
-              <ul className="flex flex-wrap gap-2">
-                {routesDraft.map((cidr) => {
-                  const approved = routeApprovalMap.get(cidr);
-                  return (
-                    <li
-                      key={cidr}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-kumo-line bg-kumo-recessed px-2.5 py-1 text-xs"
-                    >
-                      <span className="font-mono text-kumo-default">{cidr}</span>
-                      {approved !== undefined && (
-                        <Badge variant={approved ? "success" : "warning"}>
-                          {approved ? t("overview.route.approved") : t("overview.route.pending")}
-                        </Badge>
-                      )}
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        shape="square"
-                        disabled={!daemonRunning || isDisabled}
-                        aria-label={t("settings.advertiseRoutes.remove", { cidr })}
-                        onClick={() => removeRoute(cidr)}
-                      >
-                        <XIcon size={12} aria-hidden />
-                      </Button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-
-            {fieldErrors.advertise_routes && (
-              <Banner variant="error" role="alert" size="sm" title={fieldErrors.advertise_routes} />
-            )}
-
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs text-kumo-subtle">
-                {t("settings.advertiseRoutes.current", {
-                  value: prefs?.advertise_routes.length
-                    ? prefs.advertise_routes.join(", ")
-                    : t("common.none"),
-                })}
-              </span>
-              <Button
-                variant="primary"
-                size="sm"
-                loading={savingKey === "advertise_routes"}
-                disabled={!daemonRunning || isDisabled}
-                onClick={handleSaveRoutes}
-              >
-                {t("common.save")}
-              </Button>
-            </div>
-          </div>
-
-          {/* Advertise Exit Node */}
-          <div className="grid gap-2 border-b border-kumo-line pb-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="grid min-w-0 flex-1 gap-0.5">
-                <span className="text-sm font-medium text-kumo-strong">
-                  {t("settings.exitNode.label")}
-                </span>
-                <span className="text-xs text-kumo-subtle">{t("settings.exitNode.desc")}</span>
-              </div>
-              <Switch
-                aria-label={t("settings.exitNode.label")}
-                checked={prefs?.advertise_exit_node ?? false}
-                disabled={!daemonRunning || isDisabled}
-                onCheckedChange={(checked) => {
-                  void commitSetting("advertise_exit_node", checked ? "1" : "0");
-                }}
-              />
-            </div>
-            {fieldErrors.advertise_exit_node && (
-              <Banner variant="error" role="alert" size="sm" title={fieldErrors.advertise_exit_node} />
-            )}
-          </div>
-
-          {/* Accept Routes */}
-          <div className="grid gap-2">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="grid min-w-0 flex-1 gap-0.5">
-                <span className="text-sm font-medium text-kumo-strong">
-                  {t("settings.acceptRoutes.label")}
-                </span>
-                <span className="text-xs text-kumo-subtle">{t("settings.acceptRoutes.desc")}</span>
-              </div>
-              <span ref={acceptRoutesRef}>
-                <Switch
-                  aria-label={t("settings.acceptRoutes.label")}
-                  checked={prefs?.accept_routes ?? false}
-                  disabled={!daemonRunning || isDisabled}
-                  onCheckedChange={handleToggleAcceptRoutes}
-                />
-              </span>
-            </div>
-            {fieldErrors.accept_routes && (
-              <Banner variant="error" role="alert" size="sm" title={fieldErrors.accept_routes} />
-            )}
-          </div>
+          <AdvertiseRoutesField
+            lanCidr={lanCidr}
+            routesDraft={routesDraft}
+            readBackRoutes={prefs?.advertise_routes ?? null}
+            routeStatuses={status.routes}
+            disabled={prefsDisabled}
+            saving={savingKey === "advertise_routes"}
+            error={fieldErrors.advertise_routes}
+            onChangeDraft={setRoutesDraft}
+            onError={(msg) => setFieldError("advertise_routes", msg)}
+            onSave={handleSaveRoutes}
+          />
+          <SwitchSettingRow
+            label={t("settings.exitNode.label")}
+            description={t("settings.exitNode.desc")}
+            checked={prefs?.advertise_exit_node ?? null}
+            disabled={prefsDisabled}
+            error={fieldErrors.advertise_exit_node}
+            onCheckedChange={(checked) => {
+              void commitSetting("advertise_exit_node", checked ? "1" : "0");
+            }}
+          />
+          <SwitchSettingRow
+            label={t("settings.acceptRoutes.label")}
+            description={t("settings.acceptRoutes.desc")}
+            checked={prefs?.accept_routes ?? null}
+            disabled={prefsDisabled}
+            error={fieldErrors.accept_routes}
+            divider={false}
+            anchorRef={acceptRoutesRef}
+            onCheckedChange={handleToggleAcceptRoutes}
+          />
         </div>
       </SectionCard>
 
-      {/* Group 2: Access Control */}
       <SectionCard title={t("settings.group.access")}>
         <div className="grid gap-5">
-          {/* Local Access */}
-          <div className="grid gap-2 border-b border-kumo-line pb-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="grid min-w-0 flex-1 gap-0.5">
-                <span className="text-sm font-medium text-kumo-strong">
-                  {t("settings.localAccess.label")}
-                </span>
-                <span className="text-xs text-kumo-subtle">{t("settings.localAccess.desc")}</span>
-              </div>
-              <span ref={localAccessRef}>
-                <Switch
-                  aria-label={t("settings.localAccess.label")}
-                  checked={settings.local_access}
-                  disabled={isDisabled}
-                  onCheckedChange={handleToggleLocalAccess}
-                />
-              </span>
-            </div>
-            {fieldErrors.local_access && (
-              <Banner variant="error" role="alert" size="sm" title={fieldErrors.local_access} />
-            )}
-          </div>
-
-          {/* LAN Masq */}
-          <div className="grid gap-2 border-b border-kumo-line pb-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="grid min-w-0 flex-1 gap-0.5">
-                <span className="text-sm font-medium text-kumo-strong">
-                  {t("settings.lanMasq.label")}
-                </span>
-                <span className="text-xs text-kumo-subtle">{t("settings.lanMasq.desc")}</span>
-              </div>
-              <Switch
-                aria-label={t("settings.lanMasq.label")}
-                checked={settings.lan_masq}
-                disabled={isDisabled}
-                onCheckedChange={(checked) => {
-                  void commitSetting("lan_masq", checked ? "1" : "0");
-                }}
-              />
-            </div>
-            {fieldErrors.lan_masq && (
-              <Banner variant="error" role="alert" size="sm" title={fieldErrors.lan_masq} />
-            )}
-          </div>
-
-          {/* SNAT */}
+          <SwitchSettingRow
+            label={t("settings.localAccess.label")}
+            description={t("settings.localAccess.desc")}
+            checked={settings.local_access}
+            disabled={isDisabled}
+            error={fieldErrors.local_access}
+            anchorRef={localAccessRef}
+            onCheckedChange={handleToggleLocalAccess}
+          />
+          <SwitchSettingRow
+            label={t("settings.lanMasq.label")}
+            description={t("settings.lanMasq.desc")}
+            checked={settings.lan_masq}
+            disabled={isDisabled}
+            error={fieldErrors.lan_masq}
+            onCheckedChange={(checked) => {
+              void commitSetting("lan_masq", checked ? "1" : "0");
+            }}
+          />
           <div className="grid gap-2 border-b border-kumo-line pb-5">
             <Select<SnatMode>
               id="setting-snat"
@@ -496,179 +304,83 @@ export function SettingsPage() {
               <Banner variant="error" role="alert" size="sm" title={fieldErrors.snat} />
             )}
           </div>
-
-          {/* MagicDNS */}
-          <div className="grid gap-2">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="grid min-w-0 flex-1 gap-0.5">
-                <span className="text-sm font-medium text-kumo-strong">
-                  {t("settings.magicdns.label")}
-                </span>
-                <span className="text-xs text-kumo-subtle">
-                  {status.dns.conf_dir
-                    ? t("settings.magicdns.desc")
-                    : t("settings.magicdns.noConfDir")}
-                </span>
-              </div>
-              <Switch
-                aria-label={t("settings.magicdns.label")}
-                checked={settings.magicdns}
-                disabled={!status.dns.conf_dir || isDisabled}
-                onCheckedChange={(checked) => {
-                  void commitSetting("magicdns", checked ? "1" : "0");
-                }}
-              />
-            </div>
-            {fieldErrors.magicdns && (
-              <Banner variant="error" role="alert" size="sm" title={fieldErrors.magicdns} />
-            )}
-          </div>
+          <SwitchSettingRow
+            label={t("settings.magicdns.label")}
+            description={
+              status.dns.conf_dir ? t("settings.magicdns.desc") : t("settings.magicdns.noConfDir")
+            }
+            checked={settings.magicdns}
+            disabled={!status.dns.conf_dir || isDisabled}
+            error={fieldErrors.magicdns}
+            divider={false}
+            onCheckedChange={(checked) => {
+              void commitSetting("magicdns", checked ? "1" : "0");
+            }}
+          />
         </div>
       </SectionCard>
 
-      {/* Group 3: Other */}
       <SectionCard title={t("settings.group.other")}>
         <div className="grid gap-5">
-          {/* Device Name */}
-          <div className="grid gap-1.5 border-b border-kumo-line pb-5">
-            <label htmlFor="setting-hostname" className="text-sm font-medium text-kumo-strong">
-              {t("settings.hostname.label")}
-            </label>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="min-w-0 flex-1">
-                <Input
-                  id="setting-hostname"
-                  aria-label={t("settings.hostname.label")}
-                  placeholder={t("settings.hostname.placeholder")}
-                  className="w-full"
-                  value={hostnameDraft}
-                  disabled={!daemonRunning || isDisabled}
-                  onChange={(e) => {
-                    setHostnameDraft(e.target.value);
-                    setFieldError("hostname", undefined);
-                  }}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </div>
-              <Button
-                variant="secondary"
-                loading={savingKey === "hostname"}
-                disabled={!daemonRunning || isDisabled}
-                aria-label={`${t("common.save")} ${t("settings.hostname.label")}`}
-                onClick={handleSaveHostname}
-              >
-                {t("common.save")}
-              </Button>
-            </div>
-            <p className="text-xs text-kumo-subtle">{t("settings.hostname.desc")}</p>
-            {fieldErrors.hostname && (
-              <Banner variant="error" role="alert" size="sm" title={fieldErrors.hostname} />
-            )}
-          </div>
-
-          {/* Listen Port */}
-          <div className="grid gap-1.5 border-b border-kumo-line pb-5">
-            <label htmlFor="setting-port" className="text-sm font-medium text-kumo-strong">
-              {t("settings.port.label")}
-            </label>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="min-w-0 flex-1">
-                <Input
-                  id="setting-port"
-                  aria-label={t("settings.port.label")}
-                  className="w-full"
-                  value={portDraft}
-                  inputMode="numeric"
-                  disabled={isDisabled}
-                  onChange={(e) => {
-                    setPortDraft(e.target.value);
-                    setFieldError("port", undefined);
-                  }}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </div>
-              <Button
-                variant="secondary"
-                loading={savingKey === "port"}
-                disabled={isDisabled}
-                aria-label={`${t("common.save")} ${t("settings.port.label")}`}
-                onClick={(e) => handleSavePort(e.currentTarget)}
-              >
-                {t("common.save")}
-              </Button>
-            </div>
-            <p className="text-xs text-kumo-subtle">{t("settings.port.desc")}</p>
-            {fieldErrors.port && (
-              <Banner variant="error" role="alert" size="sm" title={fieldErrors.port} />
-            )}
-          </div>
-
-          {/* No Logs */}
-          <div className="grid gap-2 border-b border-kumo-line pb-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="grid min-w-0 flex-1 gap-0.5">
-                <span className="text-sm font-medium text-kumo-strong">
-                  {t("settings.noLogs.label")}
-                </span>
-                <span className="text-xs text-kumo-subtle">
-                  {settings.no_logs_forced
-                    ? t("settings.noLogs.forcedNote")
-                    : t("settings.noLogs.desc")}
-                </span>
-              </div>
-              <span ref={noLogsRef}>
-                <Switch
-                  aria-label={t("settings.noLogs.label")}
-                  checked={settings.no_logs_forced ? true : settings.no_logs}
-                  disabled={settings.no_logs_forced || isDisabled}
-                  onCheckedChange={handleToggleNoLogs}
-                />
-              </span>
-            </div>
-            {fieldErrors.no_logs && (
-              <Banner variant="error" role="alert" size="sm" title={fieldErrors.no_logs} />
-            )}
-          </div>
-
-          {/* Mirror */}
-          <div className="grid gap-1.5">
-            <label htmlFor="setting-mirror" className="text-sm font-medium text-kumo-strong">
-              {t("settings.mirror.label")}
-            </label>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="min-w-0 flex-1">
-                <Input
-                  id="setting-mirror"
-                  aria-label={t("settings.mirror.label")}
-                  placeholder={t("settings.mirror.placeholder")}
-                  className="w-full"
-                  value={mirrorDraft}
-                  disabled={isDisabled}
-                  onChange={(e) => {
-                    setMirrorDraft(e.target.value);
-                    setFieldError("mirror", undefined);
-                  }}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </div>
-              <Button
-                variant="secondary"
-                loading={savingKey === "mirror"}
-                disabled={isDisabled}
-                aria-label={`${t("common.save")} ${t("settings.mirror.label")}`}
-                onClick={handleSaveMirror}
-              >
-                {t("common.save")}
-              </Button>
-            </div>
-            <p className="text-xs text-kumo-subtle">{t("settings.mirror.desc")}</p>
-            {fieldErrors.mirror && (
-              <Banner variant="error" role="alert" size="sm" title={fieldErrors.mirror} />
-            )}
-          </div>
+          <TextSettingRow
+            id="setting-hostname"
+            label={t("settings.hostname.label")}
+            description={t("settings.hostname.desc")}
+            placeholder={t("settings.hostname.placeholder")}
+            value={hostnameDraft}
+            disabled={prefsDisabled}
+            saving={savingKey === "hostname"}
+            error={fieldErrors.hostname}
+            onChange={(v) => {
+              setHostnameDraft(v);
+              setFieldError("hostname", undefined);
+            }}
+            onSave={() => handleSaveHostname()}
+          />
+          <TextSettingRow
+            id="setting-port"
+            label={t("settings.port.label")}
+            description={t("settings.port.desc")}
+            value={portDraft}
+            inputMode="numeric"
+            disabled={isDisabled}
+            saving={savingKey === "port"}
+            error={fieldErrors.port}
+            onChange={(v) => {
+              setPortDraft(v);
+              setFieldError("port", undefined);
+            }}
+            onSave={(anchor) => handleSavePort(anchor)}
+          />
+          <SwitchSettingRow
+            label={t("settings.noLogs.label")}
+            description={
+              settings.no_logs_forced
+                ? t("settings.noLogs.forcedNote")
+                : t("settings.noLogs.desc")
+            }
+            checked={settings.no_logs_forced ? true : settings.no_logs}
+            disabled={settings.no_logs_forced || isDisabled}
+            error={fieldErrors.no_logs}
+            anchorRef={noLogsRef}
+            onCheckedChange={handleToggleNoLogs}
+          />
+          <TextSettingRow
+            id="setting-mirror"
+            label={t("settings.mirror.label")}
+            description={t("settings.mirror.desc")}
+            placeholder={t("settings.mirror.placeholder")}
+            value={mirrorDraft}
+            disabled={isDisabled}
+            saving={savingKey === "mirror"}
+            error={fieldErrors.mirror}
+            divider={false}
+            onChange={(v) => {
+              setMirrorDraft(v);
+              setFieldError("mirror", undefined);
+            }}
+            onSave={() => handleSaveMirror()}
+          />
         </div>
       </SectionCard>
 

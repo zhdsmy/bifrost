@@ -36,7 +36,7 @@ export function JobProgress({
     );
   }
 
-  if (job.ok === false && job.code && job.code !== "up_to_date") {
+  if (job.ok === false && job.code) {
     return <Banner variant="error" role="alert" size="sm" title={tErrorCode(job.code)} />;
   }
 
