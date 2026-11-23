@@ -41,6 +41,12 @@ export interface CoreLatest {
   tag: string;
 }
 
+export interface CoreBuildInfo {
+  go: string;
+  commit: string;
+  omit: string[];
+}
+
 export interface CoreInfo {
   tailscale: string;
   revision: number;
@@ -51,6 +57,7 @@ export interface CoreInfo {
   installed: number;
   prev: boolean;
   update: CoreLatest | null;
+  build: CoreBuildInfo | null;
 }
 
 export interface SelfInfo {
@@ -164,9 +171,8 @@ export interface JobState<TData = unknown> {
   data: TData;
 }
 
-export interface DaemonJobData {
-  action?: "start" | "stop" | "restart" | "purge";
-}
+export type JobProgressState<TData = unknown> = Pick<JobState<TData>,
+  "running" | "phase" | "progress" | "ok" | "code" | "data">;
 
 export interface LoginJobData {
   action?: "login" | "relogin";
@@ -181,6 +187,7 @@ export interface MigrateJobData {
 export interface UpdateJobData {
   action?: "check" | "update" | "rollback" | "arch";
   latest?: CoreLatest | null;
+  up_to_date?: boolean;
   kept_prev?: boolean;
 }
 

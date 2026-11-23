@@ -19,6 +19,16 @@ REPO_URL="${TAILSCALE_REPO_URL:-https://github.com/tailscale/tailscale.git}"
 MODE="build"
 TEST_ARCH=""
 
+# Keep cache locations, but never inherit target, toolchain or compiler flags.
+build_env() {
+    env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" \
+        GOCACHE="${GOCACHE:-}" GOMODCACHE="${GOMODCACHE:-}" \
+        HTTPS_PROXY="${HTTPS_PROXY:-}" HTTP_PROXY="${HTTP_PROXY:-}" NO_PROXY="${NO_PROXY:-}" \
+        https_proxy="${https_proxy:-}" http_proxy="${http_proxy:-}" no_proxy="${no_proxy:-}" \
+        ALL_PROXY="${ALL_PROXY:-}" all_proxy="${all_proxy:-}" GOPROXY="${GOPROXY:-}" \
+        GIT_OPTIONAL_LOCKS=0 GOENV=off GOWORK=off GOTOOLCHAIN=local CGO_ENABLED=0 "$@"
+}
+
 usage() {
     cat <<'EOF'
 Usage:
@@ -33,7 +43,8 @@ Options:
   --serial N           Manifest serial integer (>= 1; default: $CORE_SERIAL or 1).
   --min-plugin X.Y.Z   Minimum plugin version (default: recipe.json .min_plugin or 0.1.0).
   --out DIR            Output directory (default: core/out).
-  --src DIR            Tailscale git checkout directory (default: ${TMPDIR:-/tmp}/bifrost-tailscale-src).
+  --src DIR            Tailscale git checkout directory (default: <out>/src/<commit>).
+                       External (non-build.sh) git repos are checked read-only and never modified.
   --recipe FILE        Path to recipe.json (default: core/recipe.json).
   -h, --help           Show this help.
 EOF
@@ -137,17 +148,14 @@ need_cmd gzip
 # Resolve paths to absolute before changing directories.
 mkdir -p "$OUT_DIR"
 OUT_DIR=$(cd "$OUT_DIR" && pwd)
-if [ -z "$SRC_DIR" ]; then
-    SRC_DIR="${TMPDIR:-/tmp}/bifrost-tailscale-src"
-fi
-mkdir -p "$(dirname "$SRC_DIR")"
-SRC_DIR="$(cd "$(dirname "$SRC_DIR")" && pwd)/$(basename "$SRC_DIR")"
-
 WORK_DIR="$OUT_DIR/.work.$$"
 cleanup() {
     rm -rf "$WORK_DIR"
+    rm -f "$OUT_DIR"/*.tmp.$$
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 validate_recipe() {
     jq -e '
@@ -206,31 +214,23 @@ case "$MODE" in
 esac
 
 check_go_host() {
-    _cg_raw=$(GOTOOLCHAIN=local go env GOVERSION) || die "failed to query Go version"
+    _cg_raw=$(build_env go env GOVERSION) || die "failed to query Go version"
     _cg_ver=${_cg_raw#go}
     [ "$_cg_ver" = "$RECIPE_GO" ] || die "Go version mismatch: host has $_cg_ver, recipe requires $RECIPE_GO"
 }
 
 ensure_source() {
-    if [ -d "$SRC_DIR/.git" ]; then
-        _es_head=$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo "")
-        if [ "$_es_head" != "$TS_COMMIT" ]; then
-            echo "core/build.sh: updating Tailscale checkout to v$TS_VERSION" >&2
-            git -C "$SRC_DIR" fetch --depth 1 origin "refs/tags/v${TS_VERSION}:refs/tags/v${TS_VERSION}"
-            git -C "$SRC_DIR" -c advice.detachedHead=false checkout --detach --force "refs/tags/v${TS_VERSION}"
-            git -C "$SRC_DIR" clean -fdx >/dev/null
-        fi
-    else
-        [ ! -e "$SRC_DIR" ] || [ -z "$(ls -A "$SRC_DIR" 2>/dev/null)" ] || die "source dir exists and is not a git repo: $SRC_DIR"
+    SRC_DIR=${SRC_DIR:-"$OUT_DIR/src/$TS_COMMIT"}
+    if [ ! -e "$SRC_DIR/.git" ]; then
+        # git clone itself refuses nonempty destinations.
         mkdir -p "$(dirname "$SRC_DIR")"
-        echo "core/build.sh: cloning Tailscale v$TS_VERSION into $SRC_DIR" >&2
         git -c advice.detachedHead=false clone --depth 1 --branch "v${TS_VERSION}" "$REPO_URL" "$SRC_DIR"
     fi
-
+    SRC_DIR=$(cd "$SRC_DIR" && pwd)
     _es_head=$(git -C "$SRC_DIR" rev-parse HEAD)
     [ "$_es_head" = "$TS_COMMIT" ] || die "commit mismatch: v$TS_VERSION HEAD is $_es_head, recipe expects $TS_COMMIT"
 
-    _es_dirty=$(git -C "$SRC_DIR" status --porcelain)
+    _es_dirty=$(git --no-optional-locks -C "$SRC_DIR" status --porcelain --ignored --untracked-files=all)
     [ -z "$_es_dirty" ] || die "source checkout is dirty: $SRC_DIR"
 
     _es_mod_go=$(awk '$1 == "go" { print $2; exit }' "$SRC_DIR/go.mod")
@@ -240,11 +240,7 @@ ensure_source() {
 compute_tags() {
     _ct_tags=$(
         cd "$SRC_DIR" || exit 1
-        if [ "$MODE" != check ]; then
-            GOTOOLCHAIN=local CGO_ENABLED=0 go run ./cmd/featuretags --remove="$OMIT_CSV"
-        else
-            CGO_ENABLED=0 go run ./cmd/featuretags --remove="$OMIT_CSV"
-        fi
+        build_env go run ./cmd/featuretags --remove="$OMIT_CSV"
     ) || die "featuretags validation failed"
     [ -n "$_ct_tags" ] || die "featuretags returned empty tag list"
     printf 'ts_include_cli,%s\n' "$_ct_tags"
@@ -253,7 +249,7 @@ compute_tags() {
 verify_binary() {
     _vb_bin=$1
     _vb_tags=$2
-    _vb_meta=$(GOTOOLCHAIN=local go version -m "$_vb_bin") || die "go version -m failed: $_vb_bin"
+    _vb_meta=$(build_env go version -m "$_vb_bin") || die "go version -m failed: $_vb_bin"
 
     _vb_got_tags=$(printf '%s\n' "$_vb_meta" | awk -F'\t' '$2 == "build" && $3 ~ /^-tags=/ { sub(/^-tags=/, "", $3); print $3; exit }')
     [ "$_vb_got_tags" = "$_vb_tags" ] || die "embedded build tags mismatch for $_vb_bin"
@@ -287,11 +283,10 @@ build_one() {
     (
         cd "$SRC_DIR" || exit 1
         if [ -n "$_bo_goarm" ]; then
-            GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH="$_bo_goarch" GOARM="$_bo_goarm" TAGS="$_bo_tags" \
+            build_env GOOS=linux GOARCH="$_bo_goarch" GOARM="$_bo_goarm" TAGS="$_bo_tags" \
                 ./build_dist.sh --strip -o "$_bo_out" ./cmd/tailscaled
         else
-            unset GOARM
-            GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH="$_bo_goarch" TAGS="$_bo_tags" \
+            build_env GOOS=linux GOARCH="$_bo_goarch" TAGS="$_bo_tags" \
                 ./build_dist.sh --strip -o "$_bo_out" ./cmd/tailscaled
         fi
     ) || die "build failed for linux/$_bo_goarch"
@@ -299,9 +294,7 @@ build_one() {
     verify_binary "$_bo_out" "$_bo_tags"
 }
 
-if [ "$MODE" != check ]; then
-    check_go_host
-fi
+check_go_host
 
 ensure_source
 BUILD_TAGS=$(compute_tags)
@@ -341,7 +334,7 @@ while [ "$IDX" -lt "$TARGET_COUNT" ]; do
     RAW_SIZE=$(file_size "$RAW_BIN")
     RAW_SHA=$(sha256_file "$RAW_BIN")
 
-    gzip -9 -n -c "$RAW_BIN" >"$GZ_PATH.tmp.$$"
+    (unset GZIP; gzip -9 -n -c "$RAW_BIN") >"$GZ_PATH.tmp.$$" || die "gzip failed for $T_NAME"
     mv -f "$GZ_PATH.tmp.$$" "$GZ_PATH"
 
     GZ_SIZE=$(file_size "$GZ_PATH")
@@ -386,7 +379,7 @@ jq -n \
             omit: $omit
         },
         assets: $assets
-    }' >"$MANIFEST_PATH.tmp.$$"
+    }' >"$MANIFEST_PATH.tmp.$$" || die "failed to write manifest"
 mv -f "$MANIFEST_PATH.tmp.$$" "$MANIFEST_PATH"
 
 cp "$SRC_DIR/LICENSE" "$OUT_DIR/LICENSE.tailscale"

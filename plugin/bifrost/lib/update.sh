@@ -9,13 +9,9 @@
 : "${BIFROST_UPDATE_RETRY:=2}"
 : "${BIFROST_UPDATE_VERIFY_SECS:=60}"
 : "${BIFROST_UPDATE_VERSION_TIMEOUT:=10}"
+: "${BIFROST_UPDATE_METADATA_BYTES:=65536}"
 
 # ---- Format validators (manifest fields and versions) ----
-
-_upd_valid_sha256() {
-    case "$1" in '' | *[!0-9a-f]*) return 1 ;; esac
-    [ "${#1}" -eq 64 ]
-}
 
 _upd_valid_semver() (
     case "$1" in *.*.*) ;; *) exit 1 ;; esac
@@ -45,24 +41,13 @@ _upd_ver_ge() (
     [ "$_ug_c1" -ge "$_ug_c2" ]
 )
 
-_upd_valid_tag() {
-    case "$1" in '' | .* | -* | *..* | *[!A-Za-z0-9._-]*) return 1 ;; esac
-    [ "${#1}" -le 64 ]
-}
-
-_upd_valid_asset_file() {
-    case "$1" in '' | .* | -* | *..* | *[!A-Za-z0-9._-]*) return 1 ;; esac
-    case "$1" in *.gz) ;; *) return 1 ;; esac
-    [ "${#1}" -le 128 ]
-}
-
 # ---- Architecture and filesystem helpers ----
 
 _upd_kernel_arch() {
     _uk_m=$(uname -m 2>/dev/null)
     case "$_uk_m" in
-        armv7l | armv7*) printf 'arm\n' ;;
-        aarch64 | arm64) printf 'aarch64\n' ;;
+        armv7*) printf 'arm\n' ;;
+        aarch64) printf 'aarch64\n' ;;
         *) printf '%s\n' "$_uk_m" ;;
     esac
 }
@@ -94,7 +79,10 @@ _upd_installed_arch() {
             return 0
         fi
     fi
-    printf 'arm\n'
+    case "$(_upd_kernel_arch)" in
+        aarch64) printf 'arm64\n' ;;
+        *) printf 'arm\n' ;;
+    esac
 }
 
 _upd_installed_serial() {
@@ -106,6 +94,37 @@ _upd_installed_serial() {
         fi
     fi
     printf '0\n'
+}
+
+# Installed serial describes the actual core. The channel floor survives
+# rollbacks and can also record a checked release before the user installs it.
+_upd_channel_floor() {
+    _cf_file="$BIFROST_HOME/core-channel.serial"
+    _cf_seen=0
+    if [ -e "$_cf_file" ]; then
+        _cf_seen=$(cat "$_cf_file") && valid_uint "$_cf_seen" || return 1
+    elif [ -s "$BIFROST_RUN/core_latest.json" ]; then
+        # Upgrade from installations that only kept a verified channel cache.
+        _cf_seen=$(jq -er '.serial' "$BIFROST_RUN/core_latest.json") && valid_uint "$_cf_seen" || return 1
+    fi
+    _cf_inst=$(_upd_installed_serial)
+    [ "$_cf_inst" -le "$_cf_seen" ] || _cf_seen=$_cf_inst
+    printf '%s\n' "$_cf_seen"
+}
+
+_upd_remember_serial() {
+    _rs_floor=$(_upd_channel_floor) || { fail internal; return 1; }
+    [ "$1" -le "$_rs_floor" ] || _rs_floor=$1
+    _rs_file="$BIFROST_HOME/core-channel.serial"
+    [ "$(cat "$_rs_file" 2>/dev/null)" != "$_rs_floor" ] || return 0
+    if ! atomic_write "$_rs_file" 600 <<EOF
+$_rs_floor
+EOF
+    then
+        fail internal
+        return 1
+    fi
+    sync
 }
 
 _upd_plugin_version() {
@@ -132,29 +151,48 @@ _upd_bytes_to_kb() {
     printf '%s\n' $((($1 + 1023) / 1024))
 }
 
-# Check space in $BIFROST_BIN for raw_size bytes; drop prev.gz if needed (PLAN 12.6).
-# When $2 is "keep_prev", never delete prev.gz (used by rollback).
-_upd_check_bin_space() {
-    _ub_need_kb=$(_upd_bytes_to_kb "$1")
-    _ub_mode=${2:-allow_drop}
-    [ -d "$BIFROST_BIN" ] || mkdir -p "$BIFROST_BIN" 2>/dev/null || {
-        fail no_space
-        return 1
-    }
-    _ub_avail=$(_upd_free_kb "$BIFROST_BIN") || return 0
-    if [ "$_ub_avail" -lt "$_ub_need_kb" ]; then
-        if [ "$_ub_mode" = allow_drop ] && [ -f "$BIFROST_BIN/bifrostd.prev.gz" ]; then
-            log update "low space in bin (${_ub_avail}KB < ${_ub_need_kb}KB), removing previous core"
-            rm -f "$BIFROST_BIN/bifrostd.prev.gz" "$BIFROST_BIN/bifrostd.prev.json"
-            _ub_avail=$(_upd_free_kb "$BIFROST_BIN") || return 0
-        fi
-        if [ "$_ub_avail" -lt "$_ub_need_kb" ]; then
-            log update "not enough space in bin: avail=${_ub_avail}KB need=${_ub_need_kb}KB"
-            fail no_space
-            return 1
-        fi
+# The archive is the availability flag used by status and rollback. Withdraw it
+# before changing its metadata, and publish it last on the same filesystem.
+_upd_publish_prev() {
+    _pp_gz="$BIFROST_BIN/bifrostd.prev.gz"
+    _pp_man="$BIFROST_BIN/bifrostd.prev.json"
+    cp "$1" "$_pp_gz.tmp.$$" || return 1
+    if [ -f "$2" ]; then
+        cp "$2" "$_pp_man.tmp.$$" || return 1
     fi
-    return 0
+    rm -f "$_pp_gz" || return 1
+    if [ -f "$2" ]; then
+        mv -f "$_pp_man.tmp.$$" "$_pp_man" || return 1
+    else
+        rm -f "$_pp_man" || return 1
+    fi
+    mv -f "$_pp_gz.tmp.$$" "$_pp_gz" || { rm -f "$_pp_man"; return 1; }
+}
+
+# JFFS2's df is only a hint. If space looks tight, keep a recoverable
+# tmpfs copy before reclaiming the rollback archive. Always try the write.
+_upd_stash_prev() {
+    _sp_gz="$BIFROST_BIN/bifrostd.prev.gz"
+    _sp_man="$BIFROST_BIN/bifrostd.prev.json"
+    [ -f "$_sp_gz" ] || return 1
+    cp "$_sp_gz" "$_ut_dir/stash.gz" &&
+        { [ ! -e "$_sp_man" ] || cp "$_sp_man" "$_ut_dir/stash.json"; } &&
+        rm -f "$_sp_gz" "$_sp_man"
+}
+
+_upd_unpack_candidate() {
+    mkdir -p "$BIFROST_BIN" || { fail internal; return 1; }
+    _uc_src=$1
+    _uc_free=$(_upd_free_kb "$BIFROST_BIN") || _uc_free=""
+    if [ -n "$_uc_free" ] && [ "$_uc_free" -lt "$(_upd_bytes_to_kb "$2")" ]; then
+        _upd_stash_prev || :
+    fi
+    if [ "$1" = "$BIFROST_BIN/bifrostd.prev.gz" ] && [ ! -e "$1" ]; then _uc_src="$_ut_dir/stash.gz"; fi
+    _upd_unpack_gz "$_uc_src" "$_ut_new" && return 0
+    [ "$BIFROST_ERR" = no_space ] && _upd_stash_prev || return 1
+    if [ "$1" = "$BIFROST_BIN/bifrostd.prev.gz" ]; then _uc_src="$_ut_dir/stash.gz"; fi
+    BIFROST_ERR=""
+    _upd_unpack_gz "$_uc_src" "$_ut_new"
 }
 
 _upd_check_tmp_space() {
@@ -172,13 +210,45 @@ _upd_check_tmp_space() {
     return 0
 }
 
+# _upd_unpack_gz <gz> <dst>: unpack to dst; distinguish ENOSPC from corrupt gzip.
+_upd_unpack_gz() {
+    _ugz_src=$1
+    _ugz_dst=$2
+    if LC_ALL=C gunzip -c "$_ugz_src" 2>"$_ut_dir/unpack.err" >"$_ugz_dst"; then
+        chmod 755 "$_ugz_dst" && return 0
+        fail internal
+    elif grep -qi 'No space left on device' "$_ut_dir/unpack.err"; then
+        fail no_space
+    elif ! gunzip -c "$_ugz_src" >/dev/null 2>&1; then
+        fail hash_mismatch
+    else
+        fail internal
+    fi
+    rm -f "$_ugz_dst"
+    return 1
+}
+
 # ---- Cross-package functions (contract section 7) ----
 
 # manifest_verify <json> <sig>: 0 when any *.pub.pem in $BIFROST_KEYS verifies.
+# Checks strict DER SEQUENCE framing first because OpenSSL dgst caps signature
+# reads at EVP_PKEY_size (72 bytes for P-256), ignoring trailing bytes past 72.
 manifest_verify() {
     _mv_json=$1
     _mv_sig=$2
     if [ ! -r "$_mv_json" ] || [ ! -s "$_mv_json" ] || [ ! -r "$_mv_sig" ] || [ ! -s "$_mv_sig" ]; then
+        fail bad_signature
+        return 1
+    fi
+    _mv_sz=$(file_size "$_mv_sig" 2>/dev/null || echo 0)
+    if ! valid_uint "$_mv_sz" || [ "$_mv_sz" -lt 8 ] || [ "$_mv_sz" -gt 72 ]; then
+        fail bad_signature
+        return 1
+    fi
+    _mv_hdr=$(hexdump -n 2 -e '2/1 "%u "' "$_mv_sig" 2>/dev/null)
+    # shellcheck disable=SC2086
+    set -- $_mv_hdr
+    if [ $# -lt 2 ] || [ "${1:-}" != 48 ] || ! valid_uint "${2:-}" || [ "$2" -ge 128 ] || [ "$(($2 + 2))" -ne "$_mv_sz" ]; then
         fail bad_signature
         return 1
     fi
@@ -209,7 +279,7 @@ core_version() {
     }
 }
 
-# ---- Manifest parsing and validation ----
+# ---- Manifest parsing, validation and staging ----
 
 # _upd_parse_manifest <json> <arch> <serial_mode: gt|ge|any> <check_plugin: 0|1>
 # Sets _UM_SERIAL, _UM_TS, _UM_REV, _UM_TAG, _UM_MIN_PLUGIN,
@@ -220,23 +290,36 @@ _upd_parse_manifest() {
     _pm_smode=$3
     _pm_cplug=$4
 
-    jq -e 'type == "object" and .schema == 1 and (.assets | type == "object")' "$_pm_json" >/dev/null 2>&1 || {
-        fail bad_manifest
-        return 1
-    }
+    # Validate every asset while the original JSON types and string boundaries
+    # are available. Only the checked printable fields cross into the shell.
+    _pm_fields=$(jq -ers --arg arch "$_pm_arch" '
+        def positive: type == "number" and floor == . and . >= 1 and . <= 9999999999;
+        def version: type == "string" and test("^(0|[1-9][0-9]{0,9})(\\.(0|[1-9][0-9]{0,9})){2}\\z");
+        def digest: type == "string" and test("^[0-9a-f]{64}\\z");
+        def asset:
+            .key as $a | ($a == "arm" or $a == "arm64") and
+            (.value | (.file | type == "string" and length <= 128 and
+                test("^[A-Za-z0-9_][A-Za-z0-9._-]*\\z") and
+                (contains("..") | not) and endswith("-linux-" + $a + ".gz")) and
+                (.size | positive) and (.raw_size | positive) and
+                (.sha256 | digest) and (.raw_sha256 | digest));
+        select(length == 1) | .[0] |
+        select(type == "object" and .schema == 1 and (.serial | positive) and
+            (.tailscale | version) and (.min_plugin | version) and (.revision | positive) and
+            .tag == ("core-" + .tailscale + "-" + (.revision | tostring)) and
+            (.assets | type == "object" and all(to_entries[]; asset))) |
+        [.serial, .tailscale, .revision, .tag, .min_plugin,
+         (.assets[$arch] | .file // "-", .size // 0, .sha256 // "-", .raw_size // 0, .raw_sha256 // "-")] |
+        @tsv
+    ' "$_pm_json" 2>/dev/null) || { fail bad_manifest; return 1; }
+    read -r _UM_SERIAL _UM_TS _UM_REV _UM_TAG _UM_MIN_PLUGIN _UM_FILE _UM_SIZE _UM_SHA _UM_RAW_SIZE _UM_RAW_SHA <<EOF
+$_pm_fields
+EOF
 
-    _UM_SERIAL=$(jq -r 'if (.serial | type == "number") and (.serial == (.serial | floor)) then .serial else "" end' "$_pm_json" 2>/dev/null)
-    _UM_TS=$(jq -r 'if (.tailscale | type == "string") then .tailscale else "" end' "$_pm_json" 2>/dev/null)
-    _UM_REV=$(jq -r 'if (.revision | type == "number") and (.revision == (.revision | floor)) then .revision else "" end' "$_pm_json" 2>/dev/null)
-    _UM_TAG=$(jq -r 'if (.tag | type == "string") then .tag else "" end' "$_pm_json" 2>/dev/null)
-    _UM_MIN_PLUGIN=$(jq -r 'if (.min_plugin | type == "string") then .min_plugin else "" end' "$_pm_json" 2>/dev/null)
-
-    valid_uint "$_UM_SERIAL" && [ "$_UM_SERIAL" -ge 1 ] || { fail bad_manifest; return 1; }
-    _upd_valid_semver "$_UM_TS" || { fail bad_manifest; return 1; }
-    valid_uint "$_UM_REV" && [ "$_UM_REV" -ge 1 ] || { fail bad_manifest; return 1; }
-    _upd_valid_tag "$_UM_TAG" || { fail bad_manifest; return 1; }
-    _upd_valid_semver "$_UM_MIN_PLUGIN" || { fail bad_manifest; return 1; }
-
+    if [ "$_pm_smode" != any ]; then
+        _pm_floor=$(_upd_channel_floor) || { fail internal; return 1; }
+        [ "$_UM_SERIAL" -ge "$_pm_floor" ] || { fail old_serial; return 1; }
+    fi
     _pm_cur_serial=$(_upd_installed_serial)
     case "$_pm_smode" in
         gt)
@@ -266,22 +349,7 @@ _upd_parse_manifest() {
         fi
     fi
 
-    jq -e --arg a "$_pm_arch" '(.assets | has($a)) and (.assets[$a] | type == "object")' "$_pm_json" >/dev/null 2>&1 || {
-        fail no_arch
-        return 1
-    }
-
-    _UM_FILE=$(jq -r --arg a "$_pm_arch" 'if (.assets[$a].file | type == "string") then .assets[$a].file else "" end' "$_pm_json" 2>/dev/null)
-    _UM_SIZE=$(jq -r --arg a "$_pm_arch" 'if (.assets[$a].size | type == "number") and (.assets[$a].size == (.assets[$a].size | floor)) then .assets[$a].size else "" end' "$_pm_json" 2>/dev/null)
-    _UM_SHA=$(jq -r --arg a "$_pm_arch" 'if (.assets[$a].sha256 | type == "string") then .assets[$a].sha256 else "" end' "$_pm_json" 2>/dev/null)
-    _UM_RAW_SIZE=$(jq -r --arg a "$_pm_arch" 'if (.assets[$a].raw_size | type == "number") and (.assets[$a].raw_size == (.assets[$a].raw_size | floor)) then .assets[$a].raw_size else "" end' "$_pm_json" 2>/dev/null)
-    _UM_RAW_SHA=$(jq -r --arg a "$_pm_arch" 'if (.assets[$a].raw_sha256 | type == "string") then .assets[$a].raw_sha256 else "" end' "$_pm_json" 2>/dev/null)
-
-    _upd_valid_asset_file "$_UM_FILE" || { fail bad_manifest; return 1; }
-    valid_uint "$_UM_SIZE" && [ "$_UM_SIZE" -gt 0 ] || { fail bad_manifest; return 1; }
-    _upd_valid_sha256 "$_UM_SHA" || { fail bad_manifest; return 1; }
-    valid_uint "$_UM_RAW_SIZE" && [ "$_UM_RAW_SIZE" -gt 0 ] || { fail bad_manifest; return 1; }
-    _upd_valid_sha256 "$_UM_RAW_SHA" || { fail bad_manifest; return 1; }
+    [ "$_UM_FILE" != - ] || { fail no_arch; return 1; }
 
     _UM_LATEST_JSON=$(jq -cn \
         --arg ts "$_UM_TS" \
@@ -295,11 +363,25 @@ _upd_parse_manifest() {
     return 0
 }
 
-_upd_write_installed_manifest() {
-    _wm_src=$1
-    _wm_arch=$2
-    jq --arg arch "$_wm_arch" '.arch = $arch | .assets = {($arch): .assets[$arch]}' "$_wm_src" |
-        json_write "$BIFROST_MANIFEST"
+# Write the installed representation to a staging file on its destination FS.
+_upd_stage_manifest() {
+    { jq -ec --arg arch "$2" '.arch = $arch | .assets = {($arch): .assets[$arch]}' "$1" >"$3" &&
+        chmod 644 "$3"; } || { fail internal; return 1; }
+}
+
+# Back up $BIFROST_CORE to bifrostd.old without removing $BIFROST_CORE so a
+# power loss never leaves the router without a core binary.
+_upd_backup_core_old() {
+    rm -f "$BIFROST_BIN/bifrostd.old"
+    if ln "$BIFROST_CORE" "$BIFROST_BIN/bifrostd.old" 2>/dev/null; then
+        return 0
+    fi
+    if cp -p "$BIFROST_CORE" "$BIFROST_BIN/bifrostd.old" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$BIFROST_BIN/bifrostd.old"
+    fail internal
+    return 1
 }
 
 # ---- Download helper (PLAN 12.7) ----
@@ -310,13 +392,16 @@ _upd_download() {
     _dl_mir=$(cfg bifrost_mirror)
     _dl_eff="${_dl_mir}${_dl_url}"
     rm -f "$_dl_out"
-    if ! run_timeout "$((BIFROST_UPDATE_MAX_TIME + 15))" \
+    _dl_rc=0
+    run_timeout "$((BIFROST_UPDATE_MAX_TIME + 15))" \
         curl -fsSL \
         --connect-timeout "$BIFROST_UPDATE_CONNECT_TIMEOUT" \
         --max-time "$BIFROST_UPDATE_MAX_TIME" \
-        --retry "$BIFROST_UPDATE_RETRY" \
-        -o "$_dl_out" "$_dl_eff" 2>/dev/null; then
+        --retry "$BIFROST_UPDATE_RETRY" --max-filesize "${3:-$BIFROST_UPDATE_METADATA_BYTES}" \
+        -o "$_dl_out" "$_dl_eff" 2>/dev/null || _dl_rc=$?
+    if [ "$_dl_rc" -ne 0 ]; then
         rm -f "$_dl_out"
+        if [ "$_dl_rc" = 63 ] && [ -n "${3:-}" ]; then fail hash_mismatch; return 1; fi
         log update "download failed: $_dl_eff"
         fail download_failed
         return 1
@@ -336,66 +421,71 @@ _upd_download() {
 # Unpack, verify raw_size/raw_sha256, test --version, swap into $BIFROST_CORE.
 # Caller must have stopped the daemon. Never starts or stops the daemon.
 core_install_file() {
+    daemon_running && { fail already_running; return 1; }
+    core_recover stopped && _upd_transaction _upd_install_package "$@"
+}
+
+_upd_install_package() {
     _ci_gz=$1
     _ci_man=$2
     _ci_arch=$3
-
-    if daemon_running; then
-        fail already_running
-        return 1
-    fi
     _upd_arch_supported "$_ci_arch" || return 1
-    if [ ! -r "$_ci_gz" ] || [ ! -r "$_ci_man" ]; then
-        fail bad_manifest
-        return 1
-    fi
-
+    [ -r "$_ci_gz" ] && [ -r "$_ci_man" ] || { fail bad_manifest; return 1; }
     _upd_parse_manifest "$_ci_man" "$_ci_arch" any 0 || return 1
 
-    # Upgrade: do not downgrade if installed core has a strictly higher serial.
-    if [ -x "$BIFROST_CORE" ] && [ -r "$BIFROST_MANIFEST" ]; then
-        _ci_cur_ser=$(_upd_installed_serial)
-        if [ "$_ci_cur_ser" -gt "$_UM_SERIAL" ]; then
-            log update "keeping newer installed core (serial $_ci_cur_ser > $_UM_SERIAL)"
-            return 0
+    if [ -x "$BIFROST_CORE" ] && [ "$(_upd_installed_serial)" -ge "$_UM_SERIAL" ]; then
+        ln -sf bifrostd "$BIFROST_CLI" || { fail internal; return 1; }
+        return 0
+    fi
+    _upd_unpack_candidate "$_ci_gz" "$_UM_RAW_SIZE" &&
+        _upd_check_raw "$_ut_new" &&
+        _upd_test_version "$_ut_new" &&
+        _upd_stage_manifest "$_ci_man" "$_ci_arch" "$_ut_manifest" &&
+        _upd_begin_swap package 0 && _upd_replace && _upd_mark committed
+}
+
+_upd_check_raw() {
+    [ "$(file_size "$1")" = "$_UM_RAW_SIZE" ] &&
+        [ "$(sha256_file "$1")" = "$_UM_RAW_SHA" ] || { fail hash_mismatch; return 1; }
+}
+
+_upd_test_version() {
+    [ "$(_upd_bin_version "$1")" = "$_UM_TS" ] || { fail core_test_failed; return 1; }
+}
+
+# The caller holds the state lock. The phase and rollback inputs live on
+# flash. Flush data before publishing each phase and before consuming backups.
+_upd_mark() {
+    sync
+    if ! atomic_write "$_ut_j/phase" 600 <<EOF
+$1
+EOF
+    then fail internal; return 1; fi
+    sync
+}
+
+_upd_begin_swap() {
+    printf '%s\n' "$1" >"$_ut_j/action" || { fail internal; return 1; }
+    if [ -f "$BIFROST_MANIFEST" ]; then
+        cp -p "$BIFROST_MANIFEST" "$_ut_j/installed.json" || { fail internal; return 1; }
+    fi
+    if [ -f "$BIFROST_CORE" ]; then _upd_backup_core_old || return 1; fi
+    if [ "$2" = 1 ]; then
+        printf '%s\n' "$_sv_state" >"$_ut_j/running" || { fail internal; return 1; }
+        if [ -f "$BIFROST_STATE/tailscaled.state" ]; then
+            (umask 077 && cat "$BIFROST_STATE/tailscaled.state" >"$_ut_j/state") || { fail internal; return 1; }
         fi
     fi
+    _upd_mark stopping
+}
 
-    _upd_check_bin_space "$_UM_RAW_SIZE" allow_drop || return 1
-
-    _ci_new="$BIFROST_BIN/bifrostd.new"
-    rm -f "$_ci_new"
-    if ! gunzip -c "$_ci_gz" >"$_ci_new" 2>/dev/null; then
-        rm -f "$_ci_new"
-        fail no_space
-        return 1
-    fi
-    chmod 755 "$_ci_new"
-
-    _ci_size=$(file_size "$_ci_new" 2>/dev/null || echo 0)
-    _ci_sha=$(sha256_file "$_ci_new" 2>/dev/null || echo "")
-    if [ "$_ci_size" != "$_UM_RAW_SIZE" ] || [ "$_ci_sha" != "$_UM_RAW_SHA" ]; then
-        rm -f "$_ci_new"
-        fail hash_mismatch
-        return 1
-    fi
-
-    _ci_ver=$(_upd_bin_version "$_ci_new" 2>/dev/null || echo "")
-    if [ "$_ci_ver" != "$_UM_TS" ]; then
-        rm -f "$_ci_new"
-        fail core_test_failed
-        return 1
-    fi
-
-    if ! mv -f "$_ci_new" "$BIFROST_CORE"; then
-        rm -f "$_ci_new"
+_upd_replace() {
+    _upd_mark replacing || return 1
+    if ! ln -sf bifrostd "$BIFROST_CLI" || ! mv -f "$_ut_new" "$BIFROST_CORE" ||
+        ! mv -f "$_ut_manifest" "$BIFROST_MANIFEST"; then
         fail internal
         return 1
     fi
-    ln -sf bifrostd "$BIFROST_CLI"
-    _upd_write_installed_manifest "$_ci_man" "$_ci_arch" || return 1
-    log update "installed core $_UM_TS (serial=$_UM_SERIAL arch=$_ci_arch)"
-    return 0
 }
 
 # ---- Shared swap + verify + auto-revert flow (PLAN 12.4 steps 7-11) ----
@@ -417,134 +507,164 @@ _upd_verify_running() {
     done
 }
 
-# _upd_swap_and_verify <new_bin> <upd_dir> <save_prev: 0|1> <new_manifest_src> <new_arch>
+# Never replace files after a stop error. A failed firewall/DNS cleanup can
+# leave the daemon stopped, so restore its original availability in either case.
+_upd_stop() {
+    daemon_stop && return 0
+    _us_error=${BIFROST_ERR:-internal}
+    daemon_start || return 1
+    fail "$_us_error"
+}
+
+_upd_restore_file() {
+    if [ -f "$1" ]; then
+        cmp -s "$1" "$2" || atomic_write "$2" "$3" <"$1"
+    else
+        rm -f "$2"
+    fi
+}
+
+# Keep backup inputs until every restore has succeeded. A second recovery is
+# safe after interruption even between restoring the executable and its metadata.
+_upd_restore_swap() {
+    _rr_error=""
+    if daemon_running; then _upd_stop || return 1; fi
+    if [ -f "$BIFROST_BIN/bifrostd.old" ]; then
+        if [ ! "$BIFROST_BIN/bifrostd.old" -ef "$BIFROST_CORE" ]; then
+            rm -f "$_ut_new"
+            if ! { ln "$BIFROST_BIN/bifrostd.old" "$_ut_new" 2>/dev/null ||
+                    cp -p "$BIFROST_BIN/bifrostd.old" "$_ut_new"; } ||
+                ! mv -f "$_ut_new" "$BIFROST_CORE"; then _rr_error=internal; fi
+        fi
+    else
+        rm -f "$BIFROST_CORE" || _rr_error=internal
+    fi
+    if [ -z "$_rr_error" ]; then
+        _upd_restore_file "$_ut_j/installed.json" "$BIFROST_MANIFEST" 644 || _rr_error=internal
+    fi
+    if [ -f "$_ut_j/running" ]; then
+        _upd_restore_file "$_ut_j/state" "$BIFROST_STATE/tailscaled.state" 600 || _rr_error=state_not_writable
+        if [ "${1:-}" != stopped ]; then
+            daemon_start || return 1
+            _upd_verify_running "$(cat "$_ut_j/running")" || { fail start_failed; return 1; }
+        fi
+    fi
+    [ -z "$_rr_error" ] || { fail "$_rr_error"; return 1; }
+}
+
 _upd_swap_and_verify() {
-    _sv_new=$1
-    _sv_dir=$2
-    _sv_save_prev=$3
-    _sv_new_man=$4
-    _sv_new_arch=$5
-
     job_phase update snapshot 75
-    _sv_was_running=0
-    _sv_prev_bstate=""
+    _sv_running=0
     if daemon_running; then
-        _sv_was_running=1
-        _sv_prev_bstate=$(backend_state 2>/dev/null || echo "")
+        _sv_running=1
+        _sv_state=$(backend_state) || { fail cli_failed; return 1; }
     fi
-
-    _sv_snap=""
-    if [ -f "$BIFROST_STATE/tailscaled.state" ]; then
-        _sv_snap="$_sv_dir/tailscaled.state.snap"
-        if ! cp "$BIFROST_STATE/tailscaled.state" "$_sv_snap"; then
-            rm -f "$_sv_new"
-            fail internal
-            return 1
-        fi
-        chmod 600 "$_sv_snap"
-    fi
-
-    _sv_old_man=""
-    if [ -r "$BIFROST_MANIFEST" ]; then
-        _sv_old_man="$_sv_dir/old_manifest.json"
-        cp "$BIFROST_MANIFEST" "$_sv_old_man"
-    fi
-
+    _upd_begin_swap "$1" "$_sv_running" || return 1
     job_phase update swap 80
-    if [ "$_sv_was_running" = 1 ]; then
-        if ! daemon_stop; then
-            rm -f "$_sv_new"
-            fail internal
-            return 1
-        fi
-    fi
-
-    _sv_had_old=0
-    if [ -f "$BIFROST_CORE" ]; then
-        _sv_had_old=1
-        if ! mv -f "$BIFROST_CORE" "$BIFROST_BIN/bifrostd.old"; then
-            rm -f "$_sv_new"
-            [ "$_sv_was_running" = 1 ] && daemon_start
-            fail internal
-            return 1
-        fi
-    fi
-
-    if ! mv -f "$_sv_new" "$BIFROST_CORE"; then
-        [ "$_sv_had_old" = 1 ] && mv -f "$BIFROST_BIN/bifrostd.old" "$BIFROST_CORE"
-        rm -f "$_sv_new"
-        [ "$_sv_was_running" = 1 ] && daemon_start
-        fail internal
-        return 1
-    fi
-    ln -sf bifrostd "$BIFROST_CLI"
-
-    if [ "$_sv_was_running" = 1 ]; then
+    if [ "$_sv_running" = 1 ]; then daemon_stop || return 1; fi
+    _upd_replace || return 1
+    if [ "$_sv_running" = 1 ]; then
         job_phase update verify_running 85
-        _sv_ok=0
-        if daemon_start && _upd_verify_running "$_sv_prev_bstate"; then
-            _sv_ok=1
-        fi
-        if [ "$_sv_ok" != 1 ]; then
-            log update "new core failed post-swap verification, reverting"
+        if ! daemon_start || ! _upd_verify_running "$_sv_state"; then
             job_phase update rollback 90
-            daemon_stop
-            if [ "$_sv_had_old" = 1 ]; then
-                mv -f "$BIFROST_BIN/bifrostd.old" "$BIFROST_CORE"
-            else
-                rm -f "$BIFROST_CORE"
-            fi
-            if [ -n "$_sv_snap" ] && [ -f "$_sv_snap" ]; then
-                cp -f "$_sv_snap" "$BIFROST_STATE/tailscaled.state"
-                chmod 600 "$BIFROST_STATE/tailscaled.state"
-            fi
-            daemon_start
             fail update_verify_failed
             return 1
         fi
     fi
-
     job_phase update finalize 95
-    if [ -n "$_sv_new_man" ] && [ -r "$_sv_new_man" ]; then
-        _upd_write_installed_manifest "$_sv_new_man" "$_sv_new_arch" || return 1
-    fi
+    _upd_mark committed
+}
 
-    _sv_kept_prev=false
-    if [ "$_sv_save_prev" = 1 ] && [ "$_sv_had_old" = 1 ] && [ -f "$BIFROST_BIN/bifrostd.old" ]; then
-        if gzip -c "$BIFROST_BIN/bifrostd.old" >"$_sv_dir/bifrostd.prev.gz" 2>/dev/null; then
-            rm -f "$BIFROST_BIN/bifrostd.old"
-            _sv_pgz_size=$(file_size "$_sv_dir/bifrostd.prev.gz" 2>/dev/null || echo 0)
-            _sv_pgz_kb=$(_upd_bytes_to_kb "$_sv_pgz_size")
-            _sv_avail=$(_upd_free_kb "$BIFROST_BIN" 2>/dev/null || echo "")
-            if [ -z "$_sv_avail" ] || [ "$_sv_avail" -ge "$_sv_pgz_kb" ]; then
-                if cp "$_sv_dir/bifrostd.prev.gz" "$BIFROST_BIN/bifrostd.prev.gz.tmp.$$" 2>/dev/null &&
-                    mv -f "$BIFROST_BIN/bifrostd.prev.gz.tmp.$$" "$BIFROST_BIN/bifrostd.prev.gz"; then
-                    if [ -n "$_sv_old_man" ] && [ -r "$_sv_old_man" ]; then
-                        cp "$_sv_old_man" "$BIFROST_BIN/bifrostd.prev.json.tmp.$$" 2>/dev/null &&
-                            mv -f "$BIFROST_BIN/bifrostd.prev.json.tmp.$$" "$BIFROST_BIN/bifrostd.prev.json"
-                    else
-                        rm -f "$BIFROST_BIN/bifrostd.prev.json"
-                    fi
-                    _sv_kept_prev=true
-                else
-                    rm -f "$BIFROST_BIN/bifrostd.prev.gz.tmp.$$"
-                fi
+# A committed update may release the old inode and previous archive to make
+# room. Re-read df after the obsolete archive has actually been unlinked.
+_upd_finish_prev() {
+    _fp_action=$(cat "$_ut_j/action") || return 1
+    [ "$_fp_action" != package ] || return 0
+    _fp_kept=false
+    _fp_gz="$BIFROST_BIN/bifrostd.prev.gz"
+    _fp_man="$BIFROST_BIN/bifrostd.prev.json"
+    if [ "$_fp_action" = keep ] && [ -s "$_ut_j/installed.json" ] &&
+        jq -e '.serial > 0' "$_ut_j/installed.json" >/dev/null; then
+        if [ -f "$BIFROST_BIN/bifrostd.old" ]; then
+            rm -f "$_ut_dir/previous.gz"
+            if gzip -c "$BIFROST_BIN/bifrostd.old" >"$_ut_dir/previous.gz"; then
+                rm -f "$_fp_gz" "$_fp_man" "$BIFROST_BIN/bifrostd.old" || return 1
             else
-                log update "not enough space to keep prev.gz (avail=${_sv_avail}KB need=${_sv_pgz_kb}KB)"
-                rm -f "$BIFROST_BIN/bifrostd.prev.gz" "$BIFROST_BIN/bifrostd.prev.json"
+                rm -f "$_ut_dir/previous.gz"
             fi
-        else
-            rm -f "$BIFROST_BIN/bifrostd.old" "$BIFROST_BIN/bifrostd.prev.gz" "$BIFROST_BIN/bifrostd.prev.json"
+        elif [ -s "$_fp_gz" ] && cmp -s "$_ut_j/installed.json" "$_fp_man"; then
+            # Archive is published last. Replay after its rename preserves it.
+            _fp_kept=true
         fi
-    else
-        rm -f "$BIFROST_BIN/bifrostd.old"
-        if [ "$_sv_save_prev" = 0 ]; then
-            rm -f "$BIFROST_BIN/bifrostd.prev.gz" "$BIFROST_BIN/bifrostd.prev.json"
+        if [ "$_fp_kept" = false ] && [ -s "$_ut_dir/previous.gz" ]; then
+            _fp_free=$(_upd_free_kb "$BIFROST_BIN") || _fp_free=""
+            _fp_bytes=$(($(file_size "$_ut_dir/previous.gz") + $(file_size "$_ut_j/installed.json")))
+            if { [ -z "$_fp_free" ] || [ "$_fp_free" -ge "$(_upd_bytes_to_kb "$_fp_bytes")" ]; } &&
+                _upd_publish_prev "$_ut_dir/previous.gz" "$_ut_j/installed.json"; then _fp_kept=true; fi
         fi
     fi
-
-    job_data update "{\"kept_prev\":$_sv_kept_prev}"
+    if [ "$_fp_kept" = false ]; then
+        rm -f "$_fp_gz" "$_fp_man" || return 1
+    fi
+    if [ -f "$(job_file update)" ]; then job_data update "{\"kept_prev\":$_fp_kept}"; fi
     return 0
+}
+
+_upd_paths() {
+    _ut_j="$BIFROST_HOME/.core-update"
+    _ut_dir="$BIFROST_RUN/update-work"
+    _ut_new="$BIFROST_BIN/bifrostd.new"
+    _ut_manifest="$_ut_j/candidate.json"
+}
+
+# Public recovery entry for callers holding the state lock. Every core job and
+# package install invokes it before selecting the installed arch or serial.
+core_recover() {
+    _upd_paths
+    [ -d "$_ut_j" ] || [ -d "$_ut_dir" ] || return 0
+    _cr_phase=""
+    if [ -f "$_ut_j/phase" ]; then _cr_phase=$(cat "$_ut_j/phase") || { fail internal; return 1; }; fi
+    case "$_cr_phase" in
+        replacing) _upd_restore_swap "${1:-}" || return 1 ;;
+        stopping)
+            if [ -f "$_ut_j/running" ] && [ "${1:-}" != stopped ]; then daemon_start || return 1; fi
+            ;;
+        committed)
+            { mkdir -p "$_ut_dir" && _upd_finish_prev; } || { fail internal; return 1; }
+            ;;
+        '') ;;
+        *) fail internal; return 1 ;;
+    esac
+    rm -f "$_ut_new" || { fail internal; return 1; }
+    if [ "$_cr_phase" != committed ] && [ -f "$_ut_dir/stash.gz" ] && [ ! -f "$BIFROST_BIN/bifrostd.prev.gz" ]; then
+        _upd_publish_prev "$_ut_dir/stash.gz" "$_ut_dir/stash.json" || { fail internal; return 1; }
+    fi
+    rm -f "$_ut_dir/stash.gz" "$_ut_dir/stash.json" || { fail internal; return 1; }
+    # Disarm durably before deleting the inputs needed to replay the journal.
+    if [ -f "$_ut_j/phase" ]; then sync; rm -f "$_ut_j/phase" || { fail internal; return 1; }; sync; fi
+    rm -f "$BIFROST_BIN/bifrostd.old" "$BIFROST_BIN"/bifrostd.prev.*.tmp.[0-9]* \
+        "$BIFROST_MANIFEST".tmp.[0-9]* "$BIFROST_STATE"/tailscaled.state.tmp.[0-9]* || { fail internal; return 1; }
+    rm -rf "$_ut_dir" "$_ut_j" || { fail internal; return 1; }
+}
+
+_upd_transaction() {
+    _upd_paths
+    { mkdir -p "$BIFROST_RUN" "$BIFROST_HOME" &&
+        (umask 077 && mkdir "$_ut_j" "$_ut_dir"); } || { fail internal; return 1; }
+    _ut_error=""
+    "$@" || _ut_error=${BIFROST_ERR:-internal}
+    core_recover || { log update "core recovery pending: ${BIFROST_ERR:-internal}"; return 1; }
+    [ -z "$_ut_error" ] || { fail "$_ut_error"; return 1; }
+}
+
+_upd_interrupted() {
+    trap '' HUP INT TERM
+    _ui_error=internal
+    core_recover || _ui_error=${BIFROST_ERR:-internal}
+    rm -rf "$BIFROST_RUN/update"
+    job_end update fail "$_ui_error"
+    if [ "$(cat "$BIFROST_RUN/lock.state/pid" 2>/dev/null)" = "$$" ]; then lock_release state; fi
+    exit 1
 }
 
 # ---- Job body (contract section 4 & 6.2) ----
@@ -554,7 +674,7 @@ _upd_job_check() {
     rm -rf "$_jc_dir"
     mkdir -p "$_jc_dir" || { fail internal; return 1; }
 
-    job_data update '{"action":"check","latest":null,"kept_prev":false}'
+    job_data update '{"action":"check","latest":null,"up_to_date":false,"kept_prev":false}'
     _jc_arch=$(_upd_installed_arch)
     _upd_arch_supported "$_jc_arch" || { rm -rf "$_jc_dir"; return 1; }
 
@@ -577,11 +697,13 @@ _upd_job_check() {
         return 1
     fi
 
-    atomic_write "$BIFROST_RUN/core_latest.json" 644 <"$_jc_json" || {
+    if ! _upd_remember_serial "$_UM_SERIAL"; then rm -rf "$_jc_dir"; return 1; fi
+    if ! atomic_write "$BIFROST_RUN/core_latest.json" 644 <"$_jc_json"; then
+        rm -f "$BIFROST_RUN/core_latest.json.tmp.$$"
         rm -rf "$_jc_dir"
         fail internal
         return 1
-    }
+    fi
 
     _jc_cur_ser=$(_upd_installed_serial)
     if [ "$_UM_SERIAL" -gt "$_jc_cur_ser" ]; then
@@ -600,12 +722,8 @@ _upd_job_check() {
 _upd_job_install_remote() {
     _jr_action=$1
     _jr_arch=$2
-    _jr_dir="$BIFROST_RUN/update"
-    rm -rf "$_jr_dir"
-    mkdir -p "$_jr_dir" || { fail internal; return 1; }
-
-    job_data update "{\"action\":\"$_jr_action\",\"latest\":null,\"kept_prev\":false}"
-    _upd_arch_supported "$_jr_arch" || { rm -rf "$_jr_dir"; return 1; }
+    job_data update "{\"action\":\"$_jr_action\",\"latest\":null,\"up_to_date\":false,\"kept_prev\":false}"
+    _upd_arch_supported "$_jr_arch" || return 1
 
     _jr_cur_arch=$(_upd_installed_arch)
     if [ "$_jr_action" = arch ] && [ "$_jr_arch" != "$_jr_cur_arch" ]; then
@@ -615,39 +733,36 @@ _upd_job_install_remote() {
     fi
 
     job_phase update manifest 5
-    _jr_json="$_jr_dir/core.json"
-    _jr_sig="$_jr_dir/core.json.sig"
+    _jr_json="$_ut_dir/core.json"
+    _jr_sig="$_ut_dir/core.json.sig"
     if ! _upd_download "$BIFROST_CHANNEL_URL" "$_jr_json" ||
         ! _upd_download "${BIFROST_CHANNEL_URL}.sig" "$_jr_sig"; then
-        rm -rf "$_jr_dir"
         return 1
     fi
 
     job_phase update verify_manifest 15
     if ! manifest_verify "$_jr_json" "$_jr_sig"; then
-        rm -rf "$_jr_dir"
         return 1
     fi
     if ! _upd_parse_manifest "$_jr_json" "$_jr_arch" "$_jr_smode" 1; then
-        rm -rf "$_jr_dir"
         return 1
     fi
 
-    atomic_write "$BIFROST_RUN/core_latest.json" 644 <"$_jr_json"
+    _upd_remember_serial "$_UM_SERIAL" || return 1
     _jr_ldata=$(jq -cn --argjson latest "$_UM_LATEST_JSON" '{latest:$latest}')
     job_data update "$_jr_ldata"
 
+    # Space phase: verify runtime dir fits .gz; never delete prev.gz before
+    # download and hash verification succeed (PLAN 12.6).
     job_phase update space 20
-    if ! _upd_check_tmp_space "$_UM_SIZE" || ! _upd_check_bin_space "$_UM_RAW_SIZE" allow_drop; then
-        rm -rf "$_jr_dir"
+    if ! _upd_check_tmp_space "$_UM_SIZE"; then
         return 1
     fi
 
     job_phase update download 30
-    _jr_gz="$_jr_dir/core.gz"
+    _jr_gz="$_ut_dir/core.gz"
     _jr_url="$BIFROST_RELEASE_BASE/$_UM_TAG/$_UM_FILE"
-    if ! _upd_download "$_jr_url" "$_jr_gz"; then
-        rm -rf "$_jr_dir"
+    if ! _upd_download "$_jr_url" "$_jr_gz" "$_UM_SIZE"; then
         return 1
     fi
 
@@ -656,145 +771,70 @@ _upd_job_install_remote() {
     _jr_got_sha=$(sha256_file "$_jr_gz" 2>/dev/null || echo "")
     if [ "$_jr_got_size" != "$_UM_SIZE" ] || [ "$_jr_got_sha" != "$_UM_SHA" ]; then
         log update "gz hash/size mismatch: size=$_jr_got_size/$_UM_SIZE"
-        rm -rf "$_jr_dir"
         fail hash_mismatch
         return 1
     fi
 
     job_phase update unpack 60
-    _jr_new="$BIFROST_BIN/bifrostd.new"
-    rm -f "$_jr_new"
-    if ! gunzip -c "$_jr_gz" >"$_jr_new" 2>/dev/null; then
-        rm -f "$_jr_new"
-        rm -rf "$_jr_dir"
-        fail no_space
-        return 1
-    fi
-    chmod 755 "$_jr_new"
-
-    _jr_raw_size=$(file_size "$_jr_new" 2>/dev/null || echo 0)
-    _jr_raw_sha=$(sha256_file "$_jr_new" 2>/dev/null || echo "")
-    if [ "$_jr_raw_size" != "$_UM_RAW_SIZE" ] || [ "$_jr_raw_sha" != "$_UM_RAW_SHA" ]; then
-        rm -f "$_jr_new"
-        rm -rf "$_jr_dir"
-        fail hash_mismatch
-        return 1
-    fi
+    _upd_unpack_candidate "$_jr_gz" "$_UM_RAW_SIZE" &&
+        _upd_check_raw "$_ut_new" || return 1
 
     job_phase update test 70
-    _jr_ver=$(_upd_bin_version "$_jr_new" 2>/dev/null || echo "")
-    if [ "$_jr_ver" != "$_UM_TS" ]; then
-        rm -f "$_jr_new"
-        rm -rf "$_jr_dir"
-        fail core_test_failed
-        return 1
+    _upd_test_version "$_ut_new" &&
+        _upd_stage_manifest "$_jr_json" "$_jr_arch" "$_ut_manifest" &&
+        _upd_swap_and_verify keep || return 1
+    if ! atomic_write "$BIFROST_RUN/core_latest.json" 644 <"$_jr_json"; then
+        log update "core installed; latest manifest cache write failed"
+        rm -f "$BIFROST_RUN/core_latest.json.tmp.$$"
     fi
-
-    if ! _upd_swap_and_verify "$_jr_new" "$_jr_dir" 1 "$_jr_json" "$_jr_arch"; then
-        rm -f "$_jr_new"
-        rm -rf "$_jr_dir"
-        return 1
-    fi
-
-    rm -rf "$_jr_dir"
-    log update "$_jr_action complete: $_UM_TS (serial=$_UM_SERIAL arch=$_jr_arch)"
     return 0
 }
 
 _upd_job_rollback() {
-    _rb_dir="$BIFROST_RUN/update"
-    rm -rf "$_rb_dir"
-    mkdir -p "$_rb_dir" || { fail internal; return 1; }
-
-    job_data update '{"action":"rollback","latest":null,"kept_prev":false}'
-    _rb_prev_gz="$BIFROST_BIN/bifrostd.prev.gz"
-    _rb_prev_man="$BIFROST_BIN/bifrostd.prev.json"
-    if [ ! -r "$_rb_prev_gz" ] || [ ! -s "$_rb_prev_gz" ]; then
-        rm -rf "$_rb_dir"
-        fail no_prev
-        return 1
+    job_data update '{"action":"rollback","latest":null,"up_to_date":false,"kept_prev":false}'
+    _rb_gz="$BIFROST_BIN/bifrostd.prev.gz"
+    _rb_man="$BIFROST_BIN/bifrostd.prev.json"
+    [ -s "$_rb_gz" ] || { fail no_prev; return 1; }
+    _upd_remember_serial "$(_upd_installed_serial)" || return 1
+    if [ -e "$_rb_man" ] || [ -L "$_rb_man" ]; then
+        { _rb_arch=$(jq -er '.arch // (.assets | keys | select(length == 1) | first)' "$_rb_man" 2>/dev/null) &&
+            valid_arch "$_rb_arch"; } || { fail bad_manifest; return 1; }
+        _upd_parse_manifest "$_rb_man" "$_rb_arch" any 0 && _upd_arch_supported "$_rb_arch" &&
+            _upd_stage_manifest "$_rb_man" "$_rb_arch" "$_ut_manifest" || return 1
+        job_phase update unpack 50
+        _upd_unpack_candidate "$_rb_gz" "$_UM_RAW_SIZE" && _upd_check_raw "$_ut_new" || return 1
+        job_phase update test 65
+        _upd_test_version "$_ut_new" || return 1
+    else
+        _rb_arch=$(_upd_installed_arch)
+        _upd_arch_supported "$_rb_arch" || return 1
+        job_phase update unpack 50
+        _upd_unpack_candidate "$_rb_gz" 0 || return 1
+        job_phase update test 65
+        _rb_ver=$(_upd_bin_version "$_ut_new") || { fail core_test_failed; return 1; }
+        { jq -cn --arg ts "$_rb_ver" --arg a "$_rb_arch" \
+            '{schema:1, tailscale:$ts, arch:$a, serial:0, revision:0, assets:{}}' \
+            >"$_ut_manifest" && chmod 644 "$_ut_manifest"; } || { fail internal; return 1; }
     fi
-
-    _rb_has_man=0
-    _rb_arch=$(_upd_installed_arch)
-    _rb_need_bytes=0
-    if [ -r "$_rb_prev_man" ]; then
-        _rb_arch_m=$(jq -r 'if (.arch | type == "string") then .arch elif (.assets | type == "object") and ((.assets | length) == 1) then (.assets | keys[0]) else "" end' "$_rb_prev_man" 2>/dev/null)
-        valid_arch "$_rb_arch_m" && _rb_arch=$_rb_arch_m
-        if _upd_parse_manifest "$_rb_prev_man" "$_rb_arch" any 0; then
-            _rb_has_man=1
-            _rb_need_bytes=$_UM_RAW_SIZE
-        fi
-    fi
-    if [ "$_rb_need_bytes" -eq 0 ]; then
-        _rb_gz_sz=$(file_size "$_rb_prev_gz" 2>/dev/null || echo 0)
-        _rb_need_bytes=$((_rb_gz_sz * 3))
-    fi
-
-    job_phase update space 20
-    if ! _upd_check_bin_space "$_rb_need_bytes" keep_prev; then
-        rm -rf "$_rb_dir"
-        return 1
-    fi
-
-    job_phase update unpack 50
-    _rb_new="$BIFROST_BIN/bifrostd.new"
-    rm -f "$_rb_new"
-    if ! gunzip -c "$_rb_prev_gz" >"$_rb_new" 2>/dev/null; then
-        rm -f "$_rb_new"
-        rm -rf "$_rb_dir"
-        fail no_space
-        return 1
-    fi
-    chmod 755 "$_rb_new"
-
-    if [ "$_rb_has_man" = 1 ]; then
-        _rb_raw_size=$(file_size "$_rb_new" 2>/dev/null || echo 0)
-        _rb_raw_sha=$(sha256_file "$_rb_new" 2>/dev/null || echo "")
-        if [ "$_rb_raw_size" != "$_UM_RAW_SIZE" ] || [ "$_rb_raw_sha" != "$_UM_RAW_SHA" ]; then
-            rm -f "$_rb_new"
-            rm -rf "$_rb_dir"
-            fail hash_mismatch
-            return 1
-        fi
-    fi
-
-    job_phase update test 65
-    _rb_ver=$(_upd_bin_version "$_rb_new" 2>/dev/null || echo "")
-    if [ -z "$_rb_ver" ]; then
-        rm -f "$_rb_new"
-        rm -rf "$_rb_dir"
-        fail core_test_failed
-        return 1
-    fi
-    if [ "$_rb_has_man" = 1 ] && [ "$_rb_ver" != "$_UM_TS" ]; then
-        rm -f "$_rb_new"
-        rm -rf "$_rb_dir"
-        fail core_test_failed
-        return 1
-    fi
-
-    _rb_man_arg=""
-    [ "$_rb_has_man" = 1 ] && _rb_man_arg=$_rb_prev_man
-    if ! _upd_swap_and_verify "$_rb_new" "$_rb_dir" 0 "$_rb_man_arg" "$_rb_arch"; then
-        rm -f "$_rb_new"
-        rm -rf "$_rb_dir"
-        return 1
-    fi
-
-    rm -rf "$_rb_dir"
-    log update "rollback complete: $_rb_ver"
-    return 0
+    _upd_swap_and_verify consume
 }
 
 job_update() {
-    case "${1:-}" in
-        check) _upd_job_check ;;
-        update) _upd_job_install_remote update "$(_upd_installed_arch)" ;;
-        arch) _upd_job_install_remote arch "${2:-}" ;;
-        rollback) _upd_job_rollback ;;
-        *) fail invalid_param ;;
-    esac
+    trap '_upd_interrupted' TERM INT HUP
+    _ju_rc=0
+    if core_recover; then
+        case "${1:-}" in
+            check) _upd_job_check || _ju_rc=1 ;;
+            update) _upd_transaction _upd_job_install_remote update "$(_upd_installed_arch)" || _ju_rc=1 ;;
+            arch) _upd_transaction _upd_job_install_remote arch "${2:-}" || _ju_rc=1 ;;
+            rollback) _upd_transaction _upd_job_rollback || _ju_rc=1 ;;
+            *) fail invalid_param; _ju_rc=1 ;;
+        esac
+    else
+        _ju_rc=1
+    fi
+    trap - TERM INT HUP
+    return "$_ju_rc"
 }
 
 # ---- Page actions (contract section 4) ----
@@ -808,7 +848,7 @@ act_core_update() {
 }
 
 act_core_rollback() {
-    if [ ! -r "$BIFROST_BIN/bifrostd.prev.gz" ] || [ ! -s "$BIFROST_BIN/bifrostd.prev.gz" ]; then
+    if [ ! -d "$BIFROST_HOME/.core-update" ] && [ ! -s "$BIFROST_BIN/bifrostd.prev.gz" ]; then
         fail no_prev
         return 1
     fi

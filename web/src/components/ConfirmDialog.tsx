@@ -16,7 +16,6 @@ export interface ConfirmDialogProps {
   confirmLabel?: string;
   confirmVariant?: "primary" | "destructive";
   disruptive?: boolean;
-  loading?: boolean;
   onConfirm: () => void | Promise<void>;
 }
 
@@ -29,7 +28,6 @@ export function ConfirmDialog({
   confirmLabel,
   confirmVariant = "primary",
   disruptive = false,
-  loading = false,
   onConfirm,
 }: ConfirmDialogProps) {
   const { overlays, t } = useApp();
@@ -66,7 +64,7 @@ export function ConfirmDialog({
           <div className="flex flex-wrap justify-end gap-2 pt-0.5">
             <Popover.Close
               render={(props) => (
-                <Button {...props} size="sm" variant="secondary" disabled={loading}>
+                <Button {...props} size="sm" variant="secondary">
                   {t("common.cancel")}
                 </Button>
               )}
@@ -74,8 +72,6 @@ export function ConfirmDialog({
             <Button
               size="sm"
               variant={confirmVariant}
-              loading={loading}
-              disabled={loading}
               onClick={() => {
                 void onConfirm();
               }}

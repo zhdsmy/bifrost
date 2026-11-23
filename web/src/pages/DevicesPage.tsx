@@ -3,10 +3,10 @@ import { Badge } from "@cloudflare/kumo/components/badge";
 import { Banner } from "@cloudflare/kumo/components/banner";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Empty } from "@cloudflare/kumo/components/empty";
-import { InlineCopyText } from "@cloudflare/kumo/components/inline-copy-text";
 import { Input } from "@cloudflare/kumo/components/input";
 import { Table } from "@cloudflare/kumo/components/table";
 import { useApp } from "../app/context";
+import { CopyInline } from "../components/CopyInline";
 import { SectionCard } from "../components/SectionCard";
 import { api } from "../core/api";
 import { formatBytes, formatHandshakeAge } from "../core/format";
@@ -21,43 +21,44 @@ interface RowPingState {
 }
 
 export function DevicesPage() {
-  const { status, lang, t, tError, initializing } = useApp();
+  const { status, t, tError, initializing } = useApp();
   const [filter, setFilter] = useState("");
   const [pings, setPings] = useState<Record<string, RowPingState>>({});
 
   const peers = status?.peers ?? [];
   const onlineCount = useMemo(() => peers.filter((p) => p.online).length, [peers]);
 
-  const sorted = useMemo(() => {
+  // Preserve the contract §6.1 peer ordering (online first, then by name) without re-sorting.
+  const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    const list = q
-      ? peers.filter(
-          (p) =>
-            p.name.toLowerCase().includes(q) ||
-            p.dns_name.toLowerCase().includes(q) ||
-            p.ip.toLowerCase().includes(q) ||
-            p.ips.some((ip) => ip.toLowerCase().includes(q)),
-        )
-      : peers;
-    return [...list].sort((a, b) => {
-      if (a.online !== b.online) return a.online ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
+    if (!q) return peers;
+    return peers.filter(
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        p.dns_name.toLowerCase().includes(q) ||
+        p.ip.toLowerCase().includes(q) ||
+        p.ips.some((ip) => ip.toLowerCase().includes(q)),
+    );
   }, [peers, filter]);
 
-  const visible = sorted.slice(0, MAX_RENDERED_PEERS);
-  const truncated = sorted.length > MAX_RENDERED_PEERS;
+  const visible = filtered.slice(0, MAX_RENDERED_PEERS);
+  const truncated = filtered.length > MAX_RENDERED_PEERS;
   const nowSec = status?.time ?? Math.floor(Date.now() / 1000);
 
-  const copyLabels = useMemo(
-    () => ({ copyAction: t("common.copyAction"), copied: t("common.copied") }),
-    [t],
-  );
-
-  function formatPath(path: PeerInfo["path"], relay: string): string {
+  function renderPath(path: PeerInfo["path"], relay: string) {
     if (path === "direct") return t("devices.path.direct");
     if (path === "peer-relay") return t("devices.path.peerRelay");
-    return relay ? t("devices.path.derpRegion", { relay }) : t("devices.path.derp");
+    if (relay) {
+      const [prefix, suffix = ""] = t("devices.path.derpRegion", { relay: "\0" }).split("\0");
+      return (
+        <span>
+          {prefix}
+          <span data-raw-value="true">{relay}</span>
+          {suffix}
+        </span>
+      );
+    }
+    return t("devices.path.derp");
   }
 
   async function handlePing(ip: string) {
@@ -92,7 +93,10 @@ export function DevicesPage() {
           <Banner
             variant="secondary"
             size="sm"
-            description={t("devices.limitNotice", { shown: MAX_RENDERED_PEERS, total: sorted.length })}
+            description={t("devices.limitNotice", {
+              shown: MAX_RENDERED_PEERS,
+              total: filtered.length,
+            })}
           />
         )}
 
@@ -125,20 +129,25 @@ export function DevicesPage() {
                     <Table.Row key={peer.ip} className="group">
                       <Table.Cell className="px-2.5 py-2">
                         <div className="grid min-w-0 gap-0.5">
-                          <span className="font-medium text-kumo-strong">{peer.name}</span>
+                          <span data-raw-value="true" className="font-medium text-kumo-strong">
+                            {peer.name}
+                          </span>
                           {peer.dns_name && (
-                            <span className="max-w-36 truncate text-xs text-kumo-subtle">
+                            <span
+                              data-raw-value="true"
+                              className="max-w-36 truncate text-xs text-kumo-subtle"
+                            >
                               {peer.dns_name}
                             </span>
                           )}
                         </div>
                       </Table.Cell>
                       <Table.Cell className="px-2.5 py-2 whitespace-nowrap">
-                        <InlineCopyText value={peer.ip} labels={copyLabels}>
-                          {peer.ip}
-                        </InlineCopyText>
+                        <CopyInline value={peer.ip} />
                       </Table.Cell>
-                      <Table.Cell className="px-2.5 py-2 whitespace-nowrap">{peer.os || "—"}</Table.Cell>
+                      <Table.Cell className="px-2.5 py-2 whitespace-nowrap">
+                        <span data-raw-value="true">{peer.os || "—"}</span>
+                      </Table.Cell>
                       <Table.Cell className="px-2.5 py-2 whitespace-nowrap">
                         <Badge appearance="dot" variant={peer.online ? "success" : "secondary"}>
                           {peer.online ? t("devices.status.online") : t("devices.status.offline")}
@@ -146,11 +155,11 @@ export function DevicesPage() {
                       </Table.Cell>
                       <Table.Cell className="px-2.5 py-2 whitespace-nowrap">
                         <Badge variant={peer.path === "direct" ? "info" : "outline"}>
-                          {formatPath(peer.path, peer.relay)}
+                          {renderPath(peer.path, peer.relay)}
                         </Badge>
                       </Table.Cell>
                       <Table.Cell className="px-2.5 py-2 whitespace-nowrap tabular-nums">
-                        {formatHandshakeAge(peer.last_handshake, nowSec, lang)}
+                        {formatHandshakeAge(peer.last_handshake, nowSec, t)}
                       </Table.Cell>
                       <Table.Cell className="px-2.5 py-2 whitespace-nowrap tabular-nums">
                         <div className="grid leading-tight">
@@ -189,10 +198,7 @@ export function DevicesPage() {
                           </Button>
                           {ping?.result && (
                             <span className="whitespace-nowrap text-xs text-kumo-success tabular-nums">
-                              {t("devices.pingResult", {
-                                ms: ping.result.latency_ms,
-                                path: formatPath(ping.result.path, ping.result.relay),
-                              })}
+                              {t("common.latency", { ms: ping.result.latency_ms })} · {renderPath(ping.result.path, ping.result.relay)}
                             </span>
                           )}
                           {ping?.error && (

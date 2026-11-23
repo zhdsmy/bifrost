@@ -10,12 +10,14 @@
 
 out=""
 url=""
+limit=""
 while [ $# -gt 0 ]; do
     case "$1" in
         -o | --output)
             out=$2
             shift 2
             ;;
+        --max-filesize) limit=$2; shift 2 ;;
         --connect-timeout | --max-time | --retry | -m | -H | -d | -X | -A | --unix-socket)
             shift 2
             ;;
@@ -49,6 +51,10 @@ case "$spec" in
     file:*)
         src=${spec#file:}
         [ -r "$src" ] || exit 22
+        if [ -n "$limit" ] && [ "$(wc -c <"$src")" -gt "$limit" ]; then
+            printf '%s %s\n' "$url" "$limit" >>"$MOCK_STATE/curl.limited"
+            exit 63
+        fi
         if [ -n "$out" ]; then
             cp "$src" "$out"
         else

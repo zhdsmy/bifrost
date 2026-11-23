@@ -50,16 +50,19 @@ export function translateCheck(lang: UiLang, code: string): string {
 }
 
 export function getKumoTranslations(lang: UiLang): KumoTranslationsPartial {
-  if (lang === "en") {
-    return {
-      label: { optional: "(optional)", tooltip: "More information" },
-      layerDialog: { close: "Close", cancel: "Cancel" },
-      breadcrumbs: { label: "Breadcrumb", copy: "Copy", copyTooltip: "Copy to clipboard" },
-    };
-  }
   return {
-    label: { optional: "（可选）", tooltip: "更多说明" },
-    layerDialog: { close: "关闭", cancel: "取消" },
-    breadcrumbs: { label: "路径导航", copy: "复制", copyTooltip: "复制到剪贴板" },
+    label: {
+      optional: t(lang, "common.optional"),
+      tooltip: t(lang, "common.moreInfo"),
+    },
+    layerDialog: {
+      close: t(lang, "common.close"),
+      cancel: t(lang, "common.cancel"),
+    },
+    breadcrumbs: {
+      label: t(lang, "kumo.breadcrumbLabel"),
+      copy: t(lang, "common.copy"),
+      copyTooltip: t(lang, "common.copyAction"),
+    },
   };
 }

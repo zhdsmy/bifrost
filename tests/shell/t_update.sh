@@ -2,57 +2,23 @@
 # Tests for plugin/bifrost/lib/update.sh, tools/dev-keys.sh, tools/sign.sh:
 # signing, key rotation, manifest validation, core_version, core_install_file,
 # core-check, core-update happy paths, mirror, rollback, arch switching, busy.
+# Runs with the real P2/P3 libraries (no unnecessary stubs).
 # shellcheck disable=SC1091,SC2153
 . tests/shell/lib.sh
 t_setup
 t_load
 
+BIFROST_WAIT_READY=3
+BIFROST_STOP_TIMEOUT=2
 BIFROST_UPDATE_VERIFY_SECS=2
-export BIFROST_UPDATE_VERIFY_SECS
+export BIFROST_WAIT_READY BIFROST_STOP_TIMEOUT BIFROST_UPDATE_VERIFY_SECS
 
-# ---- P2 daemon stubs (not in this branch; tests only) ----
-daemon_start() {
-    echo "start" >>"$MOCK_STATE/daemon_stub.log"
-    if [ -f "$MOCK_STATE/stub_start_fail" ]; then
-        fail start_failed
-        return 1
-    fi
-    mkdir -p "$BIFROST_RUN" "$BIFROST_SOCK_DIR"
-    "$BIFROST_CORE" --statedir="$BIFROST_STATE" --socket="$BIFROST_SOCK" >/dev/null 2>&1 &
-    echo "$!" >"$BIFROST_PIDFILE"
-    _ds_i=0
-    while [ ! -e "$BIFROST_SOCK" ] && [ "$_ds_i" -lt 20 ]; do
-        usleep 100000 2>/dev/null || sleep 1
-        _ds_i=$((_ds_i + 1))
-    done
-    [ -e "$BIFROST_SOCK" ]
-}
-
-daemon_stop() {
-    echo "stop" >>"$MOCK_STATE/daemon_stub.log"
-    _dt_pid=$(daemon_pid 2>/dev/null || echo "")
-    if [ -n "$_dt_pid" ]; then
-        kill -TERM "$_dt_pid" 2>/dev/null || true
-        wait "$_dt_pid" 2>/dev/null || true
-    fi
-    rm -f "$BIFROST_PIDFILE" "$BIFROST_SOCK"
-    return 0
-}
-
-daemon_wait_ready() {
-    [ -e "$BIFROST_SOCK" ] && daemon_running
-}
-
-backend_state() {
-    if [ -r "$MOCK_STATE/stub_backend_state" ]; then
-        cat "$MOCK_STATE/stub_backend_state"
-        return 0
-    fi
-    printf 'Running\n'
-}
+nvram_seed lan_ipaddr=192.168.1.1 lan_netmask=255.255.255.0 sw_mode=1
+ts_out status '{"BackendState":"Running","Self":{"HostName":"router"}}'
+ts_out debug-prefs '{"CorpDNS":false,"NetfilterMode":"off","NoSNAT":false,"ShieldsUp":false}'
 
 # ---- Test fixture builders ----
-# make_fake_core <out_raw> <version> <pad_bytes>
+# make_fake_core <out_raw> <version> [pad_bytes]
 make_fake_core() {
     _fc_out=$1
     _fc_ver=$2
@@ -106,26 +72,16 @@ make_manifest() {
           assets:$assets}' >"$_mm_out"
 }
 
-curl_map_set() {
-    printf '%s %s\n' "$1" "$2" >>"$MOCK_STATE/curl.map"
-}
+curl_map_set() { printf '%s %s\n' "$1" "$2" >>"$MOCK_STATE/curl.map"; }
 curl_map_reset() {
     : >"$MOCK_STATE/curl.map"
     : >"$MOCK_STATE/curl.log"
 }
+df_reset() { rm -f "$MOCK_STATE/df.map" "$MOCK_STATE/df_avail_kb"; }
+df_set() { printf '%s %s\n' "$1" "$2" >>"$MOCK_STATE/df.map"; }
+uname_set() { printf '%s\n' "$1" >"$MOCK_STATE/uname_m"; }
 
-df_reset() {
-    rm -f "$MOCK_STATE/df.map" "$MOCK_STATE/df_avail_kb"
-}
-df_set() {
-    printf '%s %s\n' "$1" "$2" >>"$MOCK_STATE/df.map"
-}
-
-uname_set() {
-    printf '%s\n' "$1" >"$MOCK_STATE/uname_m"
-}
-
-# Prepare keys and two fake cores: v1 (1.104.7, serial 1) and v2 (1.105.0, serial 2)
+# Prepare keys and fake cores: v1 (1.104.7, serial 1) and v2 (1.105.0, serial 2)
 KEYDIR="$T/devkeys"
 FIX="$T/fix"
 mkdir -p "$KEYDIR" "$FIX"
@@ -150,9 +106,13 @@ gzip -c "$FIX/v2-arm64" >"$FIX/v2-arm64.gz"
 make_manifest "$FIX/m2.json" 2 1.105.0 1 0.1.0 \
     arm "$FIX/v2-arm" "$FIX/v2-arm.gz" \
     arm64 "$FIX/v2-arm64" "$FIX/v2-arm64.gz"
-ok sign-m2 sh "$T_SRC/tools/sign.sh" "$KEYDIR/key1.key.pem" "$FIX/m2.json"
+while :; do
+    sh "$T_SRC/tools/sign.sh" "$KEYDIR/key1.key.pem" "$FIX/m2.json" || exit 1
+    [ "$(file_size "$FIX/m2.json.sig")" != 72 ] || break
+done
+eq sign-m2 72 "$(file_size "$FIX/m2.json.sig")"
 
-# ---- 1. manifest_verify & key rotation ----
+# ---- 1. manifest_verify, key rotation & strict DER framing ----
 ok verify-ok manifest_verify "$FIX/m2.json" "$FIX/m2.json.sig"
 
 cp "$FIX/m2.json" "$FIX/m2-k2.json"
@@ -167,6 +127,24 @@ rm -f "$BIFROST_KEYS/key2.pub.pem"
 no verify-empty-sig manifest_verify "$FIX/m2.json" "$FIX/nonexistent.sig"
 eq verify-empty-code bad_signature "$BIFROST_ERR"
 
+# Appending trailing byte to ANY signature (even 72-byte DER) must always be rejected.
+cp "$FIX/m2.json.sig" "$FIX/m2-trail.sig"
+printf 'X' >>"$FIX/m2-trail.sig"
+no verify-trailing-byte manifest_verify "$FIX/m2.json" "$FIX/m2-trail.sig"
+eq verify-trailing-code bad_signature "$BIFROST_ERR"
+. tests/shell/fixtures/update/framing.sh
+ok trailing-rejected-before-crypto reject_before_crypto "$FIX/m2.json" "$FIX/m2-trail.sig" "$T/crypto-called"
+
+saved_keys=$BIFROST_KEYS
+BIFROST_KEYS="$FIX/empty-keys"
+mkdir "$BIFROST_KEYS"
+no reject-empty-keys manifest_verify "$FIX/m2.json" "$FIX/m2.json.sig"
+eq empty-keys-code bad_signature "$BIFROST_ERR"
+rmdir "$BIFROST_KEYS"
+no reject-missing-keys manifest_verify "$FIX/m2.json" "$FIX/m2.json.sig"
+eq missing-keys-code bad_signature "$BIFROST_ERR"
+BIFROST_KEYS=$saved_keys
+
 # ---- 2. Version comparison & format validators ----
 ok ver-eq _upd_ver_ge 0.1.0 0.1.0
 ok ver-patch _upd_ver_ge 0.1.2 0.1.1
@@ -178,12 +156,13 @@ no ver-lt-major _upd_ver_ge 0.9.9 1.0.0
 no ver-bad _upd_ver_ge 0.1 0.1.0
 no ver-leadzero _upd_ver_ge 0.01.0 0.1.0
 
-no file-traversal _upd_valid_asset_file '../evil.gz'
-no file-slash _upd_valid_asset_file 'a/b.gz'
-no file-notgz _upd_valid_asset_file 'core.tar'
-ok file-ok _upd_valid_asset_file 'bifrost-core-1.104.7-1-linux-arm.gz'
-no sha-upper _upd_valid_sha256 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
-no sha-short _upd_valid_sha256 'abcd'
+for invalid in '.assets.arm.file = "../evil-linux-arm.gz"' '.assets.arm.file = "core.tar"' \
+    '.assets.arm.sha256 |= ascii_upcase' '.assets.arm.raw_sha256 = "abcd"' \
+    '.assets.arm64.file = "core-linux-arm.gz"'; do
+    jq "$invalid" "$FIX/m2.json" >"$FIX/invalid.json"
+    no manifest-asset-format _upd_parse_manifest "$FIX/invalid.json" arm any 0
+    eq manifest-asset-code bad_manifest "$BIFROST_ERR"
+done
 
 # ---- 3. core_version & core_install_file (PLAN 15.1 step 4) ----
 uname_set armv7l
@@ -192,6 +171,22 @@ rm -f "$BIFROST_CORE" "$BIFROST_CLI" "$BIFROST_MANIFEST"
 no core-ver-missing core_version
 eq core-ver-missing-code core_missing "$BIFROST_ERR"
 
+# core_install_file error paths: arch_unsupported, no_arch, no_space
+no install-file-arch-unsup core_install_file "$FIX/v2-arm64.gz" "$FIX/m2.json" arm64
+eq install-file-arch-unsup-code arch_unsupported "$BIFROST_ERR"
+
+uname_set aarch64
+no install-file-no-arch core_install_file "$FIX/v1-arm.gz" "$FIX/m1.json" arm64
+eq install-file-no-arch-code no_arch "$BIFROST_ERR"
+uname_set armv7l
+
+df_reset
+# shellcheck disable=SC2329
+gunzip() { command gunzip "$@" >/dev/full; }
+no install-file-no-space core_install_file "$FIX/v1-arm.gz" "$FIX/m1.json" arm
+eq install-file-no-space-code no_space "$BIFROST_ERR"
+unset -f gunzip
+
 ok install-file-fresh core_install_file "$FIX/v1-arm.gz" "$FIX/m1.json" arm
 eq install-file-ver 1.104.7 "$(core_version)"
 eq install-file-sha "$(sha256_file "$FIX/v1-arm")" "$(sha256_file "$BIFROST_CORE")"
@@ -199,24 +194,29 @@ ok install-file-symlink [ -L "$BIFROST_CLI" ]
 eq install-file-manifest-arch arm "$(jq -r .arch "$BIFROST_MANIFEST")"
 eq install-file-manifest-serial 1 "$(jq -r .serial "$BIFROST_MANIFEST")"
 
-# Upgrade no-downgrade: install serial 2, then try installing serial 1 -> keeps serial 2
-ok install-file-v2 core_install_file "$FIX/v2-arm.gz" "$FIX/m2.json" arm
+# Upgrade no-downgrade and same-serial preservation (keeps arm64 on same-serial arm reinstall)
+uname_set aarch64
+ok install-file-v2-arm64 core_install_file "$FIX/v2-arm64.gz" "$FIX/m2.json" arm64
 eq install-file-v2-ver 1.105.0 "$(core_version)"
-ok install-file-no-downgrade core_install_file "$FIX/v1-arm.gz" "$FIX/m1.json" arm
-eq install-file-kept-v2 1.105.0 "$(core_version)"
+eq install-file-v2-arch arm64 "$(jq -r .arch "$BIFROST_MANIFEST")"
+ok install-file-same-serial-keeps core_install_file "$FIX/v2-arm.gz" "$FIX/m2.json" arm
+eq install-file-same-serial-arch arm64 "$(jq -r .arch "$BIFROST_MANIFEST")"
+eq install-file-same-serial-sha "$(sha256_file "$FIX/v2-arm64")" "$(sha256_file "$BIFROST_CORE")"
+ok install-file-lower-serial-keeps core_install_file "$FIX/v1-arm.gz" "$FIX/m1.json" arm
 eq install-file-kept-serial 2 "$(jq -r .serial "$BIFROST_MANIFEST")"
+uname_set armv7l
 
-# core_install_file refuses when daemon is running
-ok stub-start-for-ci daemon_start
+# core_install_file refuses when real daemon is running
+ok start-for-ci daemon_start
 no install-file-running core_install_file "$FIX/v2-arm.gz" "$FIX/m2.json" arm
 eq install-file-running-code already_running "$BIFROST_ERR"
-daemon_stop
+ok stop-for-ci daemon_stop
 
 # Reset installed core to v1 (serial 1, arm)
 rm -f "$BIFROST_CORE" "$BIFROST_MANIFEST"
 ok install-reset-v1 core_install_file "$FIX/v1-arm.gz" "$FIX/m1.json" arm
 
-# core_install_file rejects tampered raw payload (hash_mismatch), bad gzip, and bad --version
+# core_install_file rejects tampered raw payload (hash_mismatch), bad gzip (hash_mismatch), bad --version
 cp "$FIX/v2-arm" "$FIX/v2-badraw"
 printf '# tampered\n' >>"$FIX/v2-badraw"
 gzip -c "$FIX/v2-badraw" >"$FIX/v2-badraw.gz"
@@ -227,6 +227,7 @@ eq install-file-v1-intact "$(sha256_file "$FIX/v1-arm")" "$(sha256_file "$BIFROS
 
 printf 'not-valid-gzip' >"$FIX/notgz.gz"
 no install-file-notgz core_install_file "$FIX/notgz.gz" "$FIX/m2.json" arm
+eq install-file-notgz-code hash_mismatch "$BIFROST_ERR"
 ok install-file-notgz-no-new [ ! -e "$BIFROST_BIN/bifrostd.new" ]
 eq install-file-notgz-v1 "$(sha256_file "$FIX/v1-arm")" "$(sha256_file "$BIFROST_CORE")"
 
@@ -237,7 +238,32 @@ rm -f "$MOCK_STATE/core_version"
 ok install-file-badver-no-new [ ! -e "$BIFROST_BIN/bifrostd.new" ]
 eq install-file-badver-v1 "$(sha256_file "$FIX/v1-arm")" "$(sha256_file "$BIFROST_CORE")"
 
-# ---- 4. core-check: update available vs up-to-date ----
+# core_install_file: manifest mv failure restores old core atomically
+_v1_sha=$(sha256_file "$BIFROST_CORE")
+_m1_sha=$(sha256_file "$BIFROST_MANIFEST")
+# shellcheck disable=SC2329
+mv() {
+    case "$*" in *"$BIFROST_MANIFEST") return 1 ;; esac
+    command mv "$@"
+}
+no install-file-man-fail core_install_file "$FIX/v2-arm.gz" "$FIX/m2.json" arm
+unset -f mv
+eq install-file-man-fail-code internal "$BIFROST_ERR"
+eq install-file-man-fail-core "$_v1_sha" "$(sha256_file "$BIFROST_CORE")"
+eq install-file-man-fail-man "$_m1_sha" "$(sha256_file "$BIFROST_MANIFEST")"
+ok install-file-man-fail-no-old [ ! -e "$BIFROST_BIN/bifrostd.old" ]
+
+# ---- 4. core-check: update available, up-to-date, and mirror ----
+jf=$(job_file update)
+# Up-to-date check (serial == installed 1): job still ok, data.latest filled, up_to_date=true
+curl_map_reset
+curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m1.json"
+curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m1.json.sig"
+ok act-check-utd act_core_check
+bg_drain
+eq check-utd-ok "false true done 100 1 true" \
+    "$(jq -r '"\(.running) \(.ok) \(.phase) \(.progress) \(.data.latest.serial) \(.data.up_to_date)"' "$jf")"
+
 curl_map_reset
 curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m2.json"
 curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m2.json.sig"
@@ -251,16 +277,20 @@ eq check-avail-ok "false true done 100 check 2 false" \
 ok check-latest-written [ -f "$BIFROST_RUN/core_latest.json" ]
 eq check-latest-tag core-1.105.0-1 "$(jq -r .tag "$BIFROST_RUN/core_latest.json")"
 
-# Up-to-date check (serial == installed 1): job still ok, data.latest filled, up_to_date=true
+# Check through mirror prefix
+MIR="https://mirror.example.com/gh/"
+ok set-mirror-check cfg_set bifrost_mirror "$MIR"
 curl_map_reset
-curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m1.json"
-curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m1.json.sig"
-ok act-check-utd act_core_check
+curl_map_set "${MIR}${BIFROST_CHANNEL_URL}" "file:$FIX/m2.json"
+curl_map_set "${MIR}${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m2.json.sig"
+ok act-check-mirror act_core_check
 bg_drain
-eq check-utd-ok "false true done 100 1 true" \
-    "$(jq -r '"\(.running) \(.ok) \(.phase) \(.progress) \(.data.latest.serial) \(.data.up_to_date)"' "$jf")"
+eq check-mirror-ok true "$(jq -r .ok "$jf")"
+has check-mirror-url "${MIR}${BIFROST_CHANNEL_URL}" "$(cat "$MOCK_STATE/curl.log")"
+has check-mirror-sig "${MIR}${BIFROST_CHANNEL_URL}.sig" "$(cat "$MOCK_STATE/curl.log")"
+ok clear-mirror-check cfg_set bifrost_mirror ""
 
-# ---- 5. core-update happy path (with daemon running) + prev.gz kept ----
+# ---- 5. core-update happy path (with real daemon running) + prev.gz kept ----
 printf 'state-v1' >"$BIFROST_STATE/tailscaled.state"
 ok start-before-upd daemon_start
 curl_map_reset
@@ -278,9 +308,13 @@ eq update-man-serial 2 "$(jq -r .serial "$BIFROST_MANIFEST")"
 ok update-prev-exists [ -f "$BIFROST_BIN/bifrostd.prev.gz" ]
 ok update-prev-man-exists [ -f "$BIFROST_BIN/bifrostd.prev.json" ]
 ok update-daemon-running daemon_running
-ok update-no-leftovers [ ! -e "$BIFROST_BIN/bifrostd.new" ] && [ ! -e "$BIFROST_BIN/bifrostd.old" ] && [ ! -d "$BIFROST_RUN/update" ]
+ok update-no-new [ ! -e "$BIFROST_BIN/bifrostd.new" ]
+ok update-no-old [ ! -e "$BIFROST_BIN/bifrostd.old" ]
+ok update-no-tmp [ ! -d "$BIFROST_RUN/update" ]
 
-# ---- 6. core-rollback happy path + no_prev after rollback ----
+# ---- 6. core-rollback under mirror (makes zero curl calls) + no_prev after ----
+ok set-mirror-rb cfg_set bifrost_mirror "$MIR"
+curl_map_reset
 ok act-rollback act_core_rollback
 bg_drain
 eq rollback-ok "false true done 100 rollback false" \
@@ -288,8 +322,11 @@ eq rollback-ok "false true done 100 rollback false" \
 eq rollback-ver 1.104.7 "$(core_version)"
 eq rollback-sha "$(sha256_file "$FIX/v1-arm")" "$(sha256_file "$BIFROST_CORE")"
 eq rollback-man-serial 1 "$(jq -r .serial "$BIFROST_MANIFEST")"
+eq rollback-no-curl "" "$(cat "$MOCK_STATE/curl.log")"
 ok rollback-daemon-running daemon_running
 ok rollback-prev-consumed [ ! -f "$BIFROST_BIN/bifrostd.prev.gz" ]
+ok rollback-prev-man-consumed [ ! -f "$BIFROST_BIN/bifrostd.prev.json" ]
+ok clear-mirror-rb cfg_set bifrost_mirror ""
 
 # Now no prev exists -> act_core_rollback, dispatcher core-rollback, and job_update fail no_prev
 no rollback-no-prev-act act_core_rollback
@@ -301,7 +338,6 @@ eq rollback-no-prev-job-code no_prev "$BIFROST_ERR"
 job_end update fail no_prev
 
 # ---- 7. Mirror prefix download ----
-MIR="https://mirror.example.com/gh/"
 ok set-mirror cfg_set bifrost_mirror "$MIR"
 curl_map_reset
 curl_map_set "${MIR}${BIFROST_CHANNEL_URL}" "file:$FIX/m2.json"
@@ -318,7 +354,14 @@ has mirror-url-gz "${MIR}${BIFROST_RELEASE_BASE}/core-1.105.0-1/bifrost-core-1.1
 ok clear-mirror cfg_set bifrost_mirror ""
 
 # ---- 8. Low space after update: succeeds with kept_prev=false ----
-daemon_stop
+ok stop-for-noprev daemon_stop
+# Rollback when daemon is NOT running: succeeds and keeps daemon stopped
+ok act-rb-stopped act_core_rollback
+bg_drain
+eq rb-stopped-ok true "$(jq -r .ok "$jf")"
+eq rb-stopped-ver 1.104.7 "$(core_version)"
+no rb-stopped-stays-stopped daemon_running
+
 # Pad current core with incompressible hex (~9 KiB gzipped) while v3 raw is ~3 KiB.
 make_fake_core "$FIX/v2rand-arm" 1.105.0 0
 {
@@ -351,11 +394,9 @@ eq upd-noprev-ok "true false" "$(jq -r '"\(.ok) \(.data.kept_prev)"' "$jf")"
 ok upd-noprev-absent [ ! -f "$BIFROST_BIN/bifrostd.prev.gz" ]
 df_reset
 
-# ---- 9. Architecture switching (core-arch) ----
-# Reset to v2 arm (serial 2)
-rm -f "$BIFROST_CORE" "$BIFROST_MANIFEST"
+# ---- 9. Architecture switching (core-arch): stopped & running ----
+rm -f "$BIFROST_CORE" "$BIFROST_MANIFEST" "$BIFROST_HOME/core-channel.serial" "$BIFROST_RUN/core_latest.json"
 ok install-v2-for-arch core_install_file "$FIX/v2-arm.gz" "$FIX/m2.json" arm
-ok start-for-arch daemon_start
 
 # On armv7l: arm64 must be rejected with arch_unsupported
 uname_set armv7l
@@ -365,21 +406,22 @@ eq arch-arm64-on-armv7-page '{"ok":false,"code":"arch_unsupported"}' "$(t_page c
 no arch-invalid act_core_arch amd64
 eq arch-invalid-code invalid_param "$BIFROST_ERR"
 
-# On aarch64: switching arm -> arm64 at SAME serial (2) succeeds
+# On aarch64 while daemon is stopped: switch arm -> arm64 at SAME serial (2), stays stopped
 uname_set aarch64
 curl_map_reset
 curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m2.json"
 curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m2.json.sig"
 curl_map_set "$BIFROST_RELEASE_BASE/core-1.105.0-1/bifrost-core-1.105.0-1-linux-arm64.gz" "file:$FIX/v2-arm64.gz"
 
-ok arch-switch-arm64 act_core_arch arm64
+ok arch-stopped-switch act_core_arch arm64
 bg_drain
-eq arch-arm64-ok "true arch" "$(jq -r '"\(.ok) \(.data.action)"' "$jf")"
-eq arch-arm64-manifest arm64 "$(jq -r .arch "$BIFROST_MANIFEST")"
-eq arch-arm64-sha "$(sha256_file "$FIX/v2-arm64")" "$(sha256_file "$BIFROST_CORE")"
-ok arch-arm64-daemon daemon_running
+eq arch-stopped-ok "true arch" "$(jq -r '"\(.ok) \(.data.action)"' "$jf")"
+eq arch-stopped-manifest arm64 "$(jq -r .arch "$BIFROST_MANIFEST")"
+eq arch-stopped-sha "$(sha256_file "$FIX/v2-arm64")" "$(sha256_file "$BIFROST_CORE")"
+no arch-stopped-stays-stopped daemon_running
 
-# Switch back arm64 -> arm at same serial (2)
+# Now start real daemon and switch back arm64 -> arm at same serial (2)
+ok start-for-arch daemon_start
 curl_map_reset
 curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m2.json"
 curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m2.json.sig"
@@ -390,6 +432,7 @@ bg_drain
 eq arch-arm-ok true "$(jq -r .ok "$jf")"
 eq arch-arm-manifest arm "$(jq -r .arch "$BIFROST_MANIFEST")"
 eq arch-arm-sha "$(sha256_file "$FIX/v2-arm")" "$(sha256_file "$BIFROST_CORE")"
+ok arch-arm-daemon daemon_running
 
 # ---- 10. Concurrent update job returns busy ----
 job_begin update

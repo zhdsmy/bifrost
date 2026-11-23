@@ -3,14 +3,14 @@ import { ArrowSquareOutIcon } from "@phosphor-icons/react/dist/csr/ArrowSquareOu
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Banner } from "@cloudflare/kumo/components/banner";
 import { Button } from "@cloudflare/kumo/components/button";
-import { ClipboardText } from "@cloudflare/kumo/components/clipboard-text";
 import { useApp } from "../app/context";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { CopyField } from "../components/CopyInline";
 import { JobProgress } from "../components/JobProgress";
 import { DetailItem, DetailList, SectionCard } from "../components/SectionCard";
 import { api } from "../core/api";
-import { CORE_RECIPE_SUMMARY, formatBytes, formatDateTime } from "../core/format";
-import type { CoreArch, JobState, UpdateJobData } from "../core/types";
+import { CORE_VERIFY_COMMAND, formatBytes, formatDateTime, isCoreUpToDate } from "../core/format";
+import type { CoreArch, JobProgressState, UpdateJobData } from "../core/types";
 
 type CoreConfirmKind = "update" | "rollback" | { arch: CoreArch };
 
@@ -20,44 +20,44 @@ interface CoreConfirmState {
 }
 
 export function CorePage() {
-  const { status, lang, busy, jobs, runJob, notify, t } = useApp();
+  const { status, busy, jobs, runJob, notify, t } = useApp();
   const [confirmState, setConfirmState] = useState<CoreConfirmState | null>(null);
 
   if (!status) return null;
 
   const core = status.core;
-  const updateJob = jobs.update as JobState<UpdateJobData> | undefined;
-  const latest = core.update ?? updateJob?.data?.latest ?? null;
+  const build = core.build;
+  const omit = Array.isArray(build?.omit) ? build.omit : null;
+  const updateJob = jobs.update as JobProgressState<UpdateJobData> | undefined;
+  const checkedLatest = updateJob?.ok && updateJob.data.action === "check" ? updateJob.data.latest : null;
+  const latest = core.update ?? (checkedLatest && checkedLatest.serial > core.serial ? checkedLatest : null);
   const canSwitchArch = core.kernel_arch === "aarch64";
   const targetArch: CoreArch = core.arch === "arm64" ? "arm" : "arm64";
-  const upToDate = updateJob && !updateJob.running && updateJob.code === "up_to_date";
-  const lostPrev =
+  const upToDate = isCoreUpToDate(status, updateJob);
+  const lostPrev = Boolean(
     updateJob &&
-    !updateJob.running &&
-    updateJob.ok === true &&
-    updateJob.data?.action === "update" &&
-    updateJob.data?.kept_prev === false;
+      !updateJob.running &&
+      updateJob.ok === true &&
+      updateJob.data?.action === "update" &&
+      updateJob.data?.kept_prev === false,
+  );
+
+  async function runCoreMutation(trigger: () => Promise<unknown>) {
+    await runJob<UpdateJobData>("update", trigger, {
+      onDone: (final) => {
+        if (final.ok) notify({ title: t("common.actionSuccess"), variant: "success" });
+      },
+    });
+  }
 
   async function executeConfirm(kind: CoreConfirmKind) {
     setConfirmState(null);
     if (kind === "update") {
-      await runJob<UpdateJobData>("update", () => api.coreUpdate(), {
-        onDone: (final) => {
-          if (final.ok) notify({ title: t("common.actionSuccess"), variant: "success" });
-        },
-      });
+      await runCoreMutation(() => api.coreUpdate());
     } else if (kind === "rollback") {
-      await runJob<UpdateJobData>("update", () => api.coreRollback(), {
-        onDone: (final) => {
-          if (final.ok) notify({ title: t("common.actionSuccess"), variant: "success" });
-        },
-      });
+      await runCoreMutation(() => api.coreRollback());
     } else {
-      await runJob<UpdateJobData>("update", () => api.coreArch(kind.arch), {
-        onDone: (final) => {
-          if (final.ok) notify({ title: t("common.actionSuccess"), variant: "success" });
-        },
-      });
+      await runCoreMutation(() => api.coreArch(kind.arch));
     }
   }
 
@@ -65,9 +65,7 @@ export function CorePage() {
     <div className="grid gap-4">
       <SectionCard title={t("core.section.current")}>
         <DetailList>
-          <DetailItem label={t("core.field.version")}>
-            {core.tailscale || "—"}
-          </DetailItem>
+          <DetailItem label={t("core.field.version")}>{core.tailscale || "—"}</DetailItem>
           <DetailItem label={t("core.field.revision")}>
             {core.revision ? `r${core.revision} (#${core.serial})` : "—"}
           </DetailItem>
@@ -81,7 +79,7 @@ export function CorePage() {
             {core.size > 0 ? formatBytes(core.size) : "—"}
           </DetailItem>
           <DetailItem label={t("core.field.installed")}>
-            {formatDateTime(core.installed, lang)}
+            {formatDateTime(core.installed)}
           </DetailItem>
           <DetailItem label={t("core.field.prev")}>
             <Badge variant={core.prev ? "success" : "secondary"}>
@@ -114,15 +112,15 @@ export function CorePage() {
           />
         )}
 
-        {upToDate && (
-          <Banner variant="secondary" size="sm" title={t("core.upToDateNotice")} />
-        )}
+        {upToDate && <Banner variant="secondary" size="sm" title={t("core.upToDateNotice")} />}
 
-        {lostPrev && (
-          <Banner variant="alert" size="sm" title={t("core.noPrevAfterUpdate")} />
-        )}
+        {lostPrev && <Banner variant="alert" size="sm" title={t("core.noPrevAfterUpdate")} />}
 
-        <JobProgress job={updateJob} label={t("core.progressLabel")} hideSuccess={Boolean(upToDate)} />
+        <JobProgress
+          job={updateJob}
+          label={t("core.progressLabel")}
+          hideSuccess={upToDate || updateJob?.data?.action === "check"}
+        />
 
         <div className="flex flex-wrap gap-2">
           <Button
@@ -156,51 +154,58 @@ export function CorePage() {
               variant="secondary"
               disabled={busy}
               loading={updateJob?.running && updateJob.data?.action === "arch"}
-              onClick={(e) => setConfirmState({ kind: { arch: targetArch }, anchor: e.currentTarget })}
+              onClick={(e) =>
+                setConfirmState({ kind: { arch: targetArch }, anchor: e.currentTarget })
+              }
             >
               {targetArch === "arm64" ? t("core.action.switchArm64") : t("core.action.switchArm")}
             </Button>
           )}
         </div>
 
-        {!core.prev && (
-          <p className="text-xs text-kumo-subtle">{t("core.noPrevHint")}</p>
-        )}
+        {!core.prev && <p className="text-xs text-kumo-subtle">{t("core.noPrevHint")}</p>}
       </SectionCard>
 
       <SectionCard title={t("core.section.recipe")} description={t("core.recipe.desc")}>
         <DetailList>
-          <DetailItem label={t("core.recipe.go")}>{CORE_RECIPE_SUMMARY.goVersion}</DetailItem>
-          <DetailItem label={t("core.recipe.flags")}>
-            <code className="font-mono text-xs">{CORE_RECIPE_SUMMARY.flags}</code>
+          <DetailItem label={t("core.recipe.go")}>
+            {build?.go ? <span data-raw-value="true">{build.go}</span> : t("common.unknown")}
+          </DetailItem>
+          <DetailItem label={t("core.recipe.commit")}>
+            {build?.commit ? (
+              <code data-raw-value="true" className="font-mono text-xs">
+                {build.commit.slice(0, 12)}
+              </code>
+            ) : (
+              t("common.unknown")
+            )}
           </DetailItem>
         </DetailList>
 
         <div className="grid gap-2">
           <span className="text-xs font-medium text-kumo-subtle">
-            {t("core.recipe.omit", { count: CORE_RECIPE_SUMMARY.omitCount })}
+            {omit
+              ? t("core.recipe.omit", { count: omit.length })
+              : t("core.recipe.omitLabel")}
           </span>
-          <div className="flex flex-wrap gap-1.5">
-            {CORE_RECIPE_SUMMARY.omit.map((tag) => (
-              <Badge key={tag} variant="outline">
-                {tag}
-              </Badge>
-            ))}
-          </div>
+          {!omit ? (
+            <span className="text-sm text-kumo-subtle">{t("common.unknown")}</span>
+          ) : omit.length > 0 ? (
+            <div data-raw-value="true" className="flex flex-wrap gap-1.5">
+              {omit.map((tag) => (
+                <Badge key={tag} variant="outline">
+                  {tag}
+                </Badge>
+              ))}
+            </div>
+          ) : (
+            <span className="text-sm text-kumo-subtle">{t("common.none")}</span>
+          )}
         </div>
 
         <div className="grid gap-1.5">
           <span className="text-xs font-medium text-kumo-subtle">{t("core.recipe.verify")}</span>
-          <ClipboardText
-            size="sm"
-            text={CORE_RECIPE_SUMMARY.verifyCommand}
-            tooltip={{ text: t("common.copy"), copiedText: t("common.copied") }}
-            labels={{
-              copyAction: t("common.copyAction"),
-              revealAction: t("common.reveal"),
-              hideAction: t("common.hide"),
-            }}
-          />
+          <CopyField text={CORE_VERIFY_COMMAND} />
         </div>
       </SectionCard>
 
