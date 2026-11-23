@@ -6,6 +6,8 @@
 : "${BIFROST_WAIT_READY:=15}"
 : "${BIFROST_STOP_TIMEOUT:=10}"
 : "${BIFROST_CLEANUP_TIMEOUT:=15}"
+: "${BIFROST_LOCK_WAIT:=30}"
+: "${BIFROST_WATCHDOG_NAME:=bifrost_watchdog}"
 : "${BIFROST_WATCHDOG_CRON:=*/2 * * * *}"
 : "${BIFROST_WATCHDOG_WINDOW:=1800}"
 : "${BIFROST_WATCHDOG_MAX:=3}"
@@ -28,6 +30,22 @@ daemon_err_set() {
 
 daemon_err_clear() {
     rm -f "$BIFROST_DAEMON_ERR"
+}
+
+# Remove an orphaned authkey file whenever no login job is active.
+daemon_clean_stale_authkey() {
+    [ -f "$BIFROST_RUN/authkey" ] || return 0
+    job_running login || rm -f "$BIFROST_RUN/authkey"
+}
+
+# daemon_clear_state_dir: remove all contents inside $BIFROST_STATE.
+daemon_clear_state_dir() {
+    [ -n "$BIFROST_STATE" ] && [ -d "$BIFROST_STATE" ] || return 0
+    for _dcl_item in "$BIFROST_STATE"/* "$BIFROST_STATE"/.[!.]* "$BIFROST_STATE"/..?*; do
+        [ -e "$_dcl_item" ] || [ -L "$_dcl_item" ] || continue
+        rm -rf "$_dcl_item" || return 1
+    done
+    return 0
 }
 
 # daemon_is_official_url <url>: 0 when empty or a Tailscale official control URL.
@@ -58,13 +76,14 @@ daemon_set_control_server() {
     _dsc_f="$BIFROST_STATE/control_url"
     if daemon_is_official_url "${1:-}"; then
         rm -f "$_dsc_f"
-        return 0
+        return $?
     fi
     valid_login_server "$1" || {
         fail bad_server
         return 1
     }
     mkdir -p "$BIFROST_STATE" 2>/dev/null || return 1
+    [ ! -d "$_dsc_f" ] || { fail state_not_writable; return 1; }
     printf '%s\n' "$1" | atomic_write "$_dsc_f" 644
 }
 
@@ -72,6 +91,13 @@ daemon_set_control_server() {
 daemon_should_disable_logs() {
     [ "$(cfg bifrost_no_logs)" = 1 ] && return 0
     ! daemon_is_official_url "$(daemon_control_server)"
+}
+
+# daemon_running_has_nologs: 0 when the live bifrostd cmdline includes --no-logs-no-support.
+daemon_running_has_nologs() {
+    _drn_pid=$(daemon_pid 2>/dev/null) || return 1
+    [ -r "/proc/$_drn_pid/cmdline" ] || return 1
+    tr '\000' '\n' <"/proc/$_drn_pid/cmdline" 2>/dev/null | grep -Fqx -- '--no-logs-no-support'
 }
 
 # daemon_pid_alive <pid>: 0 when pid exists and is not a zombie.
@@ -85,8 +111,43 @@ daemon_pid_alive() {
     return 0
 }
 
-# prefs_json: print "tailscale debug prefs" JSON, or fail not_running/timeout/cli_failed.
-prefs_json() {
+# Match the daemon's exact core and socket arguments. Other users of the
+# binary (CLI helpers, version probes and cleanup) must never receive signals.
+daemon_owns_pid() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    _dop_args=$(tr '\000' '\n' <"/proc/$1/cmdline" 2>/dev/null) || return 1
+    printf '%s\n' "$_dop_args" | awk -v core="$BIFROST_CORE" -v state="--statedir=$BIFROST_STATE" -v sock="--socket=$BIFROST_SOCK" '
+        NR == 1 { binary = ($0 == core); shell = ($0 ~ /(^|\/)sh$/) }
+        NR == 2 && shell && $0 == core { binary = 1 }
+        $0 == state { has_state = 1 }
+        $0 == sock { has_sock = 1 }
+        END { exit !(binary && has_state && has_sock) }
+    '
+}
+
+daemon_find_pid() {
+    _dfp_pid=$(daemon_pid) && daemon_owns_pid "$_dfp_pid" && {
+        echo "$_dfp_pid"
+        return 0
+    }
+    for _dfp_file in /proc/[0-9]*/stat; do
+        # Kernel threads and zombies have no command line. Skip zombies with
+        # shell builtins before spawning anything in a potentially large /proc.
+        IFS= read -r _dfp_stat <"$_dfp_file" || continue
+        case ${_dfp_stat##*) } in Z*) continue ;; esac
+        _dfp_pid=${_dfp_stat%% *}
+        if daemon_owns_pid "$_dfp_pid"; then
+            echo "$_dfp_pid"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# daemon_read_prefs: read "tailscale debug prefs" into _BIFROST_PREFS_JSON
+# without a subshell so BIFROST_ERR is preserved for in-shell callers.
+daemon_read_prefs() {
+    _BIFROST_PREFS_JSON=""
     if ! daemon_running; then
         fail not_running
         return 1
@@ -101,11 +162,19 @@ prefs_json() {
         fail cli_failed
         return 1
     fi
-    printf '%s\n' "$_pj_out"
+    _BIFROST_PREFS_JSON=$_pj_out
+    return 0
 }
 
-# backend_state: print BackendState from "tailscale status --json", or fail.
-backend_state() {
+# prefs_json: print "tailscale debug prefs" JSON, or fail not_running/timeout/cli_failed.
+prefs_json() {
+    daemon_read_prefs || return 1
+    printf '%s\n' "$_BIFROST_PREFS_JSON"
+}
+
+# daemon_read_state: read BackendState into _BIFROST_BACKEND_STATE in-shell.
+daemon_read_state() {
+    _BIFROST_BACKEND_STATE=""
     if ! daemon_running; then
         fail not_running
         return 1
@@ -120,12 +189,19 @@ backend_state() {
         fail cli_failed
         return 1
     fi
-    _bs_st=$(printf '%s\n' "$_bs_out" | jq -r '.BackendState // empty' 2>/dev/null)
+    _bs_st=$(printf '%s\n' "$_bs_out" | jq -er '.BackendState | strings | select(length > 0)' 2>/dev/null) || _bs_st=""
     if [ -z "$_bs_st" ]; then
         fail cli_failed
         return 1
     fi
-    printf '%s\n' "$_bs_st"
+    _BIFROST_BACKEND_STATE=$_bs_st
+    return 0
+}
+
+# backend_state: print BackendState from "tailscale status --json", or fail.
+backend_state() {
+    daemon_read_state || return 1
+    printf '%s\n' "$_BIFROST_BACKEND_STATE"
 }
 
 # daemon_wait_ready <secs>: 0 when status --json answers within <secs>.
@@ -155,14 +231,8 @@ daemon_wait_ready() {
 
 # daemon_precheck: verify core, tun device, no conflict, writable state dir.
 daemon_precheck() {
-    if [ ! -x "$BIFROST_CORE" ]; then
+    if ! core_version >/dev/null; then
         log daemon "precheck failed: core missing"
-        daemon_err_set core_missing
-        return 1
-    fi
-    _dpc_ver=$(run_timeout 5 "$BIFROST_CORE" --version 2>/dev/null | head -n 1)
-    if [ -z "$_dpc_ver" ]; then
-        log daemon "precheck failed: core --version failed"
         daemon_err_set core_missing
         return 1
     fi
@@ -220,15 +290,15 @@ daemon_sync_control_from_prefs() {
     [ -f "$BIFROST_STATE/control_url" ] && return 0
     _sp_url=$(printf '%s\n' "$1" | jq -r '.ControlURL // empty' 2>/dev/null)
     if [ -n "$_sp_url" ] && ! daemon_is_official_url "$_sp_url" && valid_login_server "$_sp_url"; then
-        daemon_set_control_server "$_sp_url" || true
+        daemon_set_control_server "$_sp_url" || { fail state_not_writable; return 1; }
     fi
 }
 
 # daemon_fix_prefs: check fixed prefs (PLAN 4.3) and repair any drift via set.
 daemon_fix_prefs() {
-    _df_json=$(prefs_json) || return 1
-    daemon_sync_control_from_prefs "$_df_json"
-    _df_flags=$(daemon_prefs_drifted "$_df_json") || {
+    daemon_read_prefs || return 1
+    daemon_sync_control_from_prefs "$_BIFROST_PREFS_JSON" || return 1
+    _df_flags=$(daemon_prefs_drifted "$_BIFROST_PREFS_JSON") || {
         fail cli_failed
         return 1
     }
@@ -250,11 +320,11 @@ daemon_fix_prefs() {
 }
 
 daemon_watchdog_register() {
-    cru a bifrost_watchdog "$BIFROST_WATCHDOG_CRON sh $BIFROST_SCRIPTS/bifrost_config.sh local watchdog" >/dev/null 2>&1
+    cru a "$BIFROST_WATCHDOG_NAME" "$BIFROST_WATCHDOG_CRON sh $BIFROST_SCRIPTS/bifrost_config.sh local watchdog" >/dev/null 2>&1
 }
 
 daemon_watchdog_remove() {
-    cru d bifrost_watchdog >/dev/null 2>&1
+    cru d "$BIFROST_WATCHDOG_NAME" >/dev/null 2>&1
 }
 
 daemon_trim_file() {
@@ -275,9 +345,13 @@ daemon_trim_logs() {
     daemon_trim_file "$BIFROST_LOG"
 }
 
-# daemon_start: full startup sequence (PLAN 6.2). Caller holds state lock.
-daemon_start() {
+# Launch and read the active profile under the caller's state lock.
+daemon_start_ready() {
     daemon_phase precheck 15
+    daemon_watchdog_register || {
+        daemon_err_set internal
+        return 1
+    }
     daemon_precheck || return 1
 
     mkdir -p "$BIFROST_RUN" "$BIFROST_TS_LOGS" "$BIFROST_SOCK_DIR" "$BIFROST_UPLOAD" || {
@@ -290,26 +364,26 @@ daemon_start() {
     if ! daemon_running; then
         daemon_phase starting 35
         rm -f "$BIFROST_SOCK"
-        _da_port=$(cfg bifrost_port)
+        _dst_port=$(cfg bifrost_port)
         set -- \
             "--statedir=$BIFROST_STATE" \
             "--socket=$BIFROST_SOCK" \
             "--tun=$BIFROST_TUN" \
-            "--port=$_da_port"
+            "--port=$_dst_port"
         if daemon_should_disable_logs; then
             set -- "$@" --no-logs-no-support
         fi
-        log daemon "starting bifrostd on port $_da_port"
+        log daemon "starting bifrostd on port $_dst_port"
         TS_LOGS_DIR="$BIFROST_TS_LOGS" \
             nohup "$BIFROST_CORE" "$@" </dev/null >>"$BIFROST_DLOG" 2>&1 &
-        _da_pid=$!
-        printf '%s\n' "$_da_pid" | atomic_write "$BIFROST_PIDFILE" 644
+        _dst_pid=$!
+        printf '%s\n' "$_dst_pid" | atomic_write "$BIFROST_PIDFILE" 644
 
         daemon_phase waiting 55
         if ! daemon_wait_ready "$BIFROST_WAIT_READY"; then
             log daemon "bifrostd failed to become ready"
-            kill -KILL "$_da_pid" 2>/dev/null || true
-            wait "$_da_pid" 2>/dev/null || true
+            kill -KILL "$_dst_pid" 2>/dev/null || true
+            wait "$_dst_pid" 2>/dev/null || true
             rm -f "$BIFROST_PIDFILE" "$BIFROST_SOCK"
             daemon_err_set start_failed
             return 1
@@ -318,90 +392,156 @@ daemon_start() {
 
     daemon_phase prefs 70
     if ! daemon_fix_prefs; then
-        _da_err=${BIFROST_ERR:-cli_failed}
-        log daemon "failed to enforce fixed prefs: $_da_err"
-        daemon_err_set "$_da_err"
+        _dst_err=${BIFROST_ERR:-cli_failed}
+        log daemon "failed to enforce fixed prefs: $_dst_err"
+        daemon_err_set "$_dst_err"
+        status_refresh || true
         return 1
     fi
+}
 
+daemon_start() {
+    daemon_start_ready || return 1
+    # An imported profile may reveal its control server only after startup.
+    if daemon_should_disable_logs && ! daemon_running_has_nologs; then
+        log daemon "restarting to disable logging for the active profile"
+        daemon_stop_for_restart && daemon_start_ready || return 1
+        daemon_running_has_nologs || { daemon_err_set start_failed; return 1; }
+    fi
     daemon_phase firewall 85
     if ! fw_apply; then
-        _da_err=${BIFROST_ERR:-fw_failed}
-        log daemon "fw_apply failed: $_da_err"
-        daemon_err_set "$_da_err"
+        _dst_err=${BIFROST_ERR:-fw_failed}
+        log daemon "fw_apply failed: $_dst_err"
+        daemon_err_set "$_dst_err"
+        status_refresh || true
         return 1
     fi
 
     daemon_phase dns 95
     if ! dns_apply; then
-        log daemon "dns_apply skipped during start: ${BIFROST_ERR:-unknown}"
-        BIFROST_ERR=""
+        log daemon "dns_apply during start failed: ${BIFROST_ERR:-internal}"
+        daemon_err_set "${BIFROST_ERR:-internal}"
+    else
+        daemon_err_clear
     fi
-
-    daemon_watchdog_register || log daemon "cru register failed"
-    daemon_err_clear
     status_refresh || true
     log daemon "bifrostd started"
     return 0
 }
 
-# daemon_stop: full stop sequence (PLAN 6.3). Succeeds when nothing runs.
+# Stop under the state lock. Attempt both network clears and finish stopping
+# even if one fails. The first clear error survives later status refreshes.
 daemon_stop() {
-    daemon_watchdog_remove || true
-    fw_clear || log daemon "fw_clear failed during stop"
-    dns_clear || log daemon "dns_clear failed during stop"
+    _dsp_clear_err=""
+    BIFROST_ERR=""
+    if ! fw_clear; then
+        _dsp_clear_err=${BIFROST_ERR:-fw_failed}
+        log daemon "fw_clear failed during stop: $_dsp_clear_err"
+    fi
+    BIFROST_ERR=""
+    if ! dns_clear; then
+        log daemon "dns_clear failed during stop: ${BIFROST_ERR:-internal}"
+        [ -n "$_dsp_clear_err" ] || _dsp_clear_err=${BIFROST_ERR:-internal}
+    fi
 
     daemon_phase stopping 40
-    _ds_pid=$(daemon_pid 2>/dev/null)
-    if [ -n "$_ds_pid" ]; then
-        log daemon "stopping bifrostd (pid $_ds_pid)"
-        kill -TERM "$_ds_pid" 2>/dev/null || true
-        _ds_i=0
-        while [ "$_ds_i" -lt "$BIFROST_STOP_TIMEOUT" ]; do
-            daemon_pid_alive "$_ds_pid" || break
+    _dsp_pid=$(daemon_find_pid 2>/dev/null)
+    if [ -n "$_dsp_pid" ]; then
+        log daemon "stopping bifrostd (pid $_dsp_pid)"
+        kill -TERM "$_dsp_pid" 2>/dev/null || true
+        _dsp_i=0
+        while daemon_owns_pid "$_dsp_pid" && [ "$_dsp_i" -lt "$BIFROST_STOP_TIMEOUT" ]; do
             sleep 1
-            _ds_i=$((_ds_i + 1))
+            _dsp_i=$((_dsp_i + 1))
         done
-        if daemon_pid_alive "$_ds_pid"; then
+        if daemon_owns_pid "$_dsp_pid"; then
             log daemon "bifrostd ignored TERM; sending KILL"
-            kill -KILL "$_ds_pid" 2>/dev/null || true
-            _ds_k=0
-            while [ "$_ds_k" -lt 2 ]; do
-                daemon_pid_alive "$_ds_pid" || break
+            kill -KILL "$_dsp_pid" 2>/dev/null || true
+            _dsp_i=0
+            while daemon_owns_pid "$_dsp_pid" && [ "$_dsp_i" -lt "$BIFROST_STOP_TIMEOUT" ]; do
                 sleep 1
-                _ds_k=$((_ds_k + 1))
+                _dsp_i=$((_dsp_i + 1))
             done
         fi
-        wait "$_ds_pid" 2>/dev/null || true
+        if _dsp_live=$(daemon_find_pid 2>/dev/null); then
+            log daemon "bifrostd still running; restoring network settings"
+            printf '%s\n' "$_dsp_live" | atomic_write "$BIFROST_PIDFILE" 644 || log daemon "could not restore pidfile"
+            fw_apply || log daemon "could not restore firewall after failed stop"
+            dns_apply || log daemon "could not restore DNS after failed stop"
+            fail internal
+            return 1
+        fi
+        wait "$_dsp_pid" 2>/dev/null || true
     fi
+
     rm -f "$BIFROST_PIDFILE" "$BIFROST_SOCK"
+    daemon_clean_stale_authkey
 
     daemon_phase cleanup 80
     if [ -x "$BIFROST_CORE" ] && ! orig_running; then
-        run_timeout "$BIFROST_CLEANUP_TIMEOUT" "$BIFROST_CORE" --cleanup >/dev/null 2>&1 || \
+        run_timeout "$BIFROST_CLEANUP_TIMEOUT" "$BIFROST_CORE" --cleanup >/dev/null 2>&1 ||
             log daemon "bifrostd --cleanup exited non-zero"
     fi
 
     BIFROST_ERR=""
     status_refresh || true
     log daemon "bifrostd stopped"
+    [ -z "$_dsp_clear_err" ] || { fail "$_dsp_clear_err"; return 1; }
+    return 0
+}
+
+daemon_stop_for_restart() {
+    daemon_stop && return 0
+    if daemon_find_pid >/dev/null; then return 1; fi
+    log daemon "restarting after network cleanup error: ${BIFROST_ERR:-internal}"
+    BIFROST_ERR=""
     return 0
 }
 
 daemon_restart() {
-    daemon_stop && daemon_start
+    daemon_stop_for_restart && daemon_start
 }
 
 # Init.d hooks (called under state lock by bifrost_config.sh).
 hook_start() {
+    # Restore the core first. The current enable setting controls startup
+    # even if the daemon was running when the update was interrupted.
+    if has_cmd core_recover && ! core_recover stopped; then
+        log daemon "core recovery failed: ${BIFROST_ERR:-internal}"
+        BIFROST_ERR=""
+    fi
+    if has_cmd migrate_recover; then migrate_recover || return 1; fi
     [ "$(cfg bifrost_enable)" = 1 ] || return 0
-    daemon_running && return 0
+    if daemon_running; then
+        daemon_watchdog_register
+        return $?
+    fi
     daemon_start
 }
 
-hook_stop() {
-    daemon_stop
+# Remove supervision only once the daemon has stopped. A network-clear
+# failure still stops the service, but remains visible to the calling job.
+daemon_deactivate() {
+    _dda_err=""
+    if ! daemon_stop; then
+        _dda_err=${BIFROST_ERR:-internal}
+        daemon_find_pid >/dev/null 2>&1 && { fail "$_dda_err"; return 1; }
+    fi
+    daemon_unschedule "$1" || { fail "${_dda_err:-internal}"; return 1; }
+    if [ -n "$_dda_err" ]; then
+        status_refresh || true
+        fail "$_dda_err"
+        return 1
+    fi
+    return 0
 }
+
+daemon_unschedule() {
+    if [ "$1" = disable ]; then cfg_set bifrost_enable 0 || return 1; fi
+    daemon_watchdog_remove
+}
+
+hook_stop() { daemon_deactivate hook; }
 
 hook_start_nat() {
     daemon_running || return 0
@@ -411,9 +551,11 @@ hook_start_nat() {
 # watchdog_run: 6-point health check (PLAN 6.5). Called under state lock (wait 0).
 watchdog_run() {
     daemon_trim_logs
+    daemon_clean_stale_authkey
     [ "$(cfg bifrost_enable)" = 1 ] || return 0
 
-    if [ -f "$BIFROST_DAEMON_ERR" ] && [ "$(cat "$BIFROST_DAEMON_ERR" 2>/dev/null)" = watchdog_gave_up ]; then
+    _wd_error=$(cat "$BIFROST_DAEMON_ERR" 2>/dev/null)
+    if [ "$_wd_error" = watchdog_gave_up ]; then
         fail watchdog_gave_up
         return 1
     fi
@@ -471,21 +613,36 @@ $_wd_ts"
     fi
 
     _wd_changed=0
-    _wd_pjson=$(prefs_json) && {
-        _wd_drift=$(daemon_prefs_drifted "$_wd_pjson")
-        if [ -n "$_wd_drift" ]; then
-            daemon_fix_prefs && _wd_changed=1
-        fi
-    }
-
-    if ! fw_check; then
-        log watchdog "fw_check failed; reapplying firewall"
-        fw_apply && _wd_changed=1
+    _wd_problem=""
+    if ! daemon_fix_prefs; then
+        _wd_problem=${BIFROST_ERR:-cli_failed}
+    elif daemon_should_disable_logs && ! daemon_running_has_nologs; then
+        log watchdog "restarting to enforce the active profile logging setting"
+        daemon_restart
+        return $?
+    elif [ -n "$_df_flags" ]; then
+        _wd_changed=1
     fi
-
-    if ! dns_check; then
-        log watchdog "dns_check failed; reapplying dns"
-        dns_apply && _wd_changed=1
+    if [ "$_wd_error" = fw_failed ] || ! fw_check; then
+        fw_apply || _wd_problem=${_wd_problem:-fw_failed}
+        _wd_changed=1
+    fi
+    # dns_check reports stale files. A policy error can still exist while
+    # the file is correct, so replay dns_apply before clearing a prior error.
+    if [ -n "$_wd_error" ] || ! dns_check; then
+        dns_apply || _wd_problem=${_wd_problem:-${BIFROST_ERR:-internal}}
+        _wd_changed=1
+    fi
+    if [ -n "$_wd_problem" ]; then
+        daemon_err_set "$_wd_problem"
+        _wd_changed=1
+    else
+        case "$_wd_error" in
+            internal) daemon_watchdog_register && daemon_err_clear ;;
+            state_not_writable) daemon_precheck && daemon_err_clear ;;
+            fw_failed | cli_failed | "timeout" | not_running | no_conf_dir | no_magicdns)
+                daemon_err_clear ;;
+        esac
     fi
 
     [ "$_wd_changed" = 1 ] && { status_refresh || true; }
@@ -513,11 +670,11 @@ job_daemon() {
             ;;
         stop)
             job_data daemon '{"action":"stop"}'
-            cfg_set bifrost_enable 0 || return 1
             _BIFROST_DAEMON_JOB=daemon
-            daemon_stop
+            daemon_deactivate disable
             _jdm_rc=$?
             _BIFROST_DAEMON_JOB=""
+            [ "$_jdm_rc" -eq 0 ] || return "$_jdm_rc"
             daemon_err_clear
             rm -f "$BIFROST_RUN/watchdog.restarts"
             status_refresh || true
@@ -535,18 +692,24 @@ job_daemon() {
         purge)
             job_data daemon '{"action":"purge"}'
             job_phase daemon purge 10
+            if has_cmd migrate_recover; then
+                migrate_recover || return 1
+                [ ! -d "$_BIFROST_MIGRATION" ] || { fail state_not_writable; return 1; }
+            fi
             if daemon_running; then
                 log daemon "purge: logging out"
                 ts_cli logout >/dev/null 2>&1 || log daemon "purge: logout failed; continuing"
             fi
             _BIFROST_DAEMON_JOB=daemon
-            daemon_stop
+            daemon_deactivate disable
+            _jdm_rc=$?
             _BIFROST_DAEMON_JOB=""
+            [ "$_jdm_rc" -eq 0 ] || return "$_jdm_rc"
             job_phase daemon purge 85
-            if [ -n "$BIFROST_STATE" ] && [ -d "$BIFROST_STATE" ]; then
-                rm -rf "${BIFROST_STATE:?}"/* "${BIFROST_STATE:?}"/.[!.]* "${BIFROST_STATE:?}"/..?* 2>/dev/null || true
+            if ! daemon_clear_state_dir || ! rm -rf "${BIFROST_STATE}".bak.*; then
+                fail state_not_writable
+                return 1
             fi
-            cfg_set bifrost_enable 0 || return 1
             daemon_err_clear
             rm -f "$BIFROST_RUN/watchdog.restarts"
             status_refresh || true
