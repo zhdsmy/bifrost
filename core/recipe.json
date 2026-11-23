@@ -1,0 +1,47 @@
+{
+  "tailscale": {
+    "version": "1.104.7",
+    "commit": "cbc74fe48ef1b1649f69a4d9a602319427e25102"
+  },
+  "go": "1.27.4",
+  "revision": 1,
+  "min_plugin": "0.1.0",
+  "omit": [
+    "aws",
+    "bird",
+    "tap",
+    "kube",
+    "completion",
+    "completion_scripts",
+    "systray",
+    "tpm",
+    "debugeventbus",
+    "syspolicy",
+    "capture",
+    "ssh",
+    "taildrop",
+    "clientupdate",
+    "webclient",
+    "drive",
+    "desktop_sessions",
+    "webbrowser",
+    "networkmanager",
+    "resolved",
+    "dbus",
+    "synology",
+    "sdnotify",
+    "flashappliance",
+    "cloud"
+  ],
+  "targets": [
+    {
+      "name": "arm",
+      "GOARCH": "arm",
+      "GOARM": "7"
+    },
+    {
+      "name": "arm64",
+      "GOARCH": "arm64"
+    }
+  ]
+}

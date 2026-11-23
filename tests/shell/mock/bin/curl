@@ -1,0 +1,90 @@
+#!/bin/sh
+# Mock of curl for shell tests.
+# Logs every requested URL (one per line) to $MOCK_STATE/curl.log.
+# Looks up exact URL in $MOCK_STATE/curl.map, lines of:
+#   <url> file:<path>               copy <path> to -o (or stdout), exit 0
+#   <url> fail:<rc>                 exit <rc> (HTTP / network error)
+#   <url> trunc:<path>:<bytes>      write first <bytes> of <path>, exit 18
+#   <url> partial:<path>:<bytes>    write first <bytes> of <path>, exit 0
+# Unmapped URLs exit 22 (like curl -f on 404).
+
+out=""
+url=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o | --output)
+            out=$2
+            shift 2
+            ;;
+        --connect-timeout | --max-time | --retry | -m | -H | -d | -X | -A | --unix-socket)
+            shift 2
+            ;;
+        -*)
+            shift
+            ;;
+        *)
+            url=$1
+            shift
+            ;;
+    esac
+done
+
+[ -n "$url" ] || exit 2
+printf '%s\n' "$url" >>"$MOCK_STATE/curl.log"
+
+spec=""
+if [ -r "$MOCK_STATE/curl.map" ]; then
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        u=${line%% *}
+        if [ "$u" = "$url" ]; then
+            spec=${line#* }
+        fi
+    done <"$MOCK_STATE/curl.map"
+fi
+
+[ -n "$spec" ] || exit 22
+
+case "$spec" in
+    file:*)
+        src=${spec#file:}
+        [ -r "$src" ] || exit 22
+        if [ -n "$out" ]; then
+            cp "$src" "$out"
+        else
+            cat "$src"
+        fi
+        exit 0
+        ;;
+    fail:*)
+        exit "${spec#fail:}"
+        ;;
+    trunc:*)
+        rest=${spec#trunc:}
+        src=${rest%:*}
+        n=${rest##*:}
+        [ -r "$src" ] || exit 22
+        if [ -n "$out" ]; then
+            dd if="$src" of="$out" bs=1 count="$n" 2>/dev/null
+        else
+            dd if="$src" bs=1 count="$n" 2>/dev/null
+        fi
+        exit 18
+        ;;
+    partial:*)
+        rest=${spec#partial:}
+        src=${rest%:*}
+        n=${rest##*:}
+        [ -r "$src" ] || exit 22
+        if [ -n "$out" ]; then
+            dd if="$src" of="$out" bs=1 count="$n" 2>/dev/null
+        else
+            dd if="$src" bs=1 count="$n" 2>/dev/null
+        fi
+        exit 0
+        ;;
+    *)
+        echo "mock curl: bad map entry: $spec" >&2
+        exit 2
+        ;;
+esac

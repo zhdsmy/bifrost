@@ -1,0 +1,45 @@
+#!/bin/sh
+# Mock of df for shell tests.
+# Supports optional free-space overrides in $MOCK_STATE:
+#   $MOCK_STATE/df.map       lines of "<path_prefix> <avail_kb>" (longest prefix wins)
+#   $MOCK_STATE/df_avail_kb  fallback integer available KiB for any path
+# When neither matches, delegates to BusyBox df.
+
+target=""
+for a in "$@"; do
+    case "$a" in
+        -*) ;;
+        *) target=$a ;;
+    esac
+done
+
+avail=""
+best_len=0
+if [ -n "$target" ] && [ -r "$MOCK_STATE/df.map" ]; then
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        p=${line%% *}
+        v=${line#* }
+        case "$target" in
+            "$p" | "$p"/*)
+                plen=${#p}
+                if [ "$plen" -gt "$best_len" ]; then
+                    best_len=$plen
+                    avail=$v
+                fi
+                ;;
+        esac
+    done <"$MOCK_STATE/df.map"
+fi
+
+if [ -z "$avail" ] && [ -r "$MOCK_STATE/df_avail_kb" ]; then
+    avail=$(head -n 1 "$MOCK_STATE/df_avail_kb" | tr -d ' \t\r\n')
+fi
+
+if [ -n "$avail" ]; then
+    printf 'Filesystem           1K-blocks      Used Available Use%% Mounted on\n'
+    printf '/dev/mock               500000     10000 %9s   2%% %s\n' "$avail" "${target:-/}"
+    exit 0
+fi
+
+exec /opt/bb125/busybox df "$@"
