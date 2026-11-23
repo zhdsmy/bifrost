@@ -1,0 +1,17 @@
+{
+  "Version": "1.104.7-tcbc74fe48",
+  "TUN": true,
+  "BackendState": "NeedsLogin",
+  "AuthURL": "https://login.example.org/a/fake1234567890",
+  "TailscaleIPs": null,
+  "Self": {
+    "HostName": "router",
+    "DNSName": "",
+    "OS": "linux",
+    "Online": false
+  },
+  "Health": ["not logged in"],
+  "MagicDNSSuffix": "",
+  "CurrentTailnet": null,
+  "Peer": null
+}

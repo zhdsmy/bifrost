@@ -1,0 +1,14 @@
+{
+  "Regions": {
+    "8": {
+      "RegionID": 8,
+      "RegionCode": "tok",
+      "RegionName": "Tokyo"
+    },
+    "20": {
+      "RegionID": 20,
+      "RegionCode": "hkg",
+      "RegionName": "Hong Kong"
+    }
+  }
+}

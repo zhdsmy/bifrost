@@ -1,0 +1,4 @@
+#!/bin/sh
+# Stateful mock of ip6tables (delegates to mock iptables with its own state).
+export BIFROST_MOCK_IPT_FAM=ip6tables
+exec "${0%/*}/iptables" "$@"

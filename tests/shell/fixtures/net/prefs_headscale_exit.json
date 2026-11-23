@@ -1,0 +1,15 @@
+{
+  "ControlURL": "https://hs.example.org/",
+  "RouteAll": true,
+  "CorpDNS": false,
+  "WantRunning": true,
+  "LoggedOut": false,
+  "ShieldsUp": false,
+  "Hostname": "gw-home",
+  "AdvertiseRoutes": ["192.168.1.0/24", "0.0.0.0/0", "::/0"],
+  "NoSNAT": false,
+  "NetfilterMode": 0,
+  "Config": {
+    "PrivateNodeKey": "privkey:1111111111111111111111111111111111111111111111111111111111111111"
+  }
+}

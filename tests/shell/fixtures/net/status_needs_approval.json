@@ -1,0 +1,22 @@
+{
+  "Version": "1.104.7-tcbc74fe48",
+  "TUN": true,
+  "BackendState": "NeedsMachineAuth",
+  "AuthURL": "https://login.example.org/stale-url",
+  "TailscaleIPs": ["100.64.0.1"],
+  "Self": {
+    "HostName": "router",
+    "DNSName": "router.example.ts.net.",
+    "OS": "linux",
+    "TailscaleIPs": ["100.64.0.1"],
+    "Online": false
+  },
+  "Health": ["machine authorization required"],
+  "MagicDNSSuffix": "example.ts.net",
+  "CurrentTailnet": {
+    "Name": "example.ts.net",
+    "MagicDNSSuffix": "example.ts.net",
+    "MagicDNSEnabled": true
+  },
+  "Peer": null
+}

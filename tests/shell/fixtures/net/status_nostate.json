@@ -1,0 +1,12 @@
+{
+  "Version": "1.104.7-tcbc74fe48",
+  "TUN": true,
+  "BackendState": "NoState",
+  "AuthURL": "",
+  "TailscaleIPs": null,
+  "Self": null,
+  "Health": [],
+  "MagicDNSSuffix": "",
+  "CurrentTailnet": null,
+  "Peer": null
+}
