@@ -1,0 +1,17 @@
+{
+  "Version": "1.104.7",
+  "TUN": true,
+  "BackendState": "Running",
+  "HaveNodeKey": true,
+  "AuthURL": "",
+  "TailscaleIPs": ["100.64.0.1"],
+  "Self": {
+    "ID": "n123456CNTRL",
+    "PublicKey": "nodekey:1111111111111111111111111111111111111111111111111111111111111111",
+    "HostName": "router",
+    "DNSName": "router.example.ts.net.",
+    "Online": true
+  },
+  "MagicDNSSuffix": "example.ts.net",
+  "Health": []
+}

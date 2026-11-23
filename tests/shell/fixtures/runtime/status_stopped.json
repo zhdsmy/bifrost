@@ -1,0 +1,12 @@
+{
+  "Version": "1.104.7",
+  "TUN": true,
+  "BackendState": "Stopped",
+  "HaveNodeKey": true,
+  "AuthURL": "",
+  "Self": {
+    "ID": "n123456CNTRL",
+    "PublicKey": "nodekey:1111111111111111111111111111111111111111111111111111111111111111",
+    "HostName": "router"
+  }
+}
