@@ -1,0 +1,14 @@
+# Static local DERP map for offline container integration tests.
+# Peers on the 198.51.100.0/24 Docker bridge connect directly over UDP.
+regions:
+  900:
+    regionid: 900
+    regioncode: test
+    regionname: Container Test
+    nodes:
+      - name: 900a
+        regionid: 900
+        hostname: 198.51.100.10
+        ipv4: 198.51.100.10
+        stunonly: true
+        stunport: 3478

@@ -1,0 +1,90 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shell:
+    name: Shell, install & packaging checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Check shell scripts (shellcheck, BusyBox 1.25 sh -n, forbidden patterns)
+        run: tools/check-sh.sh
+      - name: Check for private details
+        run: tools/check-private.sh
+      - name: Run shell unit tests
+        run: tests/shell/run.sh
+      - name: Run BusyBox 1.25 install/upgrade/uninstall tests
+        run: tests/install/run.sh
+      - name: Verify reproducible packaging & BusyBox smoke install
+        run: packaging/test-build.sh
+
+  core-recipe:
+    name: Core recipe check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Read Go version from core/recipe.json
+        id: go-ver
+        run: |
+          go_ver="$(jq -r .go core/recipe.json)"
+          echo "version=${go_ver}" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: ${{ steps.go-ver.outputs.version }}
+          cache: false
+      - name: Validate core recipe with featuretags
+        run: core/build.sh --check-recipe
+
+  web:
+    name: Web typecheck, tests & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci --include=dev --no-audit --no-fund
+      - name: Install Chromium for Playwright tests
+        working-directory: web
+        run: npx playwright-core install --with-deps chromium
+      - name: Typecheck
+        working-directory: web
+        run: npm run check
+      - name: Build and verify bundle size budgets
+        working-directory: web
+        run: npm run build
+      - name: Run unit and page tests
+        working-directory: web
+        run: npm test
+
+  container:
+    name: Container integration tests
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Read Go version from core/recipe.json
+        id: go-ver
+        run: |
+          go_ver="$(jq -r .go core/recipe.json)"
+          echo "version=${go_ver}" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: ${{ steps.go-ver.outputs.version }}
+          cache: false
+      - name: Run container integration suite
+        run: tests/container/run.sh --full
