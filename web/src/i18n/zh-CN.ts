@@ -166,6 +166,8 @@ export const zhCN = {
   "migrate.manualStopNotice": "请先到软件中心原版插件页面停用原版服务，Bifrost 检测到它停止后会自动继续迁移。",
   "migrate.doneSuccess": "迁移成功，Bifrost 已接管当前设备身份。确认使用正常后可卸载原版插件。",
   "migrate.doneRolledBack": "迁移验证失败，已自动回滚到原版状态。",
+  "migrate.cleanupError": "回滚时清理 Bifrost 网络规则失败：{error}",
+  "migrate.backupPending": "迁移前的备份未能删除，其中包含设备私钥。再次迁移、清除数据或卸载时会重试删除。",
 
   // Devices page (PLAN 13.4)
   "devices.title": "tailnet 设备",

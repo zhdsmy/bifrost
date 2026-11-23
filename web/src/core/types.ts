@@ -182,6 +182,8 @@ export interface LoginJobData {
 export interface MigrateJobData {
   manual_stop?: boolean;
   rolled_back?: boolean;
+  cleanup_error?: string;
+  backup_cleanup_pending?: boolean;
 }
 
 export interface UpdateJobData {

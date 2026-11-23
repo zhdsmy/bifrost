@@ -14,7 +14,7 @@ export function MigrateCard({
   disabled: boolean;
   onRequestMigrate: (anchor: HTMLElement) => void;
 }) {
-  const { jobs, t } = useApp();
+  const { jobs, t, tErrorCode } = useApp();
   const migrateJob = jobs.migrate as JobProgressState<MigrateJobData> | undefined;
 
   return (
@@ -46,8 +46,17 @@ export function MigrateCard({
         !migrateJob.running &&
         migrateJob.ok === false &&
         migrateJob.data?.rolled_back ? (
-          <Banner variant="alert" role="alert" title={t("migrate.doneRolledBack")} />
+          <Banner
+            variant="alert"
+            role="alert"
+            title={t("migrate.doneRolledBack")}
+            description={migrateJob.data.cleanup_error &&
+              t("migrate.cleanupError", { error: tErrorCode(migrateJob.data.cleanup_error) })}
+          />
         ) : <JobProgress job={migrateJob} hideSuccess />}
+      {migrateJob && !migrateJob.running && migrateJob.data?.backup_cleanup_pending && (
+        <Banner variant="alert" title={t("migrate.backupPending")} />
+      )}
     </SectionCard>
   );
 }

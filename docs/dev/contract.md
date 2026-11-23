@@ -274,7 +274,7 @@ own time limit, as long as it keeps refreshing status.
 |---|---|---|
 | `daemon` | `queued start precheck starting waiting prefs firewall dns stopping cleanup purge done` | `{"action":"start"\|"stop"\|"restart"\|"purge"}` |
 | `login` | `queued start running done` | `{"action":"login"\|"relogin","official":bool}` |
-| `migrate` | `queued start precheck record backup stop_original wait_original copy starting verify rollback done` | `{"manual_stop":bool,"rolled_back":bool}` |
+| `migrate` | `queued start precheck record backup stop_original wait_original copy starting verify rollback done` | `{"manual_stop":bool,"rolled_back":bool,"cleanup_error":"<code>","backup_cleanup_pending":bool}`. `cleanup_error` (may be absent): the daemon stopped during rollback but `fw_clear` or `dns_clear` failed; the rollback still finished. `backup_cleanup_pending:true`: the pre-migration backup (it holds the old private key) could not be deleted; the job result is unchanged and the next migration, purge, or uninstall retries |
 | `update` | `queued start manifest verify_manifest space download verify unpack test snapshot swap verify_running finalize rollback done` | `{"action":"check"\|"update"\|"rollback"\|"arch","latest":{tailscale,revision,serial,tag}\|null,"up_to_date":bool,"kept_prev":bool}`. `check` ends `ok` both with and without an update; `up_to_date:true` means the channel serial equals the installed one (the page then shows the `up_to_date` text). A lower channel serial fails with `old_serial` |
 | `netcheck` | `queued start running done` | `{"report":{...}}` (below) |
 

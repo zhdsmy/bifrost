@@ -168,6 +168,8 @@ export const en: Record<MessageKey, string> = {
   "migrate.manualStopNotice": "Please stop the original plugin from its own page. Bifrost will continue automatically once it stops.",
   "migrate.doneSuccess": "Migration succeeded and Bifrost is now active. You may uninstall the original plugin after verifying.",
   "migrate.doneRolledBack": "Migration verification failed and was automatically rolled back to the original plugin.",
+  "migrate.cleanupError": "Clearing Bifrost network rules during rollback failed: {error}",
+  "migrate.backupPending": "The pre-migration backup could not be deleted. It contains the device private key. Bifrost retries the deletion on the next migration, purge, or uninstall.",
 
   // Devices page (PLAN 13.4)
   "devices.title": "Tailnet Devices",
