@@ -414,12 +414,20 @@ daemon_start() {
     return 0
 }
 
-# daemon_stop: full stop sequence (PLAN 6.3). Succeeds when nothing runs.
-# Keeps watchdog cron while bifrost_enable=1 so failed restarts keep retrying
-# up to the 3-in-30-min limit; disable/purge/hook_stop/uninstall remove it.
+# Stop under the state lock. Attempt both network clears and finish stopping
+# even if one fails. The first clear error survives later status refreshes.
 daemon_stop() {
-    fw_clear || log daemon "fw_clear failed during stop"
-    dns_clear || log daemon "dns_clear failed during stop"
+    _dsp_clear_err=""
+    BIFROST_ERR=""
+    if ! fw_clear; then
+        _dsp_clear_err=${BIFROST_ERR:-fw_failed}
+        log daemon "fw_clear failed during stop: $_dsp_clear_err"
+    fi
+    BIFROST_ERR=""
+    if ! dns_clear; then
+        log daemon "dns_clear failed during stop: ${BIFROST_ERR:-internal}"
+        [ -n "$_dsp_clear_err" ] || _dsp_clear_err=${BIFROST_ERR:-internal}
+    fi
 
     daemon_phase stopping 40
     _dsp_pid=$(daemon_find_pid 2>/dev/null)
@@ -440,8 +448,11 @@ daemon_stop() {
                 _dsp_i=$((_dsp_i + 1))
             done
         fi
-        if daemon_find_pid >/dev/null 2>&1; then
-            log daemon "bifrostd still running; skipping cleanup"
+        if _dsp_live=$(daemon_find_pid 2>/dev/null); then
+            log daemon "bifrostd still running; restoring network settings"
+            printf '%s\n' "$_dsp_live" | atomic_write "$BIFROST_PIDFILE" 644 || log daemon "could not restore pidfile"
+            fw_apply || log daemon "could not restore firewall after failed stop"
+            dns_apply || log daemon "could not restore DNS after failed stop"
             fail internal
             return 1
         fi
@@ -460,6 +471,7 @@ daemon_stop() {
     BIFROST_ERR=""
     status_refresh || true
     log daemon "bifrostd stopped"
+    [ -z "$_dsp_clear_err" ] || { fail "$_dsp_clear_err"; return 1; }
     return 0
 }
 
@@ -477,10 +489,27 @@ hook_start() {
     daemon_start
 }
 
-hook_stop() {
-    daemon_watchdog_remove || true
-    daemon_stop
+# Remove supervision only once the daemon has stopped. A network-clear
+# failure still stops the service, but remains visible to the calling job.
+daemon_deactivate() {
+    _dda_err=""
+    if ! daemon_stop; then
+        _dda_err=${BIFROST_ERR:-internal}
+        daemon_find_pid >/dev/null 2>&1 && { fail "$_dda_err"; return 1; }
+    fi
+    if [ "$1" = disable ]; then
+        cfg_set bifrost_enable 0 || { fail "${_dda_err:-internal}"; return 1; }
+    fi
+    daemon_watchdog_remove || { fail "${_dda_err:-internal}"; return 1; }
+    if [ -n "$_dda_err" ]; then
+        status_refresh || true
+        fail "$_dda_err"
+        return 1
+    fi
+    return 0
 }
+
+hook_stop() { daemon_deactivate hook; }
 
 hook_start_nat() {
     daemon_running || return 0
@@ -616,12 +645,11 @@ job_daemon() {
             ;;
         stop)
             job_data daemon '{"action":"stop"}'
-            cfg_set bifrost_enable 0 || return 1
-            daemon_watchdog_remove || { fail internal; return 1; }
             _BIFROST_DAEMON_JOB=daemon
-            daemon_stop
+            daemon_deactivate disable
             _jdm_rc=$?
             _BIFROST_DAEMON_JOB=""
+            [ "$_jdm_rc" -eq 0 ] || return "$_jdm_rc"
             daemon_err_clear
             rm -f "$BIFROST_RUN/watchdog.restarts"
             status_refresh || true
@@ -643,10 +671,8 @@ job_daemon() {
                 log daemon "purge: logging out"
                 ts_cli logout >/dev/null 2>&1 || log daemon "purge: logout failed; continuing"
             fi
-            cfg_set bifrost_enable 0 || return 1
-            daemon_watchdog_remove || { fail internal; return 1; }
             _BIFROST_DAEMON_JOB=daemon
-            daemon_stop
+            daemon_deactivate disable
             _jdm_rc=$?
             _BIFROST_DAEMON_JOB=""
             [ "$_jdm_rc" -eq 0 ] || return "$_jdm_rc"

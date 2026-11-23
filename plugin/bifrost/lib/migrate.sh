@@ -72,10 +72,8 @@ migrate_rollback() {
     log migrate "rolling back failed migration (reason=$_mrb_code)"
 
     _mrb_ok=1
-    cfg_set bifrost_enable 0 || _mrb_ok=0
-    daemon_watchdog_remove || _mrb_ok=0
-    if ! daemon_stop; then
-        log migrate "could not confirm daemon stopped; preserving state and backup"
+    if ! daemon_deactivate disable; then
+        log migrate "stop or network cleanup failed; preserving state and backup"
         job_data migrate '{"rolled_back":false}'
         fail migrate_rollback_failed
         return 1
