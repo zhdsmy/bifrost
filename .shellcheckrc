@@ -1,0 +1,3 @@
+# The plugin's shell files share globals across sourced files (env.sh,
+# common.sh, the dispatcher), so "assigned but unused" is reported falsely.
+disable=SC2034

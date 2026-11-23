@@ -1,0 +1,4 @@
+#!/bin/sh
+# Mock of pidof: prints $MOCK_STATE/pidof/<name> when it exists.
+[ -f "$MOCK_STATE/pidof/$1" ] || exit 1
+cat "$MOCK_STATE/pidof/$1"

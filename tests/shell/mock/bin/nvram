@@ -1,0 +1,20 @@
+#!/bin/sh
+# Mock of nvram: key=value lines in $MOCK_STATE/nvram.env.
+f=$MOCK_STATE/nvram.env
+touch "$f"
+case "$1" in
+    get) sed -n "s/^$2=//p" "$f" | head -n 1 ;;
+    set)
+        k=${2%%=*}
+        grep -v "^$k=" "$f" >"$f.t"
+        printf '%s\n' "$2" >>"$f.t"
+        mv "$f.t" "$f"
+        ;;
+    unset)
+        grep -v "^$2=" "$f" >"$f.t"
+        mv "$f.t" "$f"
+        ;;
+    commit) ;;
+    *) echo "mock nvram: unsupported: $*" >&2; exit 1 ;;
+esac
+exit 0

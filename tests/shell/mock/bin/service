@@ -1,0 +1,3 @@
+#!/bin/sh
+# Mock of the firmware's service command: records the call.
+echo "$*" >>"$MOCK_STATE/service.log"

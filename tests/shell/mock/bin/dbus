@@ -1,0 +1,20 @@
+#!/bin/sh
+# Mock of the software center's dbus: key=value lines in $MOCK_STATE/dbus.env.
+f=$MOCK_STATE/dbus.env
+touch "$f"
+case "$1" in
+    get) sed -n "s/^$2=//p" "$f" | head -n 1 ;;
+    set)
+        k=${2%%=*}
+        grep -v "^$k=" "$f" >"$f.t"
+        printf '%s\n' "$2" >>"$f.t"
+        mv "$f.t" "$f"
+        ;;
+    remove)
+        grep -v "^$2=" "$f" >"$f.t"
+        mv "$f.t" "$f"
+        ;;
+    list) grep "^$2" "$f" ;;
+    *) echo "mock dbus: unsupported: $*" >&2; exit 1 ;;
+esac
+exit 0

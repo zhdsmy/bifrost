@@ -1,0 +1,2 @@
+#!/bin/sh
+echo "SYSLOG $*" >>"$MOCK_STATE/syslog.log"

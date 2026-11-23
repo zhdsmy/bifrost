@@ -1,0 +1,18 @@
+#!/bin/sh
+# Mock of iproute2 "ip". Every call is logged to $MOCK_STATE/ip.log.
+# Output comes from $MOCK_STATE/ip/<args with " " and "/" as "_">.out
+# (tests/shell/lib.sh: ip_out). Without that file a "show" or "list" call
+# fails like a missing device; other calls succeed.
+echo "$*" >>"$MOCK_STATE/ip.log"
+key=$(printf '%s' "$*" | tr ' /' '__')
+if [ -f "$MOCK_STATE/ip/$key.out" ]; then
+    cat "$MOCK_STATE/ip/$key.out"
+    exit "$(cat "$MOCK_STATE/ip/$key.rc" 2>/dev/null || echo 0)"
+fi
+case " $* " in
+    *" show "* | *" list "*)
+        echo "mock ip: no data for: $*" >&2
+        exit 1
+        ;;
+esac
+exit 0

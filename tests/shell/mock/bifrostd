@@ -1,0 +1,96 @@
+#!/bin/sh
+# Fake Bifrost core for the shell tests. Like the real combined binary it acts
+# as the CLI when its file name is "tailscale" or TS_BE_CLI=1, and as the
+# daemon otherwise. State lives in $MOCK_STATE.
+#
+# Daemon:  --version prints $MOCK_STATE/core_version (default 1.104.7).
+#          --cleanup is logged to $MOCK_STATE/daemon.log.
+#          Otherwise: arguments go to $MOCK_STATE/daemon.args, the --socket
+#          path is created as a plain file, and the process waits for TERM.
+#          $MOCK_STATE/daemon.fail: exit 1 at once.
+#          $MOCK_STATE/daemon.ignore_term: ignore TERM (needs KILL).
+# CLI:     every call is logged to $MOCK_STATE/ts.log (one line, without the
+#          --socket flag). KEY is the subcommand ("debug-<sub>" for debug).
+#          Without the socket file every call except "version" fails.
+#          $MOCK_STATE/ts/KEY.out is printed, KEY.err goes to stderr,
+#          KEY.sleep delays, KEY.rc is the exit status (default 0).
+
+ver=$(cat "$MOCK_STATE/core_version" 2>/dev/null || echo 1.104.7)
+
+version_text() {
+    printf '%s\n' "$ver"
+    printf '  tailscale commit: cbc74fe48ef1b1649f69a4d9a602319427e25102\n'
+    printf '  long version: %s-tcbc74fe48\n' "$ver"
+    printf '  go version: go1.27.4\n'
+}
+
+cli() {
+    sock=""
+    args=""
+    for a in "$@"; do
+        case "$a" in
+            --socket=*) sock=${a#--socket=} ;;
+            *) args="$args $a" ;;
+        esac
+    done
+    echo "${args# }" >>"$MOCK_STATE/ts.log"
+    # shellcheck disable=SC2086
+    set -- $args
+    key=${1:-none}
+    [ "$key" = debug ] && key="debug-${2:-none}"
+    if [ "$key" = version ]; then
+        if [ -f "$MOCK_STATE/ts/version.out" ]; then cat "$MOCK_STATE/ts/version.out"; else version_text; fi
+        exit 0
+    fi
+    if [ -n "$sock" ] && [ ! -e "$sock" ]; then
+        echo "failed to connect to local tailscaled; it doesn't appear to be running" >&2
+        exit 1
+    fi
+    d=$MOCK_STATE/ts
+    [ -f "$d/$key.sleep" ] && sleep "$(cat "$d/$key.sleep")"
+    [ -f "$d/$key.out" ] && cat "$d/$key.out"
+    [ -f "$d/$key.err" ] && cat "$d/$key.err" >&2
+    exit "$(cat "$d/$key.rc" 2>/dev/null || echo 0)"
+}
+
+daemon() {
+    case "${1:-}" in
+        --version | -version)
+            version_text
+            exit 0
+            ;;
+        --cleanup | -cleanup)
+            echo "cleanup" >>"$MOCK_STATE/daemon.log"
+            exit 0
+            ;;
+    esac
+    [ -f "$MOCK_STATE/daemon.fail" ] && {
+        echo "fake bifrostd: startup failure" >&2
+        exit 1
+    }
+    echo "$*" >"$MOCK_STATE/daemon.args"
+    echo "TS_LOGS_DIR=${TS_LOGS_DIR:-}" >"$MOCK_STATE/daemon.env"
+    sock=""
+    for a in "$@"; do
+        case "$a" in --socket=*) sock=${a#--socket=} ;; esac
+    done
+    if [ -n "$sock" ]; then
+        mkdir -p "${sock%/*}"
+        : >"$sock"
+    fi
+    if [ -f "$MOCK_STATE/daemon.ignore_term" ]; then
+        trap '' TERM
+    else
+        trap 'rm -f "$sock"; echo stopped >>"$MOCK_STATE/daemon.log"; exit 0' TERM INT
+    fi
+    echo "started $$" >>"$MOCK_STATE/daemon.log"
+    while :; do
+        sleep 1
+    done
+}
+
+case "${0##*/}" in
+    tailscale) cli "$@" ;;
+esac
+[ "${TS_BE_CLI:-}" = 1 ] && cli "$@"
+daemon "$@"
