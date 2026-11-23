@@ -262,6 +262,12 @@ All in `$BIFROST_UPLOAD` (`/tmp/upload`), written with `json_write` or
   "finished": null, "pid": 4321, "data": {} }
 ```
 
+A job that is killed leaves `running:true`. `bifrost_status.sh` calls
+`job_reap` (common) before each refresh: a running job whose `pid` is gone
+becomes `running:false, ok:false, code:"internal"` (a `queued` file younger
+than 60 s is left alone). So the page can poll a job until it ends without its
+own time limit, as long as it keeps refreshing status.
+
 `phase` values (P4 translates them; an unknown phase is shown as is):
 
 | Job | Phases | `data` |

@@ -23,6 +23,7 @@ bifrost_status_main() {
         return 1
     fi
     BIFROST_ERR=""
+    job_reap
     if status_refresh; then
         respond_ok
     else

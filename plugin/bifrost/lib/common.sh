@@ -280,6 +280,26 @@ job_running() {
     [ -n "$_jr_pid" ] && kill -0 "$_jr_pid" 2>/dev/null
 }
 
+# job_reap: a job file that says running while its process is gone (the job
+# was killed) is marked failed with `internal`, so the page stops waiting.
+# A queued file younger than 60 s is skipped: its pid is the requester until
+# job_run takes over.
+job_reap() {
+    for _jp_job in daemon login migrate update netcheck; do
+        _jp_f=$(job_file "$_jp_job")
+        [ -f "$_jp_f" ] || continue
+        _jp_pid=$(jq -r --argjson t "$(now)" \
+            'if .running == true and (.phase != "queued" or ($t - (.started // 0)) > 60)
+             then (.pid // empty) else empty end' "$_jp_f" 2>/dev/null)
+        valid_uint "$_jp_pid" || continue
+        kill -0 "$_jp_pid" 2>/dev/null && continue
+        jq --argjson t "$(now)" --argjson pid "$_jp_pid" \
+            'if .running == true and .pid == $pid
+             then .running=false | .ok=false | .code="internal" | .finished=$t else . end' "$_jp_f" |
+            json_write "$_jp_f"
+    done
+}
+
 # job_start <job> [args...]: for act_* functions. Refuses a job that is already
 # running, writes the queued job file, starts the job and sets the response.
 job_start() {

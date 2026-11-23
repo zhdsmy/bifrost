@@ -106,6 +106,34 @@ ok job-running-live job_running demo
 no job-start-busy job_start demo good
 eq job-busy-code busy "$BIFROST_ERR"
 
+# job_reap: a killed job is marked failed; live and young queued jobs stay
+sleep 300 &
+live=$!
+sh -c 'exit 0' &
+dead=$!
+wait "$dead"
+writejob() { # <job> <phase> <pid> <started>
+    jq -n --arg j "$1" --arg ph "$2" --argjson pid "$3" --argjson s "$4" \
+        '{schema:1, job:$j, running:true, phase:$ph, progress:null, ok:null,
+          code:null, started:$s, finished:null, pid:$pid, data:{}}' >"$(job_file "$1")"
+}
+t0=$(now)
+writejob update download "$dead" "$t0"
+writejob migrate copy "$live" "$t0"
+writejob login queued "$dead" "$t0"
+writejob netcheck queued "$dead" $((t0 - 120))
+jq -n '{schema:1, job:"daemon", running:false, ok:true, code:null, pid:1}' >"$(job_file daemon)"
+job_reap
+eq reap-dead "false false internal" "$(jq -r '"\(.running) \(.ok) \(.code)"' "$(job_file update)")"
+eq reap-live "true" "$(jq -r .running "$(job_file migrate)")"
+eq reap-young-queued "true" "$(jq -r .running "$(job_file login)")"
+eq reap-old-queued "false internal" "$(jq -r '"\(.running) \(.code)"' "$(job_file netcheck)")"
+eq reap-finished "true null" "$(jq -r '"\(.ok) \(.code)"' "$(job_file daemon)")"
+kill "$live"
+wait "$live" 2>/dev/null
+rm -f "$(job_file update)" "$(job_file migrate)" "$(job_file login)" "$(job_file netcheck)" "$(job_file daemon)"
+unset -f writejob
+
 # job_run holds the state lock, except for the jobs that lock themselves
 # shellcheck disable=SC2329 # called by job_run
 job_lockprobe() { [ -d "$BIFROST_RUN/lock.state" ]; }
