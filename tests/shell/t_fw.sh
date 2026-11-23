@@ -21,7 +21,7 @@ reset_fw_state() {
         "$MOCK_STATE/iptables.drop_add" \
         "$MOCK_STATE/ip6tables.fail_count" "$MOCK_STATE/ip6tables.fail_match" \
         "$MOCK_STATE/ip6tables.drop_add" \
-        "$BIFROST_RUN/fw.rules"
+        "$BIFROST_RUN/fw.rules" "$BIFROST_RUN/fw6.rules" "$BIFROST_RUN/fw6.retry"
 }
 
 assert_fw_fixture() {
@@ -207,6 +207,57 @@ ok apply-dedup-jump fw_apply
 ok check-dedup-ok fw_check
 eq dedup-count 1 "$(iptables -t filter -S INPUT | grep -c '^-A INPUT -j BIFROST_INPUT$')"
 
+for parent in FORWARD PREROUTING POSTROUTING; do
+    case "$parent" in FORWARD) table=filter ;; *) table=nat ;; esac
+    iptables -t "$table" -A "$parent" -j "BIFROST_$parent"
+    no "duplicate-$parent" fw_check
+    ok "repair-duplicate-$parent" fw_apply
+    ok "unique-$parent" _fw_jump_is_first iptables "$table" "$parent" "BIFROST_$parent"
+done
+
+iptables -A BIFROST_INPUT -p icmp -j ACCEPT
+no extra-owned-rule fw_check
+ok remove-extra-owned-rule fw_apply
+iptables -D BIFROST_INPUT -p udp --dport 41641 -j ACCEPT
+iptables -A BIFROST_INPUT -p udp --dport 41641 -j ACCEPT
+no reordered-owned-rules fw_check
+ok repair-owned-order fw_apply
+ip6tables -D BIFROST_FORWARD -o tailscale0 -j ACCEPT
+no missing-v6-rule fw_check
+ok repair-v6-rule fw_apply
+ok complete-both-families fw_complete
+
+# Dynamic inputs can change without login, settings, or firewall hooks.
+ts_out status '{"BackendState":"Running","TailscaleIPs":[]}'
+no tailnet-ip-lost fw_check
+ok apply-without-address fw_apply
+ts_out status '{"BackendState":"Running","TailscaleIPs":["100.64.0.1"]}'
+no tailnet-ip-appeared fw_check
+ok repair-new-address fw_apply
+nvram_seed lan_ipaddr=192.168.1.2
+no lan-address-changed fw_check
+ok apply-new-lan fw_apply
+ok new-dnat iptables -t nat -C BIFROST_PREROUTING -i tailscale0 -d 100.64.0.1 -p tcp --dport 80 -j DNAT --to-destination 192.168.1.2
+ts_rc status 124
+ok unknown-address-no-repair fw_check
+ok unknown-address-kept fw_apply
+ok previous-dnat-on-timeout iptables -t nat -C BIFROST_PREROUTING -i tailscale0 -d 100.64.0.1 -p tcp --dport 80 -j DNAT --to-destination 192.168.1.2
+ts_rc status 0
+nvram_seed lan_ipaddr=192.168.1.1
+dbus_seed bifrost_local_access=0
+ts_out debug-prefs '{"AdvertiseRoutes":[]}'
+ok apply-before-exit-approval fw_apply
+ts_out status '{"Self":{"ExitNodeOption":true,"PeerAPIURL":["http://100.64.0.1:49152"]}}'
+no exit-approval-changed fw_check
+ok apply-approved-exit fw_apply
+ts_out status '{"Self":{"ExitNodeOption":true,"PeerAPIURL":["http://100.64.0.1:49153"]}}'
+no peerapi-port-changed fw_check
+ok apply-new-peerapi fw_apply
+ok new-peerapi-port iptables -C BIFROST_INPUT -i tailscale0 -p tcp --dport 49153 -j ACCEPT
+dbus_seed bifrost_local_access=1
+ts_out status '{"BackendState":"Running","TailscaleIPs":["100.64.0.1"]}'
+ok restore-local-access fw_apply
+
 # --- Incomplete rules detection in fw_check (item 4) ---
 # 1) Static/config rule deleted from BIFROST_FORWARD while chain & jump remain
 iptables -t filter -D BIFROST_FORWARD -o tailscale0 -j ACCEPT
@@ -220,12 +271,15 @@ no check-missing-dnat-rule fw_check
 ok apply-heals-dnat-rule fw_apply
 ok check-healed-dnat-rule fw_check
 
-# 3) Mid-apply -A failure leaves half-populated chain -> fw_check fails
+# 3) Compare an intact, previously verified snapshot against the partial rebuild.
+cp "$BIFROST_RUN/fw.rules" "$T/pre-apply.rules"
+iptables -F BIFROST_FORWARD
 echo 10 >"$MOCK_STATE/iptables.fail_count"
 printf '%s' "-A BIFROST_FORWARD -o tailscale0 -j ACCEPT" >"$MOCK_STATE/iptables.fail_match"
 BIFROST_ERR=""
 no apply-mid-fail fw_apply
 eq apply-mid-fail-code fw_failed "$BIFROST_ERR"
+cp "$T/pre-apply.rules" "$BIFROST_RUN/fw.rules"
 no check-after-mid-fail fw_check
 rm -f "$MOCK_STATE/iptables.fail_count" "$MOCK_STATE/iptables.fail_match"
 ok apply-recover-after-mid-fail fw_apply
@@ -234,19 +288,32 @@ ok check-recovered-after-mid-fail fw_check
 # --- ip6tables failure does NOT block IPv4; logs and shows fw_incomplete (item 5) ---
 reset_fw_state
 : >"$BIFROST_LOG"
-echo 20 >"$MOCK_STATE/ip6tables.fail_count"
+echo 4 >"$MOCK_STATE/ip6tables.fail_count"
+printf '%s' '-I FORWARD 1 -j BIFROST_FORWARD' >"$MOCK_STATE/ip6tables.fail_match"
 ok apply-v6-fail-keeps-v4 fw_apply
 # All IPv4 rules must be intact and verifiable
 ok v4-input-present iptables -t filter -C BIFROST_INPUT -i tailscale0 -j ACCEPT
 ok v4-fwd-present iptables -t filter -C BIFROST_FORWARD -i tailscale0 -j ACCEPT
 ok v4-dnat-present iptables -t nat -C BIFROST_PREROUTING -i tailscale0 -d 100.64.0.1 -p tcp --dport 80 -j DNAT --to-destination 192.168.1.1
 ok v4-jump-first _fw_jump_is_first iptables filter INPUT BIFROST_INPUT
-# Failure is logged and reflected via fw_check -> 1
+# The page reports the degraded family. The watchdog waits before retrying.
 ok v6-fail-logged grep -Fq "ip6tables apply failed" "$BIFROST_LOG"
-no v6-fail-fw-check fw_check
+no v6-degraded-health fw_complete
+no v6-partial-input-jump ip6tables -C INPUT -j BIFROST_INPUT
+no v6-partial-forward-chain ip6tables -S BIFROST_FORWARD
+ok v6-deferred-watchdog fw_check
+: >"$MOCK_STATE/iptables.log"
+: >"$MOCK_STATE/ip6tables.log"
+ok v6-deferred-apply fw_apply
+eq v6-no-deferred-calls "" "$(cat "$MOCK_STATE/ip6tables.log")"
+eq v6-one-failure-log 1 "$(grep -c 'ip6tables apply failed' "$BIFROST_LOG")"
+echo 0 >"$BIFROST_RUN/fw6.retry"
+no v6-watchdog-retry-due fw_check
 rm -f "$MOCK_STATE/ip6tables.fail_count"
 ok v6-recover-apply fw_apply
 ok v6-recover-check fw_check
+ok v6-recover-complete fw_complete
+no no-v4-rebuild grep -E ' -(A|D|F|I|N|X) ' "$MOCK_STATE/iptables.log"
 
 # Missing verification record (e.g. upgrade) must force a repair.
 rm -f "$BIFROST_RUN/fw.rules"
@@ -254,6 +321,7 @@ no check-without-record fw_check
 ok rebuild-missing-record fw_apply
 
 # --- Transient -S failure on existing chain recovers via -F instead of failing -N (item 6) ---
+rm -f "$BIFROST_RUN/fw.rules"
 echo 1 >"$MOCK_STATE/iptables.fail_count"
 printf '%s' "-S BIFROST_INPUT" >"$MOCK_STATE/iptables.fail_match"
 ok transient-s-recovers fw_apply
@@ -268,6 +336,16 @@ BIFROST_ERR=""
 no clear-fails-on-x fw_clear
 eq clear-fails-code fw_failed "$BIFROST_ERR"
 rm -f "$MOCK_STATE/iptables.fail_count" "$MOCK_STATE/iptables.fail_match"
+
+ok failed-chain-remains iptables -S BIFROST_INPUT
+no other-filter-cleared iptables -S BIFROST_FORWARD
+no nat-pre-cleared iptables -t nat -S BIFROST_PREROUTING
+no nat-post-cleared iptables -t nat -S BIFROST_POSTROUTING
+no v6-also-cleared ip6tables -S BIFROST_INPUT
+echo 1 >"$MOCK_STATE/iptables.fail_count"
+printf '%s' '-S BIFROST_INPUT' >"$MOCK_STATE/iptables.fail_match"
+ok transient-clear-query fw_clear
+no transient-clear-removed-chain iptables -S BIFROST_INPUT
 
 # Re-apply so we can verify clean fw_clear keeps other plugins and removes all BIFROST chains
 ok reapply-before-clear fw_apply

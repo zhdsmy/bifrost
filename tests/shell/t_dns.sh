@@ -25,7 +25,10 @@ export BIFROST_DNSMASQ_MAIN="$T/dnsmasq.conf"
 dbus_seed bifrost_magicdns=1
 ts_out status '{"BackendState":"Running","MagicDNSSuffix":"example.ts.net"}'
 no conf-dir-no-file dns_has_conf_dir
-no check-missing-conf-dir dns_check
+: >"$MOCK_STATE/ts.log"
+ok check-missing-conf-dir dns_check
+ok repeat-check-missing-conf-dir dns_check
+eq missing-conf-dir-no-query "" "$(ts_log)"
 BIFROST_ERR=""
 no apply-no-main-file dns_apply
 eq apply-no-main-code no_conf_dir "$BIFROST_ERR"
@@ -34,7 +37,7 @@ eq no-restart-on-err 0 "$(service_count)"
 printf '# conf-dir=%s\nconf-dir=/other/dir\nconf-dir=%s2\n' \
     "$BIFROST_DNSMASQ_DIR" "$BIFROST_DNSMASQ_DIR" >"$BIFROST_DNSMASQ_MAIN"
 no conf-dir-commented-or-other dns_has_conf_dir
-no check-bad-conf-dir dns_check
+ok check-bad-conf-dir dns_check
 BIFROST_ERR=""
 no apply-no-conf-dir dns_apply
 eq apply-no-conf-dir-code no_conf_dir "$BIFROST_ERR"
@@ -81,9 +84,15 @@ ok apply-suffix-change dns_apply
 eq conf-updated "server=/alt.example.ts.net/100.100.100.100" "$(cat "$BIFROST_DNSMASQ_CONF")"
 eq restart-after-change 2 "$(service_count)"
 ok check-after-change dns_check
-# Passing status JSON directly to dns_check avoids CLI call
-ok check-with-arg dns_check '{"CurrentTailnet":{"MagicDNSSuffix":"alt.example.ts.net"}}'
-no check-with-wrong-arg dns_check '{"MagicDNSSuffix":"example.ts.net"}'
+cp "$BIFROST_DNSMASQ_CONF" "$T/active.conf"
+for transition in Starting NoState; do
+    ts_out status "{\"BackendState\":\"$transition\"}"
+    ok "check-$transition" dns_check
+    no "apply-$transition" dns_apply
+    eq "code-$transition" not_running "$BIFROST_ERR"
+    ok "rule-kept-$transition" cmp -s "$T/active.conf" "$BIFROST_DNSMASQ_CONF"
+    eq "no-restart-$transition" 2 "$(service_count)"
+done
 
 # --- Distinct error codes for not_running / cli_failed / timeout vs no_magicdns (item 8) ---
 mv "$BIFROST_DNSMASQ_CONF" "$T/saved.conf"
@@ -103,6 +112,9 @@ ts_rc status 124
 BIFROST_ERR=""
 no apply-timeout dns_apply
 eq apply-timeout-code timeout "$BIFROST_ERR"
+ok check-timeout dns_check
+ok timeout-keeps-rule cmp -s "$T/active.conf" "$BIFROST_DNSMASQ_CONF"
+eq no-timeout-restart 2 "$(service_count)"
 ts_rc status 0
 
 # Corrupt non-JSON status output -> cli_failed (not no_magicdns)
@@ -176,6 +188,66 @@ no clear-rm-fails dns_clear
 eq clear-rm-fails-code internal "$BIFROST_ERR"
 eq no-restart-on-rm-fail 7 "$(service_count)"
 rmdir "$BIFROST_DNSMASQ_CONF"
+
+# The final rename must stay on one mount; both failure paths preserve the old rule.
+dbus_seed bifrost_magicdns=1
+ts_out status '{"BackendState":"Running","MagicDNSSuffix":"example.ts.net"}'
+cp "$T/active.conf" "$BIFROST_DNSMASQ_CONF"
+separate_mount() (
+    # shellcheck disable=SC2329 # df is used by _dns_install_line.
+    df() {
+        printf '%s\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on' \
+            'root 80 10 70 12% /' 'root 80 10 70 12% /conf'
+    }
+    ! dns_apply && [ "$BIFROST_ERR" = internal ]
+)
+ok rejects-independent-mount separate_mount
+ok mount-rejection-keeps-rule cmp -s "$T/active.conf" "$BIFROST_DNSMASQ_CONF"
+fail_install_mv() (
+    # shellcheck disable=SC2329 # allow the staging rename, fail only the install.
+    mv() {
+        [ "$3" != "$BIFROST_DNSMASQ_CONF" ] || return 1
+        command mv "$@"
+    }
+    ! dns_apply && [ "$BIFROST_ERR" = internal ]
+)
+ok install-rename-fails fail_install_mv
+ok rename-failure-keeps-rule cmp -s "$T/active.conf" "$BIFROST_DNSMASQ_CONF"
+eq rename-failure-no-staging "" "$(find "$T" -name '.bifrost-dns-stage.*')"
+eq failed-installs-no-restart 7 "$(service_count)"
+
+fail_dns_restart() (
+    # shellcheck disable=SC2329 # inject firmware service failure.
+    service() { [ "$1" != restart_dnsmasq ]; }
+    ! dns_apply && [ "$BIFROST_ERR" = internal ]
+)
+ok restart-error fail_dns_restart
+eq new-rule-installed "server=/example.ts.net/100.100.100.100" "$(cat "$BIFROST_DNSMASQ_CONF")"
+no failed-restart-needs-repair dns_check
+ok retry-dns-restart dns_apply
+eq retried-restart 8 "$(service_count)"
+ok healthy-after-restart dns_check
+
+touch "$BIFROST_DNSMASQ_CONF.tmp.123"
+no matched-rule-legacy-temp-stale dns_check
+ok clean-legacy-temp-on-match dns_apply
+no matched-rule-temp-gone [ -e "$BIFROST_DNSMASQ_CONF.tmp.123" ]
+eq reload-after-legacy-temp 9 "$(service_count)"
+
+ts_out status '{"BackendState":"Stopped"}'
+no stopped-stale dns_check
+no apply-stopped dns_apply
+eq stopped-code not_running "$BIFROST_ERR"
+no stopped-rule-removed [ -e "$BIFROST_DNSMASQ_CONF" ]
+eq stopped-reload 10 "$(service_count)"
+
+cp "$T/active.conf" "$BIFROST_DNSMASQ_CONF"
+mkdir "$BIFROST_DNSMASQ_DIR/../.bifrost-dns-stage.blocked"
+no clear-stage-failure dns_clear
+eq clear-stage-error-code internal "$BIFROST_ERR"
+no watched-rule-still-removed [ -e "$BIFROST_DNSMASQ_CONF" ]
+eq watched-removal-reloaded 11 "$(service_count)"
+rmdir "$BIFROST_DNSMASQ_DIR/../.bifrost-dns-stage.blocked"
 
 # --- No temp files left behind in conf-dir or run dir ---
 eq no-tmp-files "" "$(find "$BIFROST_DNSMASQ_DIR" -name '*tmp*')"

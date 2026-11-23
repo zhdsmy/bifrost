@@ -5,6 +5,7 @@
 
 : "${BIFROST_FW_RETRY:=3}"
 : "${BIFROST_FW_RETRY_SLEEP:=1}"
+: "${BIFROST_FW_V6_RETRY_INTERVAL:=900}"
 
 # lan_cidr: print canonical LAN CIDR from nvram lan_ipaddr / lan_netmask.
 lan_cidr() (
@@ -59,11 +60,12 @@ fw_snat_effective() {
     esac
 }
 
-# fw_exit_routes_jq: canonical jq predicate for exit-node routes (both 0.0.0.0/0
-# and ::/0, matching Tailscale's tsaddr.ContainsExitRoutes / Prefs.AdvertisesExitNode).
-# Shared by fw.sh and status.sh so both agree on exit-node detection.
-fw_exit_routes_jq() {
-    printf '%s' '((index("0.0.0.0/0") != null) and (index("::/0") != null))'
+# Both consumers use the same upstream rules for advertised and approved exits.
+fw_exit_jq() {
+    cat <<'JQ'
+def exit_routes: index("0.0.0.0/0") != null and index("::/0") != null;
+def approved_exit: .Self.ExitNodeOption == true or ((.Self.AllowedIPs // []) | exit_routes);
+JQ
 }
 
 # _fw_run <cmd...>: run an iptables/ip6tables command, retrying on failure.
@@ -74,7 +76,6 @@ _fw_run() {
             return 0
         fi
         if [ "$_fr_i" -ge "$BIFROST_FW_RETRY" ]; then
-            log fw "command failed after retries: $*"
             fail fw_failed
             return 1
         fi
@@ -85,9 +86,15 @@ _fw_run() {
     done
 }
 
-# _fw_chain_exists <cmd> <table> <chain>
-_fw_chain_exists() {
-    "$1" -t "$2" -S "$3" >/dev/null 2>&1
+# The chain probe alone cannot distinguish a missing chain from a failed
+# query. Confirm absence from a successful table listing; retry query errors.
+_fw_probe_chain() {
+    _fpc_present=1
+    "$1" -t "$2" -S "$3" >/dev/null 2>&1 && return 0
+    _fpc_table=$("$1" -t "$2" -S) || return 1
+    printf '%s\n' "$_fpc_table" | awk -v chain="$3" '$1 == "-N" && $2 == chain { found=1 } END { exit !found }' ||
+        _fpc_present=0
+    return 0
 }
 
 # _fw_jump_is_first <cmd> <table> <parent> <chain>
@@ -106,9 +113,10 @@ _fw_jump_is_first() {
 
 # -S may fail transiently on an existing chain. Recheck after a failed create.
 _fw_prepare_chain() {
-    if ! _fw_chain_exists "$1" "$2" "$3"; then
+    _fw_probe_chain "$1" "$2" "$3" || return 1
+    if [ "$_fpc_present" = 0 ]; then
         "$1" -t "$2" -N "$3" >/dev/null 2>&1 && return 0
-        _fw_chain_exists "$1" "$2" "$3" || return 1
+        _fw_probe_chain "$1" "$2" "$3" && [ "$_fpc_present" = 1 ] || return 1
     fi
     "$1" -t "$2" -F "$3"
 }
@@ -134,15 +142,17 @@ _fw_read_dynamic() {
     _fw_peerapi6=""
     _fw_lan_ip=""
     _fw_admin_ports=""
-    _fw_ex_jq=$(fw_exit_routes_jq)
+    _fw_dynamic_known=0
+    _fw_ex_jq=$(fw_exit_jq)
 
     _fw_st=$(ts_cli status --json --peers=false 2>/dev/null) || _fw_st=""
     if [ -n "$_fw_st" ]; then
-        _fw_parsed=$(printf '%s\n' "$_fw_st" | jq -r "
+        _fw_parsed=$(printf '%s\n' "$_fw_st" | jq -r "$_fw_ex_jq
+            select(type == \"object\") |
             ((.TailscaleIPs // .Self.TailscaleIPs // [])
                 | map(select(type == \"string\" and (contains(\":\") | not)))
                 | .[0] // \"-\"),
-            (if (.Self.ExitNodeOption == true) or ((.Self.AllowedIPs // []) | $_fw_ex_jq) then \"1\" else \"0\" end),
+            (if approved_exit then \"1\" else \"0\" end),
             ((.Self.PeerAPIURL // [])
                 | map(select(type == \"string\" and test(\"^http://[0-9.]+:[0-9]+/?$\"))
                     | sub(\"^http://[0-9.]+:\"; \"\") | sub(\"/$\"; \"\"))
@@ -153,8 +163,9 @@ _fw_read_dynamic() {
                     | select(length == 2 and (.[0][8:] | test(\"^[0-9A-Fa-f:]+$\")) and (.[1] | test(\"^[0-9]+$\")))
                     | .[1])
                 | .[0] // \"-\")
-        " 2>/dev/null)
+        " 2>/dev/null) || _fw_parsed=""
         if [ -n "$_fw_parsed" ]; then
+            _fw_dynamic_known=1
             _fw_r1=$(printf '%s\n' "$_fw_parsed" | sed -n '1p')
             _fw_r2=$(printf '%s\n' "$_fw_parsed" | sed -n '2p')
             _fw_r3=$(printf '%s\n' "$_fw_parsed" | sed -n '3p')
@@ -176,12 +187,14 @@ _fw_read_dynamic() {
     # node, check prefs so PeerAPI is allowed even while exit-node approval is pending.
     if [ "$_fw_local_access" = 0 ] && [ "$_fw_is_exit" = 0 ]; then
         _fw_pr=$(ts_cli debug prefs 2>/dev/null) || _fw_pr=""
-        if [ -n "$_fw_pr" ]; then
-            _fw_adv_exit=$(printf '%s\n' "$_fw_pr" | jq -r "
-                if ((.AdvertiseRoutes // []) | $_fw_ex_jq) then \"1\" else \"0\" end
-            " 2>/dev/null)
-            [ "$_fw_adv_exit" = 1 ] && _fw_is_exit=1
-        fi
+        _fw_adv_exit=$(printf '%s\n' "$_fw_pr" | jq -r "$_fw_ex_jq
+            select(type == \"object\") | (.AdvertiseRoutes // []) | exit_routes
+        " 2>/dev/null)
+        case "$_fw_adv_exit" in
+            true) _fw_is_exit=1 ;;
+            false) ;;
+            *) _fw_dynamic_known=0 ;;
+        esac
     fi
 
     if [ "$_fw_local_access" = 1 ]; then
@@ -278,12 +291,18 @@ _fw_rules_v6() {
 # Walk exactly the chains owned by each family. The callback receives
 # command, table, parent, and plugin chain in that order.
 _fw_chains() {
-    "$2" "$1" filter INPUT BIFROST_INPUT || return 1
-    "$2" "$1" filter FORWARD BIFROST_FORWARD || return 1
-    if [ "$1" = iptables ]; then
-        "$2" "$1" nat PREROUTING BIFROST_PREROUTING || return 1
-        "$2" "$1" nat POSTROUTING BIFROST_POSTROUTING || return 1
-    fi
+    _fch_rc=0
+    for _fch_parent in INPUT FORWARD PREROUTING POSTROUTING; do
+        case "$_fch_parent" in
+            INPUT | FORWARD) _fch_table=filter ;;
+            *) [ "$1" = iptables ] || continue; _fch_table=nat ;;
+        esac
+        "$2" "$1" "$_fch_table" "$_fch_parent" "BIFROST_$_fch_parent" || {
+            [ "$2" = _fw_clear_chain ] || return 1
+            _fch_rc=1
+        }
+    done
+    return "$_fch_rc"
 }
 
 _fw_prepare() { _fw_run _fw_prepare_chain "$1" "$2" "$4"; }
@@ -294,68 +313,130 @@ _fw_snapshot_chain() {
     _fw_jump_is_first "$@" && "$1" -t "$2" -S "$4"
 }
 
-_fw_apply_family() {
-    _fw_chains "$1" _fw_prepare &&
-        "$2" -A &&
-        _fw_chains "$1" _fw_ensure_jump &&
-        _fw_chains "$1" _fw_snapshot_chain >>"$_fw_snapshot" &&
-        "$2" -C
-}
-
-fw_apply() {
+# Read the effective inputs of each family, including values that can change
+# between two watchdog runs without a page action or a new login.
+_fw_inputs() {
     _fw_port=$(cfg bifrost_port)
     _fw_local_access=$(cfg bifrost_local_access)
     _fw_lan_masq=$(cfg bifrost_lan_masq)
     if fw_snat_effective; then _fw_snat_on=1; else _fw_snat_on=0; fi
     _fw_read_dynamic
-
-    # Publish the snapshot only after every rule passed -C. An interrupted
-    # apply (or an upgrade with no snapshot yet) must trigger a watchdog repair.
-    _fw_snapshot="$BIFROST_RUN/fw.rules.tmp.$$"
-    if ! mkdir -p "$BIFROST_RUN" || ! rm -f "$BIFROST_RUN/fw.rules" || ! : >"$_fw_snapshot"; then
-        fail fw_failed
-        return 1
+    _fi_common="inputs $BIFROST_TUN $_fw_port $_fw_local_access"
+    _fw_v4="$_fi_common $_fw_snat_on $_fw_lan_masq"
+    _fw_v6=$_fi_common
+    if [ "$_fw_local_access" = 1 ]; then
+        _fw_v4="$_fw_v4 lan:$_fw_lan_ip/$_fw_admin_ports cli:$_fw_ts_ip4"
+    else
+        if [ "$_fw_is_exit" != 1 ]; then _fw_peerapi4=""; _fw_peerapi6=""; fi
+        _fw_v4="$_fw_v4 cli:$_fw_peerapi4"
+        _fw_v6="$_fw_v6 cli:$_fw_peerapi6"
     fi
-    if ! _fw_apply_family iptables _fw_rules_v4; then
-        rm -f "$_fw_snapshot"
-        fail fw_failed
-        return 1
-    fi
-    if has_cmd ip6tables && ! _fw_apply_family ip6tables _fw_rules_v6; then
-        log fw "ip6tables apply failed; IPv4 rules remain active"
-        rm -f "$_fw_snapshot"
-        BIFROST_ERR=""
-        return 0
-    fi
-    mv -f "$_fw_snapshot" "$BIFROST_RUN/fw.rules" || fail fw_failed
 }
 
-# _fw_clear_chain <cmd> <table> <parent> <chain>
-_fw_clear_chain() {
-    while "$1" -t "$2" -C "$3" -j "$4" >/dev/null 2>&1; do
-        _fw_run "$1" -t "$2" -D "$3" -j "$4" || return 1
+# The first line records desired inputs. The rest records kernel rule order.
+# The page checks installed rules without polling the CLI a second time.
+_fw_matches() {
+    [ -s "$2" ] && IFS= read -r _fm_inputs <"$2" || return 1
+    case "$_fm_inputs" in "inputs "*) ;; *) return 1 ;; esac
+    if [ "$#" -eq 3 ] && [ "$_fm_inputs" != "$3" ]; then
+        # A failed CLI read is not a withdrawal. Local settings and the kernel
+        # still need checking; defer only the unobserved CLI fields.
+        [ "$_fw_dynamic_known" = 0 ] && [ "${_fm_inputs% cli:*}" = "${3% cli:*}" ] || return 1
+    fi
+    _fm_rules=$(_fw_chains "$1" _fw_snapshot_chain) || return 1
+    printf '%s\n' "$_fm_inputs" "$_fm_rules" | cmp -s - "$2"
+}
+
+# Read a parent successfully before interpreting missing jumps as detached.
+_fw_detach() {
+    _fd_rules=$("$1" -t "$2" -S "$3") || return 1
+    _fd_count=$(printf '%s\n' "$_fd_rules" | awk -v par="$3" -v dest="$4" '
+        $1=="-A" && $2==par && $3=="-j" && $4==dest && NF==4 { n++ }
+        END { print n+0 }')
+    while [ "$_fd_count" -gt 0 ]; do
+        "$1" -t "$2" -D "$3" -j "$4" || return 1
+        _fd_count=$((_fd_count - 1))
     done
-    if _fw_chain_exists "$1" "$2" "$4"; then
-        _fw_run "$1" -t "$2" -F "$4" || return 1
-        _fw_run "$1" -t "$2" -X "$4" || return 1
+}
+
+_fw_clear_chain() {
+    _fw_run _fw_probe_chain "$1" "$2" "$4" || return 1
+    [ "$_fpc_present" = 1 ] || return 0
+    _fw_run _fw_detach "$@" &&
+        _fw_run "$1" -t "$2" -F "$4" &&
+        _fw_run "$1" -t "$2" -X "$4"
+}
+
+_fw_detach_retry() { _fw_run _fw_detach "$@"; }
+
+# Leave a previous IPv6 ruleset attached only while it is still complete.
+# Attach new chains only after every rule was added and verified.
+_fw_apply_family() {
+    _fw_matches "$1" "$3" "$4" && return 0
+    rm -f "$3" || return 1
+    if [ "$1" = ip6tables ]; then
+        _fw_chains "$1" _fw_detach_retry || return 1
+    fi
+    _fw_chains "$1" _fw_prepare &&
+        "$2" -A && "$2" -C &&
+        _fw_chains "$1" _fw_ensure_jump &&
+        { printf '%s\n' "$4" && _fw_chains "$1" _fw_snapshot_chain; } >"$3.tmp.$$" &&
+        mv -f "$3.tmp.$$" "$3" && return 0
+    rm -f "$3.tmp.$$"
+    return 1
+}
+
+_fw_v6_deferred() {
+    [ -r "$BIFROST_RUN/fw6.retry" ] && IFS= read -r _fvd_last <"$BIFROST_RUN/fw6.retry" || return 1
+    valid_uint "$_fvd_last" || return 1
+    _fvd_age=$(($(now) - _fvd_last))
+    [ "$_fvd_age" -ge 0 ] && [ "$_fvd_age" -lt "$BIFROST_FW_V6_RETRY_INTERVAL" ]
+}
+
+fw_apply() {
+    mkdir -p "$BIFROST_RUN" || { fail fw_failed; return 1; }
+    _fw_inputs
+    if ! _fw_apply_family iptables _fw_rules_v4 "$BIFROST_RUN/fw.rules" "$_fw_v4"; then
+        log fw "IPv4 firewall apply failed"
+        fail fw_failed
+        return 1
+    fi
+    if has_cmd ip6tables && ! _fw_v6_deferred; then
+        if _fw_apply_family ip6tables _fw_rules_v6 "$BIFROST_RUN/fw6.rules" "$_fw_v6"; then
+            rm -f "$BIFROST_RUN/fw6.retry" || { fail fw_failed; return 1; }
+        else
+            # Attempt every owned chain, including a jump installed before a
+            # later attach failed. A failed table read must not flush a live chain.
+            _fw_chains ip6tables _fw_clear_chain || :
+            log fw "ip6tables apply failed; IPv4 rules remain active"
+            now | atomic_write "$BIFROST_RUN/fw6.retry" 600 || { fail fw_failed; return 1; }
+            BIFROST_ERR=""
+        fi
     fi
     return 0
 }
 
-# fw_clear: remove Bifrost jumps, flush and delete all Bifrost chains.
 fw_clear() {
-    rm -f "$BIFROST_RUN/fw.rules" || { fail fw_failed; return 1; }
-    _fw_chains iptables _fw_clear_chain || return 1
+    _fcl_failed=0
+    rm -f "$BIFROST_RUN/fw.rules" "$BIFROST_RUN/fw6.rules" "$BIFROST_RUN/fw6.retry" || _fcl_failed=1
+    _fw_chains iptables _fw_clear_chain || _fcl_failed=1
+    if has_cmd ip6tables; then _fw_chains ip6tables _fw_clear_chain || _fcl_failed=1; fi
+    [ "$_fcl_failed" = 0 ] || fail fw_failed
+}
+
+# Strict installed health for status and diagnostics, including a deferred family.
+fw_complete() {
+    _fw_matches iptables "$BIFROST_RUN/fw.rules" || return 1
     if has_cmd ip6tables; then
-        _fw_chains ip6tables _fw_clear_chain || return 1
+        [ ! -e "$BIFROST_RUN/fw6.retry" ] && _fw_matches ip6tables "$BIFROST_RUN/fw6.rules"
     fi
 }
 
+# Watchdog repair decision. A known IPv6 failure is retried only when due.
 fw_check() {
-    [ -s "$BIFROST_RUN/fw.rules" ] || return 1
-    _fc_rules=$(
-        _fw_chains iptables _fw_snapshot_chain || exit 1
-        if has_cmd ip6tables; then _fw_chains ip6tables _fw_snapshot_chain; fi
-    ) || return 1
-    printf '%s\n' "$_fc_rules" | cmp -s - "$BIFROST_RUN/fw.rules"
+    _fw_inputs
+    _fw_matches iptables "$BIFROST_RUN/fw.rules" "$_fw_v4" || return 1
+    if has_cmd ip6tables && ! _fw_v6_deferred; then
+        _fw_matches ip6tables "$BIFROST_RUN/fw6.rules" "$_fw_v6"
+    fi
 }

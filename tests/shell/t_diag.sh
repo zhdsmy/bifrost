@@ -62,6 +62,12 @@ eq redact-tailnet-neg1 "device router laptop-01 nas-home" \
     "$(printf 'device router laptop-01 nas-home\n' | redact "mesh.corp.internal" "acme.github")"
 eq redact-tailnet-neg2 "site github.com tailscale.com file net.ts.bak" \
     "$(printf 'site github.com tailscale.com file net.ts.bak\n' | redact "mesh.corp.internal" "acme.github")"
+eq short-hints-network 'tailnet=<tailnet> control: <tailnet> https://<tailnet>:8443 host.<tailnet>' \
+    "$(printf 'tailnet=home control: hs https://hs:8443 host.home\n' | redact home hs)"
+eq short-hints-prose 'go home with hs, then open /home/docs or household help' \
+    "$(printf 'go home with hs, then open /home/docs or household help\n' | redact home hs)"
+eq short-hints-fields '{"tailnet":"<tailnet>","ControlURL":"https://<tailnet>"}' \
+    "$(printf '%s\n' '{"tailnet":"home","ControlURL":"https://hs"}' | redact home hs)"
 
 # Class 5: Auth / login URLs -> <auth-url>
 eq redact-authurl-pos1 "visit <auth-url> now" \
@@ -352,6 +358,19 @@ eq logs-empty-sections 2 "$(grep -c '^(empty)$' "$LF")"
 
 # End-to-end page dispatch for logs
 eq logs-page '{"ok":true}' "$(t_page logs)"
+
+fail_redaction() (
+    # shellcheck disable=SC2329 # simulate a redactor that writes before failing.
+    redact() { cat >/dev/null; printf 'partial output\n'; return 1; }
+    ! act_logs && [ "$BIFROST_ERR" = internal ]
+)
+cp "$LF" "$T/previous-logs"
+ok failed-redaction-with-previous fail_redaction
+ok previous-logs-intact cmp -s "$T/previous-logs" "$LF"
+rm -f "$LF"
+ok failed-first-redaction fail_redaction
+no partial-logs-published [ -e "$LF" ]
+eq no-redaction-stage "" "$(find "$BIFROST_RUN" -name 'diag.redacted.*')"
 
 # act_logs failure path (unwritable upload path -> internal)
 _saved_upload=$BIFROST_UPLOAD

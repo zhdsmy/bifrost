@@ -187,6 +187,16 @@ eq run-auth-empty "" "$(jq -r '.auth_url' "$ST_OUT")"
 eq run-health '["some upstream health warning"]' "$(jq -c '.health' "$ST_OUT")"
 eq run-checks '[]' "$(jq -c '.checks' "$ST_OUT")"
 
+# A deferred IPv6 repair still appears in the public health check.
+ip6tables -D BIFROST_FORWARD -o tailscale0 -j ACCEPT
+echo 4 >"$MOCK_STATE/ip6tables.fail_count"
+printf '%s' '-A BIFROST_FORWARD' >"$MOCK_STATE/ip6tables.fail_match"
+ok ipv6-apply-degraded fw_apply
+ok refresh-degraded-ipv6 status_refresh
+eq degraded-ipv6-check '["fw_incomplete"]' "$(jq -c '.checks' "$ST_OUT")"
+echo 0 >"$BIFROST_RUN/fw6.retry"
+ok recover-ipv6 fw_apply
+
 # Peers: ShareeNode excluded (3 peers left), online first then by name: alpha, zulu, beta
 eq run-peers-order '["alpha","zulu","beta"]' "$(jq -c '[.peers[].name]' "$ST_OUT")"
 eq run-peer-alpha "alpha.example.ts.net 100.64.0.2 macOS true direct  1795435200 1024 2048 false" \
@@ -231,13 +241,25 @@ eq hs-prefs-routes '["192.168.1.0/24"]' "$(jq -c '.prefs.advertise_routes' "$ST_
 eq hs-exit '{"advertised":true,"approved":true,"pref":true}' \
     "$(jq -c '{advertised:.exit_node.advertised, approved:.exit_node.approved, pref:.prefs.advertise_exit_node}' "$ST_OUT")"
 eq hs-hostname "gw-home" "$(jq -r '.prefs.hostname' "$ST_OUT")"
+_last_adv=$(jq -c '[.routes, .exit_node.advertised]' "$ST_OUT")
 
 # Now ONLY debug prefs fails while status --json still succeeds: must NOT falsely flip to official
-printf 'https://older.example.org\n' >"$BIFROST_STATE/control_url"
 ts_rc debug-prefs 1
+rm -f "$ST_OUT"
+ok refresh-prefs-fail-cache-only status_refresh
+eq prefs-fail-cached-advertisements "$_last_adv" "$(jq -c '[.routes,.exit_node.advertised]' "$ST_OUT")"
+rm -f "$BIFROST_RUN/status.routes"
+ok refresh-prefs-cache-fallback status_refresh
+eq prefs-fail-cache-control "https://hs.example.org" "$(jq -r '.self.control' "$ST_OUT")"
+eq prefs-fail-upgrade-advertisements "$_last_adv" "$(jq -c '[.routes,.exit_node.advertised]' "$ST_OUT")"
+printf 'https://selected.example.org\n' >"$BIFROST_STATE/control_url"
 ok refresh-prefs-only-fail status_refresh
-eq prefs-fail-keeps-hs "running null false https://hs.example.org true" \
+eq prefs-fail-selected-control "running null false https://selected.example.org true" \
     "$(jq -r '"\(.state) \(.prefs) \(.self.official) \(.self.control) \(.settings.no_logs_forced)"' "$ST_OUT")"
+eq prefs-fail-keeps-advertisements "$_last_adv" "$(jq -c '[.routes,.exit_node.advertised]' "$ST_OUT")"
+: >"$BIFROST_STATE/control_url"
+ok refresh-prefs-fail-explicit-official status_refresh
+eq prefs-fail-selected-official '["",true]' "$(jq -c '[.self.control,.self.official]' "$ST_OUT")"
 
 # Even without a previous bifrost_status.json, falls back to $BIFROST_STATE/control_url
 rm -f "$ST_OUT" "$BIFROST_RUN/status.control"
@@ -246,6 +268,14 @@ ok refresh-prefs-fail-state-url status_refresh
 eq prefs-fail-state-url "false https://hs2.example.org true" \
     "$(jq -r '"\(.self.official) \(.self.control) \(.settings.no_logs_forced)"' "$ST_OUT")"
 rm -f "$BIFROST_STATE/control_url"
+ts_rc debug-prefs 0
+ts_out debug-prefs '{"AdvertiseRoutes":[]}'
+ok refresh-known-withdrawal status_refresh
+eq known-withdrawal '[[],false]' "$(jq -c '[.routes,.exit_node.advertised]' "$ST_OUT")"
+rm -f "$ST_OUT"
+ts_rc debug-prefs 1
+ok refresh-withdrawal-from-cache status_refresh
+eq cached-withdrawal '[null,[],false]' "$(jq -c '[.prefs,.routes,.exit_node.advertised]' "$ST_OUT")"
 ts_rc debug-prefs 0
 
 # --- 12. All checks + refined dns_stale semantics (item 15) ---
@@ -276,6 +306,11 @@ eq truncated-conf-stale '["dns_stale"]' "$(jq -c '.checks' "$ST_OUT")"
 ok fix-dns-content dns_apply
 ok refresh-repaired-conf status_refresh
 eq repaired-conf-clean '[]' "$(jq -c '.checks' "$ST_OUT")"
+for transition in Starting NoState; do
+    ts_out status "{\"BackendState\":\"$transition\"}"
+    ok "refresh-transition-$transition" status_refresh
+    eq "transition-dns-$transition" '[true,[]]' "$(jq -c '[.dns.active,.checks]' "$ST_OUT")"
+done
 ts_rc status 124
 ok refresh-dns-cli-unavailable status_refresh
 eq timeout-dns-unknown '[]' "$(jq -c '.checks' "$ST_OUT")"

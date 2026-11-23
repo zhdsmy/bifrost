@@ -7,6 +7,7 @@
 : "${BIFROST_PING_TIMEOUT:=5}"
 : "${BIFROST_PING_CMD_TIMEOUT:=10}"
 : "${BIFROST_LOG_TAIL_LINES:=200}"
+: "${BIFROST_REDACT_SHORT_LEN:=4}"
 : "${BIFROST_JFFS_PATH:=$BIFROST_KSROOT}"
 
 # redact [tailnet_or_suffix...]: filter stdin -> stdout applying all 7 PLAN 13.10
@@ -20,7 +21,7 @@ redact() {
         _rd_extra="${_rd_extra}${_rd_arg}
 "
     done
-    awk -v extra="$_rd_extra" '
+    awk -v extra="$_rd_extra" -v short_len="$BIFROST_REDACT_SHORT_LEN" '
     BEGIN {
         n_tn = 0
         n = split(extra, raw_tn, "\n")
@@ -109,7 +110,7 @@ redact() {
         return out rest
     }
 
-    function redact_literal_ci(line, pat_lc,    out, rest, lc, pos, plen, prev, nxt) {
+    function redact_literal_ci(line, pat_lc,    out, rest, lc, pos, plen, prev, nxt, before, ambiguous) {
         plen = length(pat_lc)
         out = ""
         rest = line
@@ -121,7 +122,13 @@ redact() {
             nxt = substr(rest, pos + plen, 1)
             # Token boundary: do not match in the middle of a label; "." before is
             # allowed so "<device>.<suffix>" becomes "<device>.<tailnet>".
-            if (is_alnum(prev) || prev == "-" || is_alnum(nxt) || nxt == "-") {
+            # Short single labels are also ordinary words. Match a DNS suffix,
+            # a URL host, or an explicitly named tailnet/control value.
+            before = tolower(substr(rest, 1, pos - 1))
+            ambiguous = plen <= short_len && index(pat_lc, ".") == 0 && prev != "." &&
+                before !~ /:\/\/$/ &&
+                before !~ /(^|[^a-z0-9_-])(tailnet|domain|suffix|magicdns|control|server|host)([ _-]?(name|url))?"?[ \t]*([:=][ \t]*|[ \t]+)"?$/
+            if (ambiguous || is_alnum(prev) || prev == "-" || is_alnum(nxt) || nxt == "-") {
                 out = out substr(rest, 1, pos + plen - 1)
                 rest = substr(rest, pos + plen)
             } else {
@@ -615,7 +622,7 @@ act_logs() {
     # Environment checks (contract 6.3, PLAN 13.4)
     if [ -e "$BIFROST_TUN_DEV" ]; then _al_tun=true; else _al_tun=false; fi
     if daemon_running; then
-        if fw_check; then _al_fw=true; else _al_fw=false; fi
+        if fw_complete; then _al_fw=true; else _al_fw=false; fi
     else
         _al_fw=null
     fi
@@ -686,7 +693,12 @@ act_logs() {
 
     if fw_snat_effective; then _al_snat_eff=true; else _al_snat_eff=false; fi
 
-    {
+    # Keep the redactor as the last stage of the producing pipeline. Publish
+    # only after its exit status is known; a partial export is never visible.
+    _al_tmp="$BIFROST_RUN/diag.redacted.$$"
+    if (
+        umask 077
+        exec >"$_al_tmp" || exit 1
         printf 'Redacted: public IPv4 (<ipv4>), non-tailnet IPv6 (<ipv6>), emails (<email>), tailnet/MagicDNS (<tailnet>), auth URLs (<auth-url>), auth keys (<key>), MAC addresses (<mac>).\n'
         {
             printf '== summary ==\n'
@@ -729,9 +741,10 @@ act_logs() {
                 printf '(empty)\n'
             fi
         } | redact "$_al_hints"
-    } | atomic_write "$BIFROST_UPLOAD/bifrost_logs.txt" 644 || {
-        fail internal
-        return 1
-    }
-    return 0
+    ) && atomic_write "$BIFROST_UPLOAD/bifrost_logs.txt" 644 <"$_al_tmp"; then
+        rm -f "$_al_tmp"
+        return 0
+    fi
+    rm -f "$_al_tmp"
+    fail internal
 }

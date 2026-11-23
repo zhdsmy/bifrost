@@ -58,7 +58,9 @@ _status_remember_names() (
 # Recover the last known server if prefs are unavailable. P2 records the
 # selected server; an empty value is its official-server default.
 _status_last_control() {
-    if [ -f "$BIFROST_RUN/status.control" ]; then
+    if [ -f "$BIFROST_STATE/control_url" ]; then
+        daemon_control_server
+    elif [ -f "$BIFROST_RUN/status.control" ]; then
         head -n 1 "$BIFROST_RUN/status.control"
     elif [ -s "$BIFROST_UPLOAD/bifrost_status.json" ] &&
         _slc_old=$(jq -er '.self.control | strings' "$BIFROST_UPLOAD/bifrost_status.json" 2>/dev/null); then
@@ -68,12 +70,14 @@ _status_last_control() {
     fi
 }
 
-# Emit the known control URL and redaction terms, then the compact page JSON.
+# Emit control and route cache updates, redaction terms, then the compact page JSON.
 _status_render_jq() {
-    jq -nr \
+    # shellcheck disable=SC2016 # dollar-prefixed variables belong to jq.
+    _dns_jq -nr \
         --rawfile st_text "$_sr_st_file" \
         --rawfile pr_text "$_sr_pr_file" \
         --rawfile man_text "$_sr_man_file" \
+        --rawfile previous_routes "$_sr_routes_file" \
         --rawfile lat_text "$_sr_lat_file" \
         --argjson now "$_sr_now" \
         --arg fstate "$_sr_fstate" \
@@ -99,11 +103,7 @@ _status_render_jq() {
         --arg lan_ip "$_sr_lan_ip" \
         --arg lan_cidr "$_sr_lan_cidr" \
         --argjson sw_mode "$_sr_sw_json" \
-        --argjson conf_dir "$_sr_conf_dir" \
         --argjson dns_active "$_sr_dns_active" \
-        --rawfile dns_contents "$_sr_dns_file" \
-        --argjson dns_legacy "$_sr_dns_legacy" \
-        --argjson dns_conf_exists "$_sr_dns_conf_exists" \
         --argjson chk_fw "$_sr_chk_fw" \
         --argjson chk_clk "$_sr_chk_clk" \
         --arg last_control "$(_status_last_control)" \
@@ -126,17 +126,10 @@ _status_render_jq() {
             end;
         def clean_expiry:
             if type != "string" or . == "" or startswith("0001-01-01") then "" else . end;
-        def is_valid_dns:
-            type == "string" and length > 0 and length <= 253
-            and test("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")
-            and (contains("..") | not)
-            and (contains(".-") | not)
-            and (contains("-.") | not);
-
         def object_or_null: try (fromjson | if type == "object" then . else null end) catch null;
-        def exit_routes: '"$(fw_exit_routes_jq)"';
+        '"$(fw_exit_jq)"'
         def installed_arch: '"$(status_core_arch_jq)"';
-        def suffix: '"$(dns_suffix_jq)"';
+        '"$(dns_policy_jq)"'
 
         ($st_text | object_or_null) as $st |
         (if $st != null then ($pr_text | object_or_null) else null end) as $pr |
@@ -172,7 +165,7 @@ _status_render_jq() {
         ((if $pr != null then ($pr.ControlURL // "") else $last_control end) | sub("/+$"; "")) as $url |
         ($url == "" or $url == "https://controlplane.tailscale.com" or $url == "https://login.tailscale.com") as $official |
         (if $official then "" else $url end) as $control |
-        ($st | suffix) as $msuf |
+        ($st | dns_suffix) as $msuf |
 
         (if $st == null then null else
             {
@@ -202,7 +195,8 @@ _status_render_jq() {
          end) as $prefs_obj |
 
         (if $st == null then [] else (($st.Self.PrimaryRoutes // []) + ($st.Self.AllowedIPs // [])) end) as $approved_set |
-        (if $prefs_obj == null then [] else
+        ($previous_routes | object_or_null) as $last |
+        (if $prefs_obj == null then ($last.routes // []) else
             ($prefs_obj.advertise_routes | map(. as $r | {
                 cidr: $r,
                 approved: (($approved_set | index($r)) != null)
@@ -210,20 +204,16 @@ _status_render_jq() {
          end) as $routes_arr |
 
         {
-            advertised: (if $prefs_obj != null then $prefs_obj.advertise_exit_node else false end),
+            advertised: (if $prefs_obj != null then $prefs_obj.advertise_exit_node else ($last.exit_node.advertised // false) end),
             approved: (if $st != null then
-                (($st.Self.ExitNodeOption == true) or (($st.Self.AllowedIPs // []) | exit_routes))
+                ($st | approved_exit)
                 else false end)
         } as $exit_obj |
 
         (if $pr != null and ((($pr.CorpDNS // false) != false) or (($pr.NetfilterMode // 0) != 0 and ($pr.NetfilterMode // 0) != "off") or (($pr.ShieldsUp // false) != false))
          then true else false end) as $chk_prefs |
 
-        (if $mdns and ($conf_dir | not) then false
-         elif $mdns and $drun and $st == null and ($err == "cli_failed" or $err == "timeout") then false
-         elif $mdns and $state == "running" and ($msuf | is_valid_dns) then
-            ($dns_contents != ("server=/" + $msuf + "/100.100.100.100\n") or $dns_legacy)
-         else $dns_conf_exists or $dns_legacy end) as $chk_dns |
+        ($st | dns_plan((($drun | not) or $state == "disabled" or $state == "core_missing" or $state == "conflict"); $err) | .stale) as $chk_dns |
 
         ($err == "watchdog_gave_up") as $chk_wd |
 
@@ -309,6 +299,7 @@ _status_render_jq() {
             peers: $peers_arr
         } as $doc |
         (if $pr == null then "-" else $control end),
+        (if $pr == null then "-" else ({routes:$routes_arr, exit_node:{advertised:$exit_obj.advertised}} | tojson) end),
         (($self_obj.magicdns_suffix, $self_obj.tailnet, ($control | select(length > 0) | sub("^https?://"; "") | split("/")[0] | split(":")[0]))
             | strings | select(length > 0) | gsub("[\\r\\n]"; "")),
         ($doc | tojson)
@@ -429,25 +420,16 @@ status_refresh() {
     _sr_sw=$(nvram get sw_mode 2>/dev/null)
     if valid_uint "$_sr_sw"; then _sr_sw_json=$_sr_sw; else _sr_sw_json=null; fi
 
-    if dns_has_conf_dir; then _sr_conf_dir=true; else _sr_conf_dir=false; fi
-    _sr_dns_conf_exists=false
-    _sr_dns_file=/dev/null
-    if [ -e "$BIFROST_DNSMASQ_CONF" ]; then
-        _sr_dns_conf_exists=true
-        [ -f "$BIFROST_DNSMASQ_CONF" ] && _sr_dns_file=$BIFROST_DNSMASQ_CONF
-    fi
-    _sr_dns_legacy=false
-    for _sr_leftover in "$BIFROST_DNSMASQ_CONF".tmp.*; do
-        if [ -e "$_sr_leftover" ]; then _sr_dns_legacy=true; break; fi
-    done
-    if [ "$_sr_conf_dir" = true ] && [ -s "$BIFROST_DNSMASQ_CONF" ]; then
+    _dns_observe
+    # shellcheck disable=SC2154 # populated by _dns_observe in dns.sh.
+    if [ "$_dns_conf_dir" = true ] && [ -s "$BIFROST_DNSMASQ_CONF" ]; then
         _sr_dns_active=true
     else
         _sr_dns_active=false
     fi
 
     _sr_chk_fw=false
-    if [ "$_sr_drun" = true ] && ! fw_check; then
+    if [ "$_sr_drun" = true ] && ! fw_complete; then
         _sr_chk_fw=true
     fi
     _sr_chk_clk=false
@@ -458,14 +440,25 @@ status_refresh() {
     [ -f "$BIFROST_MANIFEST" ] && _sr_man_file=$BIFROST_MANIFEST
     [ -f "$BIFROST_RUN/core_latest.json" ] && _sr_lat_file="$BIFROST_RUN/core_latest.json"
 
+    # The last advertised values are small and independent of the live peer
+    # list. On the first refresh after an upgrade, use the existing page once.
+    _sr_routes_file="$BIFROST_RUN/status.routes"
+    if [ ! -f "$_sr_routes_file" ]; then
+        _sr_routes_file="$BIFROST_UPLOAD/bifrost_status.json"
+        [ -f "$_sr_routes_file" ] || _sr_routes_file=/dev/null
+    fi
     _sr_rc=1
     if (umask 077; _status_render_jq >"$_sr_out_tmp") 2>/dev/null && [ -s "$_sr_out_tmp" ]; then
-        IFS= read -r _sr_control <"$_sr_out_tmp"
+        { IFS= read -r _sr_control && IFS= read -r _sr_routes; } <"$_sr_out_tmp"
         if [ "$_sr_control" != "-" ] &&
             ! printf '%s\n' "$_sr_control" | cmp -s - "$BIFROST_RUN/status.control"; then
             printf '%s\n' "$_sr_control" | atomic_write "$BIFROST_RUN/status.control" 600
         fi
-        if sed '1d;$d' "$_sr_out_tmp" | _status_remember_names &&
+        if [ "$_sr_routes" != "-" ] &&
+            ! printf '%s\n' "$_sr_routes" | cmp -s - "$BIFROST_RUN/status.routes"; then
+            printf '%s\n' "$_sr_routes" | atomic_write "$BIFROST_RUN/status.routes" 600
+        fi
+        if sed '1,2d;$d' "$_sr_out_tmp" | _status_remember_names &&
             tail -n 1 "$_sr_out_tmp" | json_write "$BIFROST_UPLOAD/bifrost_status.json"; then
             _sr_rc=0
         fi
