@@ -13,7 +13,7 @@ t_load
 BIFROST_WAIT_READY=3
 BIFROST_STOP_TIMEOUT=2
 BIFROST_UPDATE_VERIFY_SECS=2
-export BIFROST_WAIT_READY BIFROST_STOP_TIMEOUT BIFROST_UPDATE_VERIFY_SECS
+export BIFROST_WAIT_READY BIFROST_STOP_TIMEOUT BIFROST_UPDATE_VERIFY_SECS BIFROST_STATE
 
 nvram_seed lan_ipaddr=192.168.1.1 lan_netmask=255.255.255.0 sw_mode=1
 ts_out status '{"BackendState":"Running","Self":{"HostName":"router"}}'
@@ -108,7 +108,10 @@ make_manifest "$FIX/m1.json" 5 1.104.7 0.1.0 arm "$FIX/v1" "$FIX/v1.gz"
 make_fake_core "$FIX/v2" 1.105.0
 gzip -c "$FIX/v2" >"$FIX/v2.gz"
 make_manifest "$FIX/m2.json" 6 1.105.0 0.1.0 arm "$FIX/v2" "$FIX/v2.gz"
-sh "$T_SRC/tools/sign.sh" "$KEYDIR/prod.key.pem" "$FIX/m2.json"
+while :; do
+    sh "$T_SRC/tools/sign.sh" "$KEYDIR/prod.key.pem" "$FIX/m2.json" || exit 1
+    [ "$(file_size "$FIX/m2.json.sig")" != 72 ] || break
+done
 
 rm -f "$BIFROST_CORE" "$BIFROST_MANIFEST"
 core_install_file "$FIX/v1.gz" "$FIX/m1.json" arm
@@ -207,11 +210,10 @@ act_core_update
 bg_drain
 assert_unchanged s2-tampered-sig bad_signature
 
-# Always exercise the 73-byte boundary regardless of the random DER length.
+# A full-length valid signature followed by exactly one additional byte.
+eq full-sig-length 72 "$(file_size "$FIX/m2.json.sig")"
 cp "$FIX/m2.json.sig" "$FIX/m2-trail72.sig"
-while [ "$(file_size "$FIX/m2-trail72.sig")" -lt 73 ]; do
-    printf X >>"$FIX/m2-trail72.sig"
-done
+printf X >>"$FIX/m2-trail72.sig"
 curl_map_reset
 curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m2.json"
 curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m2-trail72.sig"
@@ -230,6 +232,7 @@ curl_map_set "$V2_URL" "file:$FIX/v2-tampered.gz"
 act_core_update
 bg_drain
 assert_unchanged s3-tampered-gz hash_mismatch
+has oversized-download-limited "$V2_URL $(file_size "$FIX/v2.gz")" "$(cat "$MOCK_STATE/curl.limited")"
 
 # Mock curl partial: mode (returns exit 0 with truncated body -> caught by verify)
 curl_map_reset
@@ -353,7 +356,8 @@ unset -f mv
 assert_unchanged s7b-manifest-commit-fail internal
 
 # ---- Scenario 7c: daemon_stop failure before swap aborts without touching core ----
-daemon_stop() { fail busy; }
+# shellcheck disable=SC2329
+daemon_stop() { fail internal; }
 curl_map_reset
 curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m2.json"
 curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m2.json.sig"
@@ -361,7 +365,103 @@ curl_map_set "$V2_URL" "file:$FIX/v2.gz"
 act_core_update
 bg_drain
 t_load
-assert_unchanged s7c-daemon-stop-fail busy
+assert_unchanged s7c-daemon-stop-fail internal
+
+# The contracted cleanup error may occur after the process actually stopped.
+# shellcheck disable=SC2329
+daemon_stop() {
+    (. "$BIFROST_LIB/daemon.sh" && daemon_stop) || return 1
+    fail fw_failed
+}
+act_core_update
+bg_drain
+t_load
+assert_unchanged stop-cleanup fw_failed
+
+# Inject the same stop error after the candidate failed verification. Keep
+# the live candidate paired, then retry restoration when cleanup works again.
+daemon_stop() {
+    (. "$BIFROST_LIB/daemon.sh" && daemon_stop) || return 1
+    if [ "$(core_version)" = 1.105.0 ]; then fail fw_failed; fi
+}
+: >"$MOCK_STATE/fail_v2_bstate"
+: >"$MOCK_STATE/restore_running_on_v1"
+act_core_update
+bg_drain
+eq revert-stop-code fw_failed "$(jq -r .code "$JF")"
+eq revert-stop-candidate 1.105.0 "$(core_version)"
+eq revert-stop-manifest 1.105.0 "$(jq -r .tailscale "$BIFROST_MANIFEST")"
+ok revert-stop-running daemon_running
+t_load
+ok revert-stop-retry with_lock state 0 core_recover
+rm -f "$MOCK_STATE/fail_v2_bstate" "$MOCK_STATE/restore_running_on_v1"
+assert_unchanged revert-stop-recovered fw_failed
+
+# Fail only the restoration rename (the initial candidate rename succeeds).
+for fault in manifest state; do
+    case "$fault" in
+        manifest) fault_file=$BIFROST_MANIFEST; fault_code=internal ;;
+        state) fault_file="$BIFROST_STATE/tailscaled.state"; fault_code=state_not_writable ;;
+    esac
+    # shellcheck disable=SC2329
+    mv() {
+        if [ "${2:-}" = "$fault_file.tmp.$$" ]; then return 1; fi
+        command mv "$@"
+    }
+    : >"$MOCK_STATE/mutate_state_on_v2"
+    : >"$MOCK_STATE/fail_v2_bstate"
+    : >"$MOCK_STATE/restore_running_on_v1"
+    act_core_update
+    bg_drain
+    unset -f mv
+    eq "$fault-restore-code" "$fault_code" "$(jq -r .code "$JF")"
+    eq "$fault-restore-core" "$OLD_CORE_SHA" "$(sha256_file "$BIFROST_CORE")"
+    ok "$fault-restore-running" daemon_running
+    ok "$fault-restore-pending" [ -s "$BIFROST_HOME/.core-update/phase" ]
+    ok "$fault-restore-retry" with_lock state 0 core_recover
+    ok "$fault-restore-repeat" with_lock state 0 core_recover
+    rm -f "$MOCK_STATE/mutate_state_on_v2" "$MOCK_STATE/fail_v2_bstate" "$MOCK_STATE/restore_running_on_v1"
+    assert_unchanged "$fault-recovered" "$fault_code"
+    eq "$fault-state-restored" original-state-v1 "$(cat "$BIFROST_STATE/tailscaled.state")"
+done
+
+# Terminate a separate locked worker between the two actual renames.
+for sig in TERM INT HUP KILL; do
+    rm -f "$MOCK_STATE/signal-fired"
+    if [ "$sig" != KILL ]; then df_set "$BIFROST_BIN" 0; fi
+    job_begin update
+    no "$sig-worker-interrupted" sh tests/shell/fixtures/update/interrupted-job.sh "$sig"
+    df_reset
+    ok "$sig-injection-ran" [ -f "$MOCK_STATE/signal-fired" ]
+    if [ "$sig" = KILL ]; then
+        eq cold-candidate 1.105.0 "$(core_version)"
+        eq cold-manifest-before-recovery "$OLD_MAN_SHA" "$(sha256_file "$BIFROST_MANIFEST")"
+        eq cold-phase replacing "$(cat "$BIFROST_HOME/.core-update/phase")"
+        no cold-daemon-stopped daemon_running
+        # Discard volatile runtime and job data as on reboot. Enter through
+        # a normal channel check, which must recover before its download.
+        rm -rf "$BIFROST_RUN" "$BIFROST_UPLOAD"
+        curl_map_reset
+        curl_map_set "$BIFROST_CHANNEL_URL" fail:22
+        act_core_check
+        bg_drain
+        eq cold-check-code download_failed "$(jq -r .code "$JF")"
+        eq cold-current "$OLD_CORE_SHA" "$(sha256_file "$BIFROST_CORE")"
+        eq cold-manifest "$OLD_MAN_SHA" "$(sha256_file "$BIFROST_MANIFEST")"
+        eq cold-state original-state-v1 "$(cat "$BIFROST_STATE/tailscaled.state")"
+        ok cold-running daemon_running
+        ok cold-idempotent with_lock state 0 core_recover
+        cp "$FIX/m1.json" "$BIFROST_RUN/core_latest.json"
+        curl_map_reset
+        curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m2.json"
+        curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m2.json.sig"
+        curl_map_set "$V2_URL" "file:$FIX/v2.gz"
+    else
+        assert_unchanged "$sig-recovered" internal
+    fi
+    ok "$sig-no-journal" [ ! -e "$BIFROST_HOME/.core-update" ]
+    ok "$sig-no-lock" [ ! -e "$BIFROST_RUN/lock.state" ]
+done
 
 # ---- Scenario 7d: Rollback path daemon_start fails -> reports start_failed, NOT update_verify_failed ----
 : >"$MOCK_STATE/fail_v2_bstate"
@@ -534,14 +634,15 @@ ok rb-no-prevjson-status status_refresh
 eq rb-no-prevjson-status-ts 1.103.0 "$(jq -r .core.tailscale "$BIFROST_UPLOAD/bifrost_status.json")"
 eq rb-no-prevjson-status-ser 0 "$(jq -r .core.serial "$BIFROST_UPLOAD/bifrost_status.json")"
 
-# 7. rollback with corrupt/invalid prev.json -> succeeds and writes minimal manifest
+# 7. Present but invalid metadata cannot use the legacy no-manifest path.
 cp "$FIX/v1.gz" "$BIFROST_BIN/bifrostd.prev.gz"
 printf '{broken-json' >"$BIFROST_BIN/bifrostd.prev.json"
 ok rb-bad-prevjson-act act_core_rollback
 bg_drain
-eq rb-bad-prevjson-ok true "$(jq -r .ok "$JF")"
-eq rb-bad-prevjson-ver 1.104.7 "$(core_version)"
-eq rb-bad-prevjson-man-ts 1.104.7 "$(jq -r .tailscale "$BIFROST_MANIFEST")"
+eq rb-bad-prevjson-ok false "$(jq -r .ok "$JF")"
+eq rb-bad-prevjson-code bad_manifest "$(jq -r .code "$JF")"
+eq rb-bad-prevjson-ver 1.103.0 "$(core_version)"
+eq rb-bad-prevjson-man-ts 1.103.0 "$(jq -r .tailscale "$BIFROST_MANIFEST")"
 eq rb-bad-prevjson-man-ser 0 "$(jq -r .serial "$BIFROST_MANIFEST")"
 
 # 8. Even zero reported flash space cannot veto a successful unpack.
@@ -559,6 +660,57 @@ bg_drain
 df_reset
 eq conservative-df-ok true "$(jq -r .ok "$JF")"
 eq conservative-df-ver 1.105.0 "$(core_version)"
+
+# First gunzip gets a real ENOSPC despite optimistic df. Retry exactly once
+# after reclaiming prev.gz, including when that archive is the rollback input.
+cp "$FIX/v0.gz" "$BIFROST_BIN/bifrostd.prev.gz"
+jq -c '.arch = "arm"' "$FIX/m0.json" >"$BIFROST_BIN/bifrostd.prev.json"
+# shellcheck disable=SC2329
+gunzip() {
+    echo "$2" >>"$T/unpack-attempts"
+    if [ -f "$BIFROST_BIN/bifrostd.prev.gz" ]; then
+        command gunzip "$@" >/dev/full
+    else
+        command gunzip "$@"
+    fi
+}
+act_core_rollback
+bg_drain
+unset -f gunzip
+eq optimistic-retry-ok true "$(jq -r .ok "$JF")"
+eq optimistic-retry-ver 1.103.0 "$(core_version)"
+eq optimistic-attempts "$BIFROST_BIN/bifrostd.prev.gz
+$BIFROST_RUN/update-work/stash.gz" "$(cat "$T/unpack-attempts")"
+
+# Only the obsolete archive consumes the missing space at finalize time.
+cp "$FIX/v1.gz" "$BIFROST_BIN/bifrostd.prev.gz"
+cp "$FIX/m1.json" "$BIFROST_BIN/bifrostd.prev.json"
+# shellcheck disable=SC2329
+df() {
+    if [ "${2:-}" = "$BIFROST_BIN" ] && [ -f "$BIFROST_BIN/bifrostd.prev.gz" ] &&
+        cmp -s "$BIFROST_CORE" "$FIX/v2"; then
+        printf 'Filesystem Blocks Used Available Use%% Mounted on\n/dev/mock 2 2 0 100%% /\n'
+    else
+        command df "$@"
+    fi
+}
+act_core_update
+bg_drain
+unset -f df
+eq reclaimed-prev-kept 'true true' "$(jq -r '"\(.ok) \(.data.kept_prev)"' "$JF")"
+gunzip -c "$BIFROST_BIN/bifrostd.prev.gz" >"$T/retained"
+ok reclaimed-prev-bytes cmp "$T/retained" "$FIX/v0"
+eq reclaimed-prev-serial 4 "$(jq -r .serial "$BIFROST_BIN/bifrostd.prev.json")"
+# Reboot after publishing that archive, before disarming the flash journal.
+journal="$BIFROST_HOME/.core-update"
+mkdir "$journal"
+echo committed >"$journal/phase"
+echo keep >"$journal/action"
+cp "$BIFROST_BIN/bifrostd.prev.json" "$journal/installed.json"
+ok committed-replay with_lock state 0 core_recover
+gunzip -c "$BIFROST_BIN/bifrostd.prev.gz" >"$T/replayed"
+ok committed-prev-bytes cmp "$T/replayed" "$FIX/v0"
+eq committed-prev-serial 4 "$(jq -r .serial "$BIFROST_BIN/bifrostd.prev.json")"
 
 # Finalizing an optional rollback archive can fail between the two renames.
 # Only expose the new metadata while the old archive is already withdrawn.
@@ -590,5 +742,47 @@ ok prev-finalize-no-gz [ ! -e "$BIFROST_BIN/bifrostd.prev.gz" ]
 ok prev-finalize-no-json [ ! -e "$BIFROST_BIN/bifrostd.prev.json" ]
 eq prev-finalize-no-tmp "" "$(find "$BIFROST_BIN" -name '*.tmp.*')"
 
-daemon_stop
+# A legacy arm64 rollback retains the installed architecture and the channel
+# floor even when the old release is correctly signed or the cache is lost.
+printf 'aarch64\n' >"$MOCK_STATE/uname_m"
+curl_map_reset
+curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m-arm64only.json"
+curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m-arm64only.json.sig"
+curl_map_set "$BIFROST_RELEASE_BASE/core-1.105.0-1/bifrost-core-1.105.0-1-linux-arm64.gz" "file:$FIX/v2.gz"
+act_core_arch arm64
+bg_drain
+eq floor-arm64-installed arm64 "$(jq -r .arch "$BIFROST_MANIFEST")"
+cp "$FIX/v0.gz" "$BIFROST_BIN/bifrostd.prev.gz"
+rm -f "$BIFROST_BIN/bifrostd.prev.json"
+act_core_rollback
+bg_drain
+eq floor-legacy-arch arm64 "$(jq -r .arch "$BIFROST_MANIFEST")"
+eq floor-legacy-version 1.103.0 "$(core_version)"
+eq floor-after-rollback 6 "$(cat "$BIFROST_HOME/core-channel.serial")"
+# Older plugin versions wrote this legacy installed manifest without .arch.
+jq 'del(.arch)' "$BIFROST_MANIFEST" >"$T/legacy.json"
+cp "$T/legacy.json" "$BIFROST_MANIFEST"
+eq floor-old-format-kernel-arch arm64 "$(_upd_installed_arch)"
+rm -f "$BIFROST_RUN/core_latest.json"
+curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m1.json"
+curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m1.json.sig"
+act_core_update
+bg_drain
+eq floor-replay-rejected old_serial "$(jq -r .code "$JF")"
+curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m-arm64only.json"
+curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m-arm64only.json.sig"
+act_core_update
+bg_drain
+eq floor-latest-reinstalled true "$(jq -r .ok "$JF")"
+eq floor-latest-arch arm64 "$(jq -r .arch "$BIFROST_MANIFEST")"
+
+ok final-stop daemon_stop
+# P5 has explicitly stopped the daemon to install a package. An unfinished
+# update must restore files while respecting the installer's stopped state.
+mkdir "$journal"
+echo stopping >"$journal/phase"
+echo Running >"$journal/running"
+ok package-recovery core_install_file "$FIX/v2.gz" "$FIX/m-arm64only.json" arm64
+no package-recovery-stopped daemon_running
+ok package-recovery-clean [ ! -e "$journal" ]
 t_done

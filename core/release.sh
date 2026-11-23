@@ -56,12 +56,19 @@ elif jq -e '. != null' "$tmp/channel" >/dev/null && [ "$stable" = 0 ]; then
     die "channel exists without a manifest or a pending publication"
 fi
 
-if jq -e '. != null' "$tmp/tag" >/dev/null; then
+# The tag endpoint can return 404 for drafts left by an interrupted upload.
+# Look for the reserved tag among releases visible to this publisher.
+if [ "$pending" = true ] && jq -e '. == null' "$tmp/tag" >/dev/null; then
+    gh api --paginate --slurp 'repos/{owner}/{repo}/releases?per_page=100' >"$tmp/pages"
+    jq --arg t "$tag" '[.[][] | select(.draft and .tag_name == $t)] | first' "$tmp/pages" >"$tmp/tag"
+fi
+if has_asset "$tmp/tag" core.json && ! jq -e 'any(.assets[]; .name == "core.json" and .state == "starter")' "$tmp/tag" >/dev/null; then
     download "$tag" core.json "$tmp/tag.json"
     next=$(serial "$tmp/tag.json")
 elif [ "$pending" = true ]; then
     next=$(serial "$tmp/pending-core.json")
 else
+    jq -e '. == null' "$tmp/tag" >/dev/null || die "tag has no manifest or reservation"
     if [ "$stable" != 0 ]; then
         download "$channel" core.json.sig "$tmp/stable.json.sig"
         verify "$tmp/stable.json"
@@ -82,20 +89,41 @@ fi
 verify "$dist/core.json"
 verify "$dist/SHA256SUMS"
 
-if [ -f "$tmp/tag.json" ]; then
-    # ECDSA signatures may differ for identical inputs. Verify the published
-    # signatures, then use those exact bytes for comparison and channel repair.
+if [ "$pending" = true ]; then
+    cmp "$dist/core.json" "$tmp/pending-core.json" || die "pending manifest differs"
+fi
+
+# Check every existing asset before changing the tag. ECDSA signatures can
+# differ on a rebuild, so authenticate the published bytes against our input.
+complete=false
+if jq -e '. != null' "$tmp/tag" >/dev/null; then
+    complete=true
+    known=0
     mkdir "$tmp/published"
-    gh release download "$tag" --dir "$tmp/published"
-    for name in core.json SHA256SUMS; do
-        verify "$tmp/published/$name"
-        cp "$tmp/published/$name.sig" "$dist/$name.sig"
+    for asset in "$dist"/*; do
+        name=${asset##*/}
+        if ! has_asset "$tmp/tag" "$name"; then complete=false; continue; fi
+        known=$((known + 1))
+        if jq -e --arg n "$name" 'any(.assets[]; .name == $n and .state == "starter")' "$tmp/tag" >/dev/null; then
+            complete=false
+            continue
+        fi
+        download "$tag" "$name" "$tmp/published/$name"
+        case "$name" in
+            core.json.sig | SHA256SUMS.sig)
+                manifest_verify "${asset%.sig}" "$tmp/published/$name" || die "invalid published $name"
+                cp "$tmp/published/$name" "$asset" ;;
+            *) cmp "$asset" "$tmp/published/$name" || die "existing $name differs" ;;
+        esac
     done
-    diff -qr "$dist" "$tmp/published" || die "existing tag release differs"
+    [ "$known" = "$(jq '.assets | length' "$tmp/tag")" ] || die "unexpected tag asset"
+    if [ "$complete" = false ] || jq -e '.draft' "$tmp/tag" >/dev/null; then
+        [ "$pending" = true ] || die "incomplete tag has no reservation"
+    fi
 fi
 
 if [ "$stable" -gt "$next" ]; then
-    [ -f "$tmp/tag.json" ] && [ "$pending" = false ] || die "channel serial moved ahead"
+    [ "$complete" = true ] && [ "$pending" = false ] || die "channel serial moved ahead"
     download "$channel" core.json.sig "$tmp/stable.json.sig"
     verify "$tmp/stable.json"
     echo "Existing release verified. Channel already at serial $stable."
@@ -103,9 +131,9 @@ if [ "$stable" -gt "$next" ]; then
 fi
 if [ "$stable" = "$next" ]; then
     cmp "$tmp/stable.json" "$dist/core.json" || die "serial belongs to a different manifest"
-    if has_asset "$tmp/channel" core.json.sig; then
+    if [ "$complete" = true ] && ! jq -e '.draft' "$tmp/tag" >/dev/null && has_asset "$tmp/channel" core.json.sig; then
         download "$channel" core.json.sig "$tmp/stable.json.sig"
-        if [ -f "$tmp/tag.json" ] && cmp -s "$dist/core.json.sig" "$tmp/stable.json.sig"; then
+        if cmp -s "$dist/core.json.sig" "$tmp/stable.json.sig"; then
             verify "$tmp/stable.json"
             if [ "$pending" = true ]; then gh release delete-asset "$channel" pending-core.json --yes; fi
             exit 0
@@ -113,11 +141,7 @@ if [ "$stable" = "$next" ]; then
     fi
 fi
 
-# Reserve the serial before publishing an immutable tag. If the job stops,
-# only a rebuild of this exact manifest may finish this channel transition.
-if [ "$pending" = true ]; then
-    cmp "$dist/core.json" "$tmp/pending-core.json" || die "pending manifest differs"
-else
+if [ "$pending" = false ]; then
     cp "$dist/core.json" "$tmp/pending-core.json"
     if jq -e '. == null' "$tmp/channel" >/dev/null; then
         gh release create "$channel" "$tmp/pending-core.json" --target "$GITHUB_SHA" \
@@ -126,10 +150,25 @@ else
         gh release upload "$channel" "$tmp/pending-core.json"
     fi
 fi
-if [ ! -f "$tmp/tag.json" ]; then
-    gh release create "$tag" "$dist"/* --verify-tag --title "Bifrost Core $tag" \
+if jq -e '. == null' "$tmp/tag" >/dev/null; then
+    gh release create "$tag" --draft --verify-tag --title "Bifrost Core $tag" \
         --notes "Tailscale $(jq -r .tailscale "$dist/core.json"), commit $(jq -r .build.commit "$dist/core.json"), Go $(jq -r .build.go "$dist/core.json"), manifest serial $next."
+    draft=true
+else
+    draft=$(jq -r '.draft' "$tmp/tag")
 fi
+if [ "$complete" = false ]; then
+    for asset in "$dist"/*; do
+        name=${asset##*/}
+        [ ! -f "$tmp/published/$name" ] || continue
+        # GitHub can leave an empty 'starter' record after a failed upload.
+        if has_asset "$tmp/tag" "$name"; then gh release delete-asset "$tag" "$name" --yes; fi
+        gh release upload "$tag" "$asset"
+        download "$tag" "$name" "$tmp/readback-$name"
+        cmp "$asset" "$tmp/readback-$name" || die "uploaded $name differs"
+    done
+fi
+if [ "$draft" = true ]; then gh release edit "$tag" --draft=false; fi
 
 # GitHub replaces assets individually. Withdraw the manifest before replacing
 # its signature. Publishing the manifest last keeps a mixed pair off the channel.

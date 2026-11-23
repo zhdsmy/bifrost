@@ -106,7 +106,11 @@ gzip -c "$FIX/v2-arm64" >"$FIX/v2-arm64.gz"
 make_manifest "$FIX/m2.json" 2 1.105.0 1 0.1.0 \
     arm "$FIX/v2-arm" "$FIX/v2-arm.gz" \
     arm64 "$FIX/v2-arm64" "$FIX/v2-arm64.gz"
-ok sign-m2 sh "$T_SRC/tools/sign.sh" "$KEYDIR/key1.key.pem" "$FIX/m2.json"
+while :; do
+    sh "$T_SRC/tools/sign.sh" "$KEYDIR/key1.key.pem" "$FIX/m2.json" || exit 1
+    [ "$(file_size "$FIX/m2.json.sig")" != 72 ] || break
+done
+eq sign-m2 72 "$(file_size "$FIX/m2.json.sig")"
 
 # ---- 1. manifest_verify, key rotation & strict DER framing ----
 ok verify-ok manifest_verify "$FIX/m2.json" "$FIX/m2.json.sig"
@@ -128,6 +132,18 @@ cp "$FIX/m2.json.sig" "$FIX/m2-trail.sig"
 printf 'X' >>"$FIX/m2-trail.sig"
 no verify-trailing-byte manifest_verify "$FIX/m2.json" "$FIX/m2-trail.sig"
 eq verify-trailing-code bad_signature "$BIFROST_ERR"
+. tests/shell/fixtures/update/framing.sh
+ok trailing-rejected-before-crypto reject_before_crypto "$FIX/m2.json" "$FIX/m2-trail.sig" "$T/crypto-called"
+
+saved_keys=$BIFROST_KEYS
+BIFROST_KEYS="$FIX/empty-keys"
+mkdir "$BIFROST_KEYS"
+no reject-empty-keys manifest_verify "$FIX/m2.json" "$FIX/m2.json.sig"
+eq empty-keys-code bad_signature "$BIFROST_ERR"
+rmdir "$BIFROST_KEYS"
+no reject-missing-keys manifest_verify "$FIX/m2.json" "$FIX/m2.json.sig"
+eq missing-keys-code bad_signature "$BIFROST_ERR"
+BIFROST_KEYS=$saved_keys
 
 # ---- 2. Version comparison & format validators ----
 ok ver-eq _upd_ver_ge 0.1.0 0.1.0
@@ -238,6 +254,16 @@ eq install-file-man-fail-man "$_m1_sha" "$(sha256_file "$BIFROST_MANIFEST")"
 ok install-file-man-fail-no-old [ ! -e "$BIFROST_BIN/bifrostd.old" ]
 
 # ---- 4. core-check: update available, up-to-date, and mirror ----
+jf=$(job_file update)
+# Up-to-date check (serial == installed 1): job still ok, data.latest filled, up_to_date=true
+curl_map_reset
+curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m1.json"
+curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m1.json.sig"
+ok act-check-utd act_core_check
+bg_drain
+eq check-utd-ok "false true done 100 1 true" \
+    "$(jq -r '"\(.running) \(.ok) \(.phase) \(.progress) \(.data.latest.serial) \(.data.up_to_date)"' "$jf")"
+
 curl_map_reset
 curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m2.json"
 curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m2.json.sig"
@@ -250,15 +276,6 @@ eq check-avail-ok "false true done 100 check 2 false" \
     "$(jq -r '"\(.running) \(.ok) \(.phase) \(.progress) \(.data.action) \(.data.latest.serial) \(.data.up_to_date)"' "$jf")"
 ok check-latest-written [ -f "$BIFROST_RUN/core_latest.json" ]
 eq check-latest-tag core-1.105.0-1 "$(jq -r .tag "$BIFROST_RUN/core_latest.json")"
-
-# Up-to-date check (serial == installed 1): job still ok, data.latest filled, up_to_date=true
-curl_map_reset
-curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m1.json"
-curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m1.json.sig"
-ok act-check-utd act_core_check
-bg_drain
-eq check-utd-ok "false true done 100 1 true" \
-    "$(jq -r '"\(.running) \(.ok) \(.phase) \(.progress) \(.data.latest.serial) \(.data.up_to_date)"' "$jf")"
 
 # Check through mirror prefix
 MIR="https://mirror.example.com/gh/"
@@ -378,7 +395,7 @@ ok upd-noprev-absent [ ! -f "$BIFROST_BIN/bifrostd.prev.gz" ]
 df_reset
 
 # ---- 9. Architecture switching (core-arch): stopped & running ----
-rm -f "$BIFROST_CORE" "$BIFROST_MANIFEST"
+rm -f "$BIFROST_CORE" "$BIFROST_MANIFEST" "$BIFROST_HOME/core-channel.serial" "$BIFROST_RUN/core_latest.json"
 ok install-v2-for-arch core_install_file "$FIX/v2-arm.gz" "$FIX/m2.json" arm
 
 # On armv7l: arm64 must be rejected with arch_unsupported

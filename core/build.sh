@@ -23,6 +23,9 @@ TEST_ARCH=""
 build_env() {
     env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" \
         GOCACHE="${GOCACHE:-}" GOMODCACHE="${GOMODCACHE:-}" \
+        HTTPS_PROXY="${HTTPS_PROXY:-}" HTTP_PROXY="${HTTP_PROXY:-}" NO_PROXY="${NO_PROXY:-}" \
+        https_proxy="${https_proxy:-}" http_proxy="${http_proxy:-}" no_proxy="${no_proxy:-}" \
+        ALL_PROXY="${ALL_PROXY:-}" all_proxy="${all_proxy:-}" GOPROXY="${GOPROXY:-}" \
         GIT_OPTIONAL_LOCKS=0 GOENV=off GOWORK=off GOTOOLCHAIN=local CGO_ENABLED=0 "$@"
 }
 
@@ -237,7 +240,7 @@ ensure_source() {
 compute_tags() {
     _ct_tags=$(
         cd "$SRC_DIR" || exit 1
-        build_env GOTOOLCHAIN="go$RECIPE_GO" go run ./cmd/featuretags --remove="$OMIT_CSV"
+        build_env go run ./cmd/featuretags --remove="$OMIT_CSV"
     ) || die "featuretags validation failed"
     [ -n "$_ct_tags" ] || die "featuretags returned empty tag list"
     printf 'ts_include_cli,%s\n' "$_ct_tags"
@@ -291,9 +294,7 @@ build_one() {
     verify_binary "$_bo_out" "$_bo_tags"
 }
 
-if [ "$MODE" != check ]; then
-    check_go_host
-fi
+check_go_host
 
 ensure_source
 BUILD_TAGS=$(compute_tags)

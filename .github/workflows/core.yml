@@ -12,7 +12,7 @@ permissions:
 # same channel-stable serial and emit duplicate serials.
 concurrency:
   group: core-release
-  cancel-in-progress: false
+  queue: max
 
 jobs:
   validate:
@@ -277,7 +277,7 @@ jobs:
           mkdir -p dist/release
           cp dist/a/bifrost-core-*.gz dist/a/core.json dist/a/LICENSE.tailscale dist/a/SHA256SUMS dist/release/
 
-      - name: Sign core.json and SHA256SUMS and verify against bundled keys
+      - name: Sign core.json and SHA256SUMS
         env:
           BIFROST_SIGNING_KEY: ${{ secrets.BIFROST_SIGNING_KEY }}
         run: |
@@ -286,15 +286,16 @@ jobs:
             echo "Missing required secret: BIFROST_SIGNING_KEY" >&2
             exit 1
           fi
+          signing_key=$BIFROST_SIGNING_KEY
+          unset BIFROST_SIGNING_KEY
           key_tmp=$(mktemp)
           trap 'rm -f "$key_tmp"' EXIT
-          (
-            umask 077
-            printf '%s\n' "$BIFROST_SIGNING_KEY" >"$key_tmp"
-          )
+          printf '%s\n' "$signing_key" >"$key_tmp"
+          unset signing_key
           tools/sign.sh "$key_tmp" dist/release/core.json dist/release/SHA256SUMS
 
-          core/release.sh verify dist/release/core.json dist/release/SHA256SUMS
+      - name: Verify signatures against bundled keys
+        run: core/release.sh verify dist/release/core.json dist/release/SHA256SUMS
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

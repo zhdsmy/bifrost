@@ -8,6 +8,8 @@ combined binary (`bifrostd`) used by Bifrost. Local builds and GitHub Actions
 
 - Go matching `go` in `core/recipe.json` (`GOTOOLCHAIN=local`, `GOWORK=off`,
   and `GOENV=off` are enforced; caller `GOFLAGS`/`GOEXPERIMENT`/etc. are cleared)
+- All modes check the local Go version before fetching source or running featuretags.
+  HTTP, HTTPS, ALL and NO proxy variables (both cases) and `GOPROXY` pass through.
 - `git`, `jq`, `openssl`, `gzip`
 
 ## Usage
@@ -67,7 +69,8 @@ core/build.sh --test-arch arm64
 ## Retrying a release
 
 Rerun the failed workflow for the same tag. The publisher checks an existing
-tag release against the rebuild and verifies its signatures. A pending manifest
+tag release against the rebuild and verifies its signatures. It uploads missing
+assets to the reserved tag and publishes the draft after readback. A pending manifest
 on `channel-stable` reserves the serial until the signed pair passes readback.
 During replacement the manifest URL can briefly return 404. A retry of an older,
 already-published tag preserves a newer stable channel.
