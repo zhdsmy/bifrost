@@ -11,6 +11,10 @@
 : "${BIFROST_MIGRATE_VERIFY_POLL:=2}"
 : "${BIFROST_MIGRATE_ORIG_STOP_TIMEOUT:=15}"
 
+# The journal and its private backup survive a reboot. Uninstall removes
+# BIFROST_HOME; purge and the next migration also retry committed cleanup.
+_BIFROST_MIGRATION="$BIFROST_HOME/.migration"
+
 migrate_orig_cli() {
     printf '%s\n' "${BIFROST_ORIG_CLI:-$BIFROST_KSBIN/tailscale}"
 }
@@ -24,7 +28,8 @@ migrate_orig_get_enable() {
 # PLAN 11.2 step 4). Only invoked when BIFROST_MIGRATE_AUTOSTOP=1.
 migrate_orig_stop() {
     if [ -x "$BIFROST_ORIG_CONFIG" ]; then
-        run_timeout "$BIFROST_MIGRATE_ORIG_STOP_TIMEOUT" "$BIFROST_ORIG_CONFIG" stop >/dev/null 2>&1 || true
+        # The parent handles signals after the bounded stop script completes.
+        (run_timeout "$BIFROST_MIGRATE_ORIG_STOP_TIMEOUT" "$BIFROST_ORIG_CONFIG" stop) >/dev/null 2>&1 || true
     fi
     _mos_deadline=$(($(now) + BIFROST_MIGRATE_ORIG_STOP_TIMEOUT))
     while orig_running || tun_exists; do
@@ -46,68 +51,129 @@ migrate_orig_disable_autostart() {
 migrate_orig_restore() {
     _mor_en=$1
     _mor_was=$2
+    _mor_rc=0
     if [ -n "$_mor_en" ]; then
-        dbus set "tailscale_enable=$_mor_en" >/dev/null 2>&1 || return 1 # check-sh: allow
+        dbus set "tailscale_enable=$_mor_en" >/dev/null 2>&1 || _mor_rc=1 # check-sh: allow
     else
-        dbus remove tailscale_enable >/dev/null 2>&1 || return 1 # check-sh: allow
+        dbus remove tailscale_enable >/dev/null 2>&1 || _mor_rc=1 # check-sh: allow
     fi
     if [ "$_mor_was" = 1 ] && ! orig_running; then
         if [ -x "$BIFROST_ORIG_CONFIG" ]; then
-            run_timeout "$BIFROST_MIGRATE_ORIG_STOP_TIMEOUT" "$BIFROST_ORIG_CONFIG" start >/dev/null 2>&1 || return 1
+            (run_timeout "$BIFROST_MIGRATE_ORIG_STOP_TIMEOUT" "$BIFROST_ORIG_CONFIG" start) >/dev/null 2>&1 || return 1
+            _mor_until=$(($(now) + BIFROST_MIGRATE_ORIG_STOP_TIMEOUT))
+            until orig_running; do
+                [ "$(now)" -lt "$_mor_until" ] || return 1
+                sleep 1
+            done
         else
             return 1
         fi
     fi
-    return 0
+    return "$_mor_rc"
 }
 
-# Roll back a failed migration (PLAN 11.2 step 9). Caller holds state lock.
-# Args: <backup_dir_or_empty> <orig_was_running:0|1> <orig_enable_val> <fail_code>
-migrate_rollback() {
-    _mrb_bak=$1
-    _mrb_was_orig=$2
-    _mrb_orig_en=$3
-    _mrb_code=$4
-    job_phase migrate rollback 90
-    log migrate "rolling back failed migration (reason=$_mrb_code)"
+# Publish the phase and its original settings together before side effects.
+# Keep a complete snapshot until rollback and original service restoration finish.
+migrate_mark() {
+    sync
+    printf '%s %s %s %s %s\n' "$1" "$_jm_auto" "$_jm_orig_was_running" "${_jm_orig_enable:--}" "$_jm_saved" |
+        atomic_write "$_BIFROST_MIGRATION/record" 600 || { fail state_not_writable; return 1; }
+    sync
+}
 
-    _mrb_ok=1
-    if ! daemon_deactivate disable; then
-        log migrate "stop or network cleanup failed; preserving state and backup"
-        job_data migrate '{"rolled_back":false}'
+migrate_data() {
+    [ ! -f "$(job_file migrate)" ] || job_data migrate "$1"
+}
+
+migrate_cleanup() {
+    if ! rm -rf "$_BIFROST_MIGRATION/backup" || ! rm -rf "$_BIFROST_MIGRATION"; then
+        log migrate "migration backup cleanup pending"
+        migrate_data '{"backup_cleanup_pending":true}'
+        return 1
+    fi
+    migrate_data '{"backup_cleanup_pending":false}'
+}
+
+# Called under the state lock on rollback, boot, and before a new migration.
+migrate_recover() {
+    [ -d "$_BIFROST_MIGRATION" ] || return 0
+    if [ ! -e "$_BIFROST_MIGRATION/record" ]; then
+        # Preparation was interrupted before any live state was changed.
+        migrate_cleanup || { fail state_not_writable; return 1; }
+        return 0
+    fi
+    if ! read -r _mr_phase _jm_auto _jm_orig_was_running _jm_orig_enable _jm_saved <"$_BIFROST_MIGRATION/record" ||
+        ! valid_bool01 "$_jm_auto" || ! valid_bool01 "$_jm_orig_was_running" || ! valid_bool01 "$_jm_saved" ||
+        { [ "$_jm_orig_enable" != - ] && ! valid_bool01 "$_jm_orig_enable"; }; then
         fail migrate_rollback_failed
         return 1
     fi
-    daemon_clear_state_dir || _mrb_ok=0
+    [ "$_jm_orig_enable" != - ] || _jm_orig_enable=""
+    case "$_mr_phase" in
+        committed | restored) migrate_cleanup || true; return 0 ;;
+        stopping | replacing) ;;
+        *) fail migrate_rollback_failed; return 1 ;;
+    esac
 
-    if [ -n "$_mrb_bak" ]; then
-        if [ -d "$_mrb_bak" ]; then
-            rm -rf "$BIFROST_STATE" 2>/dev/null || _mrb_ok=0
-            mv "$_mrb_bak" "$BIFROST_STATE" 2>/dev/null || _mrb_ok=0
-        else
-            log migrate "rollback backup missing: $_mrb_bak"
-            _mrb_ok=0
+    _mr_ok=1
+    if [ "$_mr_phase" = replacing ]; then
+        [ ! -f "$(job_file migrate)" ] || job_phase migrate rollback 90
+        if ! daemon_stop; then
+            _mr_cleanup=${BIFROST_ERR:-internal}
+            if daemon_find_pid >/dev/null; then
+                log migrate "daemon still running; retaining backup and original service settings"
+                fail migrate_rollback_failed
+                return 1
+            fi
+            log migrate "daemon stopped with cleanup error: $_mr_cleanup"
+            migrate_data "$(jq -cn --arg code "$_mr_cleanup" '{cleanup_error:$code}')"
         fi
+        daemon_unschedule disable || _mr_ok=0
+        if [ "$_jm_saved" = 1 ] && [ ! -d "$_BIFROST_MIGRATION/backup" ]; then
+            _mr_ok=0
+        elif ! daemon_clear_state_dir; then
+            _mr_ok=0
+        elif [ "$_jm_saved" = 1 ]; then
+            mkdir -p "$BIFROST_STATE" &&
+                cp -pR "$_BIFROST_MIGRATION/backup/." "$BIFROST_STATE/" || _mr_ok=0
+        fi
+    elif daemon_find_pid >/dev/null; then
+        fail migrate_rollback_failed
+        return 1
     fi
 
-    if [ "${BIFROST_MIGRATE_AUTOSTOP:-0}" = 1 ]; then
-        migrate_orig_restore "$_mrb_orig_en" "$_mrb_was_orig" || {
-            log migrate "failed to restore original plugin during rollback"
-            _mrb_ok=0
-        }
+    if [ "$_jm_auto" = 1 ]; then
+        migrate_orig_restore "$_jm_orig_enable" "$_jm_orig_was_running" || _mr_ok=0
     fi
-
+    if [ "$_mr_ok" != 1 ] || ! migrate_mark restored; then
+        log migrate "migration rollback incomplete; retaining journal"
+        fail migrate_rollback_failed
+        return 1
+    fi
+    if [ "$_mr_phase" = replacing ]; then migrate_data '{"rolled_back":true}'; fi
+    migrate_cleanup || true
     daemon_err_clear
     status_refresh || true
+    return 0
+}
 
-    if [ "$_mrb_ok" = 1 ]; then
-        job_data migrate '{"rolled_back":true}'
-        fail "$_mrb_code"
-    else
-        job_data migrate '{"rolled_back":false}'
-        fail migrate_rollback_failed
+migrate_interrupted() {
+    trap '' HUP INT TERM
+    _mi_code=internal
+    _mi_phase=""
+    if [ -r "$_BIFROST_MIGRATION/record" ]; then
+        read -r _mi_phase _mi_rest <"$_BIFROST_MIGRATION/record"
     fi
-    return 1
+    migrate_recover || _mi_code=${BIFROST_ERR:-migrate_rollback_failed}
+    if [ "$_mi_phase" = committed ] || [ "${_jm_committed:-0}" = 1 ]; then
+        job_end migrate ok
+        lock_release state
+        exit 0
+    else
+        job_end migrate fail "$_mi_code"
+    fi
+    lock_release state
+    exit 1
 }
 
 # act_migrate: start the background migration job.
@@ -117,6 +183,9 @@ act_migrate() {
 
 # Locked step 1 & 2: precheck and record original identity/autostart.
 migrate_prepare_locked() {
+    migrate_recover || return 1
+    [ ! -d "$_BIFROST_MIGRATION" ] || { fail state_not_writable; return 1; }
+    migrate_data '{"rolled_back":false,"backup_cleanup_pending":false}'
     job_phase migrate precheck 5
     if [ ! -f "$BIFROST_ORIG_STATE/tailscaled.state" ]; then
         log migrate "precheck failed: original state missing"
@@ -128,7 +197,7 @@ migrate_prepare_locked() {
         fail core_missing
         return 1
     fi
-    if daemon_running; then
+    if daemon_find_pid >/dev/null; then
         log migrate "precheck failed: bifrostd already running"
         fail already_running
         return 1
@@ -177,51 +246,37 @@ migrate_prepare_locked() {
 # enforce --no-logs-no-support if custom control server, verify, cleanup or rollback.
 migrate_apply_locked() {
     # Re-check after wait_original in case daemon started concurrently.
-    if daemon_running; then
+    if daemon_find_pid >/dev/null; then
         log migrate "bifrostd started concurrently while waiting"
         fail already_running
         return 1
     fi
 
-    if [ "${BIFROST_MIGRATE_AUTOSTOP:-0}" = 1 ]; then
+    if [ "$_jm_auto" != 1 ] && { orig_running || tun_exists; }; then
+        fail orig_still_running
+        return 1
+    fi
+    job_phase migrate backup 40
+    (umask 077 && mkdir "$_BIFROST_MIGRATION") || { fail state_not_writable; return 1; }
+    _jm_saved=0
+    if [ -d "$BIFROST_STATE" ]; then
+        cp -pR "$BIFROST_STATE" "$_BIFROST_MIGRATION/backup" || { fail state_not_writable; return 1; }
+        _jm_saved=1
+    fi
+    migrate_mark stopping || return 1
+    if [ "$_jm_auto" = 1 ]; then
         migrate_orig_disable_autostart || { fail internal; return 1; }
         if orig_running || tun_exists; then
             job_phase migrate stop_original 25
             log migrate "stopping original plugin (autostop=1)"
-            if ! migrate_orig_stop; then
-                log migrate "failed to stop original plugin"
-                migrate_orig_restore "$_jm_orig_enable" "$_jm_orig_was_running" || {
-                    fail migrate_rollback_failed
-                    return 1
-                }
-                fail orig_still_running
-                return 1
-            fi
+            migrate_orig_stop || { fail orig_still_running; return 1; }
         fi
-    elif orig_running || tun_exists; then
-        fail orig_still_running
-        return 1
     fi
 
-    # 3. Backup existing Bifrost state if non-empty
-    job_phase migrate backup 40
-    _jm_bak=""
-    if [ -d "$BIFROST_STATE" ] && [ -n "$(ls -A "$BIFROST_STATE" 2>/dev/null)" ]; then
-        _jm_bak="${BIFROST_STATE}.bak.$(now).$$"
-        if [ -e "$_jm_bak" ] || ! mv "$BIFROST_STATE" "$_jm_bak"; then
-            log migrate "failed to back up existing state"
-            if [ "${BIFROST_MIGRATE_AUTOSTOP:-0}" = 1 ]; then
-                migrate_orig_restore "$_jm_orig_enable" "$_jm_orig_was_running" || {
-                    fail migrate_rollback_failed
-                    return 1
-                }
-            fi
-            fail state_not_writable
-            return 1
-        fi
-    fi
+    migrate_mark replacing || return 1
+    daemon_clear_state_dir || { fail state_not_writable; return 1; }
     if ! mkdir -p "$BIFROST_STATE" || ! chmod 700 "$BIFROST_STATE"; then
-        migrate_rollback "$_jm_bak" "$_jm_orig_was_running" "$_jm_orig_enable" state_not_writable
+        fail state_not_writable
         return 1
     fi
 
@@ -230,14 +285,14 @@ migrate_apply_locked() {
     if ! cp "$BIFROST_ORIG_STATE/tailscaled.state" "$BIFROST_STATE/tailscaled.state" ||
         ! chmod 600 "$BIFROST_STATE/tailscaled.state"; then
         log migrate "failed to copy tailscaled.state"
-        migrate_rollback "$_jm_bak" "$_jm_orig_was_running" "$_jm_orig_enable" state_not_writable
+        fail state_not_writable
         return 1
     fi
     if [ -f "$BIFROST_ORIG_STATE/derpmap.cached.json" ]; then
         if ! cp "$BIFROST_ORIG_STATE/derpmap.cached.json" "$BIFROST_STATE/derpmap.cached.json" ||
             ! chmod 600 "$BIFROST_STATE/derpmap.cached.json"; then
             log migrate "failed to copy derpmap.cached.json"
-            migrate_rollback "$_jm_bak" "$_jm_orig_was_running" "$_jm_orig_enable" state_not_writable
+            fail state_not_writable
             return 1
         fi
     fi
@@ -247,19 +302,8 @@ migrate_apply_locked() {
     if ! cfg_set bifrost_enable 1 || ! daemon_start; then
         _jm_start_err=${BIFROST_ERR:-start_failed}
         log migrate "bifrostd failed to start during migration ($_jm_start_err)"
-        migrate_rollback "$_jm_bak" "$_jm_orig_was_running" "$_jm_orig_enable" "$_jm_start_err"
+        fail "$_jm_start_err"
         return 1
-    fi
-
-    # PLAN 7.4: if migrated state uses a custom control server and daemon
-    # started without --no-logs-no-support, restart with it before verifying.
-    if daemon_should_disable_logs && ! daemon_running_has_nologs; then
-        log migrate "restarting daemon to enforce --no-logs-no-support for custom control server"
-        if ! daemon_restart; then
-            _jm_start_err=${BIFROST_ERR:-start_failed}
-            migrate_rollback "$_jm_bak" "$_jm_orig_was_running" "$_jm_orig_enable" "$_jm_start_err"
-            return 1
-        fi
     fi
 
     # 7. Verify state and identity within BIFROST_MIGRATE_VERIFY_TIMEOUT
@@ -303,19 +347,29 @@ migrate_apply_locked() {
 
     if [ "$_jm_verified" != 1 ]; then
         log migrate "verification failed (want state=$_jm_want_state)"
-        migrate_rollback "$_jm_bak" "$_jm_orig_was_running" "$_jm_orig_enable" "$_jm_verify_err"
+        fail "$_jm_verify_err"
         return 1
     fi
 
-    # 8. Success: delete backup containing old node private keys.
-    if [ -n "$_jm_bak" ] && ! rm -rf "$_jm_bak"; then
-        log migrate "could not remove old state backup"
-        fail state_not_writable
-        return 1
-    fi
+    migrate_mark committed || return 1
+    _jm_committed=1
+    migrate_cleanup || true
     status_refresh || true
     log migrate "migration succeeded"
     return 0
+}
+
+migrate_transaction() {
+    _jm_committed=0
+    _jm_auto=${BIFROST_MIGRATE_AUTOSTOP:-0}
+    trap 'migrate_interrupted' HUP INT TERM
+    _mt_err=""
+    migrate_apply_locked || _mt_err=${BIFROST_ERR:-internal}
+    if [ -n "$_mt_err" ]; then
+        migrate_recover || _mt_err=${BIFROST_ERR:-migrate_rollback_failed}
+    fi
+    trap - HUP INT TERM
+    [ -z "$_mt_err" ] || { fail "$_mt_err"; return 1; }
 }
 
 # job_migrate: PLAN 11.2 steps 1-9, contract 2 & 6.2.
@@ -344,5 +398,5 @@ job_migrate() {
         fi
     fi
 
-    with_lock state 60 migrate_apply_locked
+    with_lock state 60 migrate_transaction
 }

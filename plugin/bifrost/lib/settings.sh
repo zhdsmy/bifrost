@@ -80,6 +80,14 @@ settings_set_pref() {
     }
 }
 
+settings_restore() {
+    if [ "$_ssl_present" = 1 ]; then
+        cfg_set "$_ssl_db" "$_ssl_old"
+    else
+        dbus remove "$_ssl_db" >/dev/null 2>&1
+    fi
+}
+
 settings_set_locked() {
     _ssl_key=$1
     _ssl_val=$2
@@ -106,6 +114,8 @@ settings_set_locked() {
             ;;
     esac
     _ssl_db="bifrost_$_ssl_key"
+    _ssl_present=0
+    if dbus list "$_ssl_db" | grep -q "^$_ssl_db="; then _ssl_present=1; fi
     _ssl_old=$(cfg "$_ssl_db")
     _ssl_apply=""
     if daemon_running; then
@@ -127,14 +137,14 @@ settings_set_locked() {
         restart)
             if job_start daemon restart; then return 0; fi
             _ssl_err=${BIFROST_ERR:-internal}
-            cfg_set "$_ssl_db" "$_ssl_old" || log settings "could not restore $_ssl_key"
+            settings_restore || log settings "could not restore $_ssl_key"
             fail "$_ssl_err"
             return 1
             ;;
         fw_apply | dns_apply)
             if ! "$_ssl_apply"; then
                 _ssl_err=${BIFROST_ERR:-internal}
-                if ! cfg_set "$_ssl_db" "$_ssl_old" || ! "$_ssl_apply"; then
+                if ! settings_restore || ! "$_ssl_apply"; then
                     log settings "could not restore $_ssl_key after apply failed"
                     [ "$_ssl_apply" = fw_apply ] && daemon_err_set fw_failed
                 fi

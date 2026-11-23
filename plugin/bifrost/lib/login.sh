@@ -143,6 +143,19 @@ act_relogin() {
     with_lock state "$BIFROST_LOCK_WAIT" login_queue_locked relogin
 }
 
+# Tailscale can create a machine key before the first login. Treat unknown
+# store keys, unreadable state and an inconclusive live status conservatively.
+login_new_profile() {
+    [ ! -e "$BIFROST_STATE/control_url" ] || return 1
+    if [ -e "$BIFROST_STATE/tailscaled.state" ]; then
+        jq -e 'type == "object" and (keys - ["_machinekey"] == [])' \
+            "$BIFROST_STATE/tailscaled.state" >/dev/null 2>&1 || return 1
+    fi
+    _lnp_status=$(ts_cli status --json 2>/dev/null) || return 1
+    printf '%s\n' "$_lnp_status" | jq -e '.BackendState == "NeedsLogin" and .HaveNodeKey == false and
+        ((.Self.ID // "") == "")' >/dev/null 2>&1
+}
+
 # Locked preparation step for job_login (populates _ljb_* variables).
 login_prepare_locked() {
     _ljb_mode=$_ljb_act
@@ -178,6 +191,10 @@ login_prepare_locked() {
         fi
         [ "$_lpl_prefs_ok" = 1 ] || _ljb_mode=recorded
     else
+        if [ "$_lpl_prefs_ok" = 0 ] && ! login_new_profile; then
+            fail "$_lpl_perr"
+            return 1
+        fi
         [ -z "$_lrp_ctrl" ] && _lrp_ctrl=$(daemon_control_server)
         if ! daemon_is_official_url "$_ljb_srv"; then
             _ljb_target=$_ljb_srv
@@ -206,8 +223,13 @@ login_post_locked() {
         log login "restarting daemon to enforce --no-logs-no-support"
         daemon_restart || return 1
     else
-        fw_apply || log login "fw_apply after login failed"
-        dns_apply || true
+        _lpost_err=""
+        fw_apply || _lpost_err=${BIFROST_ERR:-fw_failed}
+        dns_apply || _lpost_err=${_lpost_err:-${BIFROST_ERR:-internal}}
+        if [ -n "$_lpost_err" ]; then
+            log login "post-login network configuration failed: $_lpost_err"
+            daemon_err_set "$_lpost_err"
+        fi
         status_refresh || true
     fi
     return 0

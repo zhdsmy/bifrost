@@ -100,6 +100,19 @@ eq set-mirror-clear-db "" "$(cfg bifrost_mirror)"
 
 fresh
 ok start-daemon daemon_start
+cp "$MOCK_STATE/dbus.env" "$T/valid.dbus"
+: >"$MOCK_STATE/iptables.log"
+: >"$MOCK_STATE/ip6tables.log"
+: >"$MOCK_STATE/ts.log"
+for kv in port:80 no_logs:2 local_access:yes lan_masq:2 snat:always magicdns:no; do
+    no "running-invalid-${kv%:*}" act_set "${kv%:*}" "${kv#*:}"
+    eq "running-invalid-code-${kv%:*}" invalid_param "$BIFROST_ERR"
+done
+ok running-invalid-dbus-unchanged cmp -s "$T/valid.dbus" "$MOCK_STATE/dbus.env"
+no running-invalid-ipv4 [ -s "$MOCK_STATE/iptables.log" ]
+no running-invalid-ipv6 [ -s "$MOCK_STATE/ip6tables.log" ]
+no running-invalid-cli [ -s "$MOCK_STATE/ts.log" ]
+no running-invalid-dns [ -e "$BIFROST_DNSMASQ_CONF" ]
 : >"$MOCK_STATE/ts.log"
 
 # advertise_routes valid + read-back (excluding exit routes)
@@ -142,6 +155,17 @@ eq set-exit-fw-fail-err fw_failed "$BIFROST_ERR"
 has set-exit-fw-rollback "set --advertise-exit-node=false" "$(ts_log)"
 ok set-exit-fw-still-valid fw_check
 rm -f "$MOCK_STATE/iptables.fail_match"
+
+# Both the apply and the rollback run out of iptables retries.
+iptables -t filter -D BIFROST_INPUT -p udp --dport 41641 -j ACCEPT
+echo 8 >"$MOCK_STATE/iptables.fail_count"
+echo '-A BIFROST_INPUT' >"$MOCK_STATE/iptables.fail_match"
+no set-exit-rollback-fails act_set advertise_exit_node 1
+eq set-exit-rollback-error fw_failed "$BIFROST_ERR"
+eq set-exit-rollback-visible fw_failed "$(cat "$BIFROST_DAEMON_ERR")"
+has set-exit-rollback-log "could not restore exit-node firewall settings" "$(cat "$BIFROST_LOG")"
+rm -f "$MOCK_STATE/iptables.fail_match"
+ok set-exit-rollback-repair fw_apply
 
 # accept_routes ok + invalid (no CLI call)
 ts_out debug-prefs '{"CorpDNS":false,"NetfilterMode":0,"NoSNAT":false,"ShieldsUp":false,"RouteAll":true}'
@@ -321,6 +345,7 @@ eq set-nologs-busy-unchanged 0 "$(cfg bifrost_no_logs)"
 job_end daemon ok
 
 # job_start failure rolls back port/no_logs in dbus
+# shellcheck disable=SC2329
 job_start() { fail internal; return 1; }
 no set-port-jsfail act_set port 47777
 eq set-port-jsfail-err internal "$BIFROST_ERR"
@@ -351,5 +376,19 @@ BIFROST_LOCK_WAIT=30
 eq page-set-mirror '{"ok":true,"value":""}' "$(t_page set mirror -)"
 eq page-set-bad '{"ok":false,"code":"invalid_param"}' "$(t_page set port 80)"
 
+# A failed change must retain the distinction between a default and a saved value.
+dbus remove bifrost_port
+dbus remove bifrost_no_logs
+dbus remove bifrost_magicdns
+dbus remove bifrost_local_access
+job_start() { fail internal; }
+no absent-port act_set port 48888
+no absent-no-logs act_set no_logs 0
+: >"$BIFROST_DNSMASQ_MAIN"
+no absent-magicdns act_set magicdns 1
+fw_apply() { fail fw_failed; }
+no absent-local act_set local_access 0
+no absent-keys-preserved grep -Eq '^bifrost_(port|no_logs|magicdns|local_access)=' "$MOCK_STATE/dbus.env"
+t_load
 daemon_stop
 t_done

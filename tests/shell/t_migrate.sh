@@ -137,7 +137,7 @@ eq mig-manual-state-mode "-rw-------" "$(ls -l "$BIFROST_STATE/tailscaled.state"
 eq mig-manual-derp-mode "-rw-------" "$(ls -l "$BIFROST_STATE/derpmap.cached.json" | cut -c1-10)"
 no mig-manual-no-files [ -e "$BIFROST_STATE/files" ]
 # Backup containing old private state was deleted on success
-eq mig-manual-bak-deleted "" "$(find "$BIFROST_KSROOT/configs" -maxdepth 1 -name 'bifrost.bak.*')"
+no mig-manual-bak-deleted [ -e "$_BIFROST_MIGRATION" ]
 # Original files untouched
 eq mig-orig-state-intact "ORIG-STATE-DATA" "$(cat "$BIFROST_ORIG_STATE/tailscaled.state")"
 eq mig-orig-derp-intact '{"regions":{}}' "$(cat "$BIFROST_ORIG_STATE/derpmap.cached.json")"
@@ -221,7 +221,10 @@ fresh
 seed_orig_state
 echo "BEFORE_CP" >"$BIFROST_STATE/before.txt"
 # shellcheck disable=SC2329
-cp() { return 1; }
+cp() {
+    [ "$1" != "$BIFROST_ORIG_STATE/tailscaled.state" ] || return 1
+    command cp "$@"
+}
 ok mig-cp-fail act_migrate
 bg_drain
 unset -f cp
@@ -229,18 +232,18 @@ eq mig-cp-fail-job "false state_not_writable true" \
     "$(jq -r '"\(.ok) \(.code) \(.data.rolled_back)"' "$jf")"
 eq mig-cp-fail-restored "BEFORE_CP" "$(cat "$BIFROST_STATE/before.txt")"
 
-# Backup failure -> state_not_writable (fault via mv stub)
+# Backup fails before disabling the original or changing live state.
 fresh
 seed_orig_state
 echo "BEFORE_BAK" >"$BIFROST_STATE/before.txt"
 # shellcheck disable=SC2329
-mv() {
-    case "$*" in *".bak."*) return 1 ;; esac
-    /opt/bb125/bin/mv "$@"
+cp() {
+    [ "${3:-}" != "$_BIFROST_MIGRATION/backup" ] || return 1
+    command cp "$@"
 }
 ok mig-bak-fail act_migrate
 bg_drain
-unset -f mv
+unset -f cp
 eq mig-bak-fail-job "false state_not_writable false" \
     "$(jq -r '"\(.ok) \(.code) \(.data.rolled_back)"' "$jf")"
 eq mig-bak-fail-untouched "BEFORE_BAK" "$(cat "$BIFROST_STATE/before.txt")"
@@ -253,7 +256,7 @@ ts_out_file status "$FIX/status_needs_login.json"
 daemon_stop() {
     _tmp_p=$(daemon_pid 2>/dev/null)
     [ -n "$_tmp_p" ] && kill -KILL "$_tmp_p" 2>/dev/null || true
-    rm -rf "${BIFROST_STATE}".bak.*
+    rm -rf "$_BIFROST_MIGRATION/backup"
     return 0
 }
 ok mig-autostop0-rbfail act_migrate
@@ -349,4 +352,147 @@ no mig-busy act_migrate
 eq mig-busy-err busy "$BIFROST_ERR"
 job_end migrate ok
 
+# The stopped daemon can surrender the identity even if clearing its rules failed.
+fresh
+seed_orig_state
+seed_orig_config
+pidof_set tailscaled 7777
+BIFROST_MIGRATE_AUTOSTOP=1
+echo before >"$BIFROST_STATE/before"
+ts_out_file status "$FIX/status_needs_login.json"
+fw_clear() { fail fw_failed; }
+ok cleanup-error-queued act_migrate
+bg_drain
+eq cleanup-error-result "migrate_verify_failed true fw_failed" \
+    "$(jq -r '"\(.code) \(.data.rolled_back) \(.data.cleanup_error)"' "$jf")"
+ok cleanup-error-original-running orig_running
+no cleanup-error-original-key grep -q '^tailscale_enable=' "$MOCK_STATE/dbus.env"
+eq cleanup-error-old-state before "$(cat "$BIFROST_STATE/before")"
+no cleanup-error-copied-key [ -e "$BIFROST_STATE/tailscaled.state" ]
+no cleanup-error-journal [ -d "$_BIFROST_MIGRATION" ]
+t_load
+
+fresh
+seed_orig_state
+echo before >"$BIFROST_STATE/before"
+# shellcheck disable=SC2329
+cp() {
+    [ "$1" != "$BIFROST_ORIG_STATE/derpmap.cached.json" ] || return 1
+    command cp "$@"
+}
+ok derp-copy-queued act_migrate
+bg_drain
+unset -f cp
+eq derp-copy-result "state_not_writable true" "$(jq -r '[.code,.data.rolled_back]|@tsv' "$jf" | tr '\t' ' ')"
+eq derp-copy-old-state before "$(cat "$BIFROST_STATE/before")"
+no derp-copy-no-private-key [ -e "$BIFROST_STATE/tailscaled.state" ]
+
+for sig in TERM HUP INT KILL; do
+    fresh
+    seed_orig_state
+    seed_orig_config
+    pidof_set tailscaled 7777
+    dbus_seed tailscale_enable=1
+    echo old >"$BIFROST_STATE/before"
+    job_begin migrate
+    no "$sig-worker" env BIFROST_MIGRATE_AUTOSTOP=1 sh "$FIX/interrupted-migration.sh" "$sig" copying
+    ok "$sig-fired" [ -f "$MOCK_STATE/interrupted" ]
+    if [ "$sig" = KILL ]; then
+        no cold-original-still-down orig_running
+        eq cold-boot-disabled 0 "$(dbus get tailscale_enable)"
+        rm -rf "$BIFROST_RUN" "$BIFROST_UPLOAD"
+        ok cold-boot t_call start
+        ok cold-replay t_call start
+    else
+        eq "$sig-failed-job" "internal true false" "$(jq -r '[.code,.data.rolled_back,.running]|@tsv' "$jf" | tr '\t' ' ')"
+    fi
+    ok "$sig-original-running" orig_running
+    eq "$sig-original-autostart" 1 "$(dbus get tailscale_enable)"
+    eq "$sig-old-state" old "$(cat "$BIFROST_STATE/before")"
+    no "$sig-no-copied-identity" [ -e "$BIFROST_STATE/tailscaled.state" ]
+    no "$sig-no-journal" [ -e "$_BIFROST_MIGRATION" ]
+    no "$sig-no-lock" [ -e "$BIFROST_RUN/lock.state" ]
+done
+
+# Losing power before commit must also be recoverable at the next migration
+# entry. Remove its test source so that the new job stops just after recovery.
+fresh
+seed_orig_state
+seed_orig_config
+pidof_set tailscaled 7777
+echo saved >"$BIFROST_STATE/saved"
+job_begin migrate
+no power-cut-while-running env BIFROST_MIGRATE_AUTOSTOP=1 sh "$FIX/interrupted-migration.sh" KILL verifying
+ok interrupted-migrated-daemon daemon_running
+ok interrupted-durable-record [ -s "$_BIFROST_MIGRATION/record" ]
+rm -f "$BIFROST_ORIG_STATE/tailscaled.state"
+job_reap
+ok next-job-queued act_migrate
+bg_drain
+eq next-job-after-recovery orig_missing "$(jq -r .code "$jf")"
+no next-job-stopped-bifrost daemon_running
+ok next-job-restarted-original orig_running
+eq next-job-restored-state saved "$(cat "$BIFROST_STATE/saved")"
+no next-job-original-flag-absent grep -q '^tailscale_enable=' "$MOCK_STATE/dbus.env"
+
+# A watchdog removal error keeps a retryable record, but a confirmed stop
+# already makes it safe to restore the original identity and service.
+fresh
+seed_orig_state
+seed_orig_config
+pidof_set tailscaled 7777
+dbus_seed tailscale_enable=1
+BIFROST_MIGRATE_AUTOSTOP=1
+ts_out_file status "$FIX/status_needs_login.json"
+echo before >"$BIFROST_STATE/before"
+daemon_watchdog_remove() { return 1; }
+ok unschedule-fail-queued act_migrate
+bg_drain
+eq unschedule-fail-code migrate_rollback_failed "$(jq -r .code "$jf")"
+ok unschedule-restored-original orig_running
+eq unschedule-restored-autostart 1 "$(dbus get tailscale_enable)"
+eq unschedule-restored-state before "$(cat "$BIFROST_STATE/before")"
+ok unschedule-retains-retry [ -s "$_BIFROST_MIGRATION/record" ]
+t_load
+ok unschedule-boot-retries t_call start
+no unschedule-journal-cleared [ -e "$_BIFROST_MIGRATION" ]
+
+# Failure to dispose of an old key after commit is a warning. The next
+# migration retries cleanup before checking that Bifrost is already running.
+fresh
+seed_orig_state
+echo old >"$BIFROST_STATE/before"
+# shellcheck disable=SC2329
+rm() {
+    [ "${2:-}" != "$_BIFROST_MIGRATION/backup" ] || return 1
+    command rm "$@"
+}
+ok cleanup-pending-queued act_migrate
+bg_drain
+eq cleanup-pending-success "true true" "$(jq -r '[.ok,.data.backup_cleanup_pending]|@tsv' "$jf" | tr '\t' ' ')"
+has cleanup-pending-warning "backup cleanup pending" "$(cat "$BIFROST_LOG")"
+ok cleanup-pending-running daemon_running
+eq cleanup-pending-key old "$(cat "$_BIFROST_MIGRATION/backup/before")"
+unset -f rm
+ok retry-cleanup-queued act_migrate
+bg_drain
+eq retry-cleanup-running already_running "$(jq -r .code "$jf")"
+no retry-cleanup-no-key [ -e "$_BIFROST_MIGRATION" ]
+eq retry-cleanup-active-state ORIG-STATE-DATA "$(cat "$BIFROST_STATE/tailscaled.state")"
+daemon_stop
+
+# After the commit marker, a power cut must never bring the original back.
+fresh
+seed_orig_state
+seed_orig_config
+pidof_set tailscaled 7777
+job_begin migrate
+no committed-worker-killed env BIFROST_MIGRATE_AUTOSTOP=1 sh "$FIX/interrupted-migration.sh" KILL committed
+ok committed-signal-fired [ -e "$MOCK_STATE/interrupted" ]
+ok committed-replay t_call start
+no committed-original-remains-down orig_running
+ok committed-bifrost-running daemon_running
+eq committed-keeps-new-state ORIG-STATE-DATA "$(cat "$BIFROST_STATE/tailscaled.state")"
+no committed-clears-journal [ -e "$_BIFROST_MIGRATION" ]
+daemon_stop
 t_done

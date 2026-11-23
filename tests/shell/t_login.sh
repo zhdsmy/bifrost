@@ -179,9 +179,10 @@ rm -f "$MOCK_STATE/ts/login.rc"
 no authkey-killed-before-launch sh -c '
     BIFROST_NO_MAIN=1
     . "$BIFROST_KSROOT/scripts/bifrost_config.sh"
-    bg_job() { kill -KILL "$$"; }
+    bg_job() { : >"$MOCK_STATE/at-handoff"; kill -KILL "$$"; }
     act_login "" fake_preauth_key_0123456789abcdef
 ' 2>/dev/null
+ok authkey-kill-reached-handoff [ -f "$MOCK_STATE/at-handoff" ]
 no authkey-no-orphan-after-kill [ -e "$BIFROST_RUN/authkey" ]
 no authkey-no-live-job-after-kill job_running login
 
@@ -394,4 +395,62 @@ eq logout-timeout-err timeout "$BIFROST_ERR"
 rm -f "$MOCK_STATE/ts/logout.sleep"
 
 daemon_stop
+fresh
+dbus_seed bifrost_enable=1 bifrost_no_logs=0
+ok login-post-start start_mock
+ts_rc debug-prefs 1
+ts_out_file status "$FIX/status_needs_login.json"
+echo existing >"$BIFROST_STATE/tailscaled.state"
+ok login-unknown-queued act_login "" ""
+bg_drain
+eq login-unknown-preserves-error cli_failed "$(jq -r .code "$jf")"
+no login-unknown-no-up grep -Eq '^(login|up) ' "$MOCK_STATE/ts.log"
+rm "$BIFROST_STATE/tailscaled.state"
+daemon_set_control_server https://headscale.example.com
+ok login-record-only-queued act_login "" ""
+bg_drain
+eq login-record-only-error cli_failed "$(jq -r .code "$jf")"
+no login-record-only-no-reset grep -q -- --reset "$MOCK_STATE/ts.log"
+daemon_set_control_server ""
+ts_out_file status "$FIX/status_running.json"
+ok login-live-identity-queued act_login "" ""
+bg_drain
+eq login-live-identity-error cli_failed "$(jq -r .code "$jf")"
+ts_out_file status "$FIX/status_needs_login.json"
+echo '{"_machinekey":"fixture"}' >"$BIFROST_STATE/tailscaled.state"
+ok login-confirmed-new act_login "" ""
+bg_drain
+eq login-confirmed-new-ok true "$(jq -r .ok "$jf")"
+has login-confirmed-new-up "up --reset" "$(ts_log)"
+rm "$MOCK_STATE/ts/debug-prefs.rc"
+ts_out_file status "$FIX/status_running.json"
+
+dbus_seed bifrost_magicdns=1
+: >"$BIFROST_DNSMASQ_MAIN"
+ok login-dns-queued act_login "" ""
+bg_drain
+eq login-dns-authenticated true "$(jq -r .ok "$jf")"
+eq login-dns-page-error no_conf_dir "$(jq -r .error "$BIFROST_UPLOAD/bifrost_status.json")"
+ok login-dns-retry watchdog_run
+eq login-dns-keeps-code no_conf_dir "$(cat "$BIFROST_DAEMON_ERR")"
+printf 'conf-dir=%s\n' "$BIFROST_DNSMASQ_DIR" >"$BIFROST_DNSMASQ_MAIN"
+ok login-dns-repaired watchdog_run
+no login-dns-cleared [ -e "$BIFROST_DAEMON_ERR" ]
+ok login-dns-forwarding dns_check
+
+iptables -t filter -D INPUT -j BIFROST_INPUT
+echo 4 >"$MOCK_STATE/iptables.fail_count"
+echo '-A BIFROST_INPUT' >"$MOCK_STATE/iptables.fail_match"
+ok login-fw-queued act_login "" ""
+bg_drain
+eq login-fw-visible fw_failed "$(cat "$BIFROST_DAEMON_ERR")"
+ok login-fw-repaired watchdog_run
+no login-fw-cleared [ -e "$BIFROST_DAEMON_ERR" ]
+ok login-fw-complete fw_check
+
+: >"$MOCK_STATE/daemon.fail"
+ok login-restart-error-queued act_login https://headscale.example.com ""
+bg_drain
+eq login-restart-error-code start_failed "$(jq -r .code "$jf")"
+no login-restart-error-stopped daemon_running
 t_done

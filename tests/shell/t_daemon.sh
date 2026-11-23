@@ -18,6 +18,14 @@ fresh() {
     ts_out_file debug-prefs "$FIX/prefs_ok.json"
 }
 
+wait_until_dead() {
+    _wud_deadline=$(($(now) + 10))
+    while daemon_pid_alive "$1"; do
+        [ "$(now)" -lt "$_wud_deadline" ] || return 1
+        sleep 1
+    done
+}
+
 # --- 1. Pre-check failures & modprobe tun retry ---
 
 fresh
@@ -357,8 +365,9 @@ ts_out_file debug-prefs "$FIX/prefs_ok.json"
 
 # Process disappears -> watchdog restarts (1st, 2nd, 3rd), 4th gives up
 for i in 1 2 3; do
-    kill -KILL "$(daemon_pid)" 2>/dev/null
-    sleep 1
+    wd_pid=$(daemon_pid)
+    kill -KILL "$wd_pid"
+    ok "wd-exited-$i" wait_until_dead "$wd_pid"
     ok "wd-restart-$i" watchdog_run
     ok "wd-alive-$i" daemon_running
     has "wd-still-registered-$i" "#$BIFROST_WATCHDOG_NAME#" "$(cat "$MOCK_STATE/cru.txt")"
@@ -366,8 +375,9 @@ done
 eq wd-restarts-3 3 "$(wc -l <"$BIFROST_RUN/watchdog.restarts" | tr -d ' ')"
 
 # 4th time within 30 min: refuses to restart, writes watchdog_gave_up
-kill -KILL "$(daemon_pid)" 2>/dev/null
-sleep 1
+wd_pid=$(daemon_pid)
+kill -KILL "$wd_pid"
+ok wd-fourth-exited wait_until_dead "$wd_pid"
 no wd-give-up watchdog_run
 eq wd-give-up-err watchdog_gave_up "$BIFROST_ERR"
 eq wd-give-up-file watchdog_gave_up "$(cat "$BIFROST_DAEMON_ERR")"
@@ -488,4 +498,55 @@ eq job-purge-stopped-ok true "$(jq -r .ok "$jf")"
 eq job-purge-stopped-empty "" "$(ls -A "$BIFROST_STATE")"
 eq job-purge-stopped-no-logout "" "$(ts_log)"
 
+fresh
+sock_up
+sleep 60 &
+other=$!
+echo 60 >"$MOCK_STATE/ts/status.sleep"
+TS_BE_CLI=1 "$BIFROST_CORE" "--socket=$BIFROST_SOCK" status >/dev/null &
+cli_pid=$!
+cp "$BIFROST_CORE" "$T/tailscaled"
+"$T/tailscaled" "--statedir=$BIFROST_ORIG_STATE" "--socket=$T/original.sock" >/dev/null &
+orig_pid=$!
+pidof_set tailscaled "$orig_pid"
+mkdir -p "$BIFROST_RUN"
+for foreign in "$other" "$cli_pid" "$orig_pid"; do
+    echo "$foreign" >"$BIFROST_PIDFILE"
+    no "owns-excludes-$foreign" daemon_owns_pid "$foreign"
+    no "find-excludes-$foreign" daemon_find_pid
+done
+rm "$BIFROST_PIDFILE"
+ok stop-with-original-only daemon_stop
+ok original-not-signalled kill -0 "$orig_pid"
+ok cli-not-signalled kill -0 "$cli_pid"
+ok other-not-signalled kill -0 "$other"
+kill "$other" "$cli_pid" "$orig_pid"
+wait "$other" "$cli_pid" "$orig_pid" 2>/dev/null || true
+
+# Discover the custom server from live prefs. A failed write must keep the
+# error until the same write succeeds; exactly one restart then applies it.
+fresh
+dbus_seed bifrost_enable=1 bifrost_no_logs=0
+ts_out_file debug-prefs "$FIX/prefs_custom.json"
+mkdir "$BIFROST_STATE/control_url"
+no boot-custom-record-blocked t_call start
+eq boot-custom-record-code state_not_writable "$(cat "$BIFROST_DAEMON_ERR")"
+ok watchdog-still-unwritable watchdog_run
+eq watchdog-keeps-write-code state_not_writable "$(cat "$BIFROST_DAEMON_ERR")"
+rmdir "$BIFROST_STATE/control_url"
+ok watchdog-retries-control-write watchdog_run
+eq watchdog-recorded-control https://headscale.example.com "$(daemon_control_server)"
+ok watchdog-enforces-nologs daemon_running_has_nologs
+no watchdog-clears-write-error [ -f "$BIFROST_DAEMON_ERR" ]
+ok watchdog-settled watchdog_run
+eq custom-exactly-one-restart 2 "$(grep -c '^started ' "$MOCK_STATE/daemon.log")"
+daemon_stop
+
+fresh
+dbus_seed bifrost_enable=1 bifrost_no_logs=0
+ts_out_file debug-prefs "$FIX/prefs_custom.json"
+ok boot-custom-first t_call start
+ok boot-custom-immediate-flag daemon_running_has_nologs
+eq boot-custom-one-restart 2 "$(grep -c '^started ' "$MOCK_STATE/daemon.log")"
+daemon_stop
 t_done

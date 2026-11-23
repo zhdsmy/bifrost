@@ -76,13 +76,14 @@ daemon_set_control_server() {
     _dsc_f="$BIFROST_STATE/control_url"
     if daemon_is_official_url "${1:-}"; then
         rm -f "$_dsc_f"
-        return 0
+        return $?
     fi
     valid_login_server "$1" || {
         fail bad_server
         return 1
     }
     mkdir -p "$BIFROST_STATE" 2>/dev/null || return 1
+    [ ! -d "$_dsc_f" ] || { fail state_not_writable; return 1; }
     printf '%s\n' "$1" | atomic_write "$_dsc_f" 644
 }
 
@@ -115,8 +116,13 @@ daemon_pid_alive() {
 daemon_owns_pid() {
     [ -r "/proc/$1/cmdline" ] || return 1
     _dop_args=$(tr '\000' '\n' <"/proc/$1/cmdline" 2>/dev/null) || return 1
-    printf '%s\n' "$_dop_args" | grep -Fqx "$BIFROST_CORE" &&
-        printf '%s\n' "$_dop_args" | grep -Fqx -- "--socket=$BIFROST_SOCK"
+    printf '%s\n' "$_dop_args" | awk -v core="$BIFROST_CORE" -v state="--statedir=$BIFROST_STATE" -v sock="--socket=$BIFROST_SOCK" '
+        NR == 1 { binary = ($0 == core); shell = ($0 ~ /(^|\/)sh$/) }
+        NR == 2 && shell && $0 == core { binary = 1 }
+        $0 == state { has_state = 1 }
+        $0 == sock { has_sock = 1 }
+        END { exit !(binary && has_state && has_sock) }
+    '
 }
 
 daemon_find_pid() {
@@ -339,8 +345,8 @@ daemon_trim_logs() {
     daemon_trim_file "$BIFROST_LOG"
 }
 
-# daemon_start: full startup sequence (PLAN 6.2). Caller holds state lock.
-daemon_start() {
+# Launch and read the active profile under the caller's state lock.
+daemon_start_ready() {
     daemon_phase precheck 15
     daemon_watchdog_register || {
         daemon_err_set internal
@@ -392,7 +398,16 @@ daemon_start() {
         status_refresh || true
         return 1
     fi
+}
 
+daemon_start() {
+    daemon_start_ready || return 1
+    # An imported profile may reveal its control server only after startup.
+    if daemon_should_disable_logs && ! daemon_running_has_nologs; then
+        log daemon "restarting to disable logging for the active profile"
+        daemon_stop_for_restart && daemon_start_ready || return 1
+        daemon_running_has_nologs || { daemon_err_set start_failed; return 1; }
+    fi
     daemon_phase firewall 85
     if ! fw_apply; then
         _dst_err=${BIFROST_ERR:-fw_failed}
@@ -404,11 +419,11 @@ daemon_start() {
 
     daemon_phase dns 95
     if ! dns_apply; then
-        log daemon "dns_apply skipped during start: ${BIFROST_ERR:-unknown}"
-        BIFROST_ERR=""
+        log daemon "dns_apply during start failed: ${BIFROST_ERR:-internal}"
+        daemon_err_set "${BIFROST_ERR:-internal}"
+    else
+        daemon_err_clear
     fi
-
-    daemon_err_clear
     status_refresh || true
     log daemon "bifrostd started"
     return 0
@@ -475,8 +490,16 @@ daemon_stop() {
     return 0
 }
 
+daemon_stop_for_restart() {
+    daemon_stop && return 0
+    if daemon_find_pid >/dev/null; then return 1; fi
+    log daemon "restarting after network cleanup error: ${BIFROST_ERR:-internal}"
+    BIFROST_ERR=""
+    return 0
+}
+
 daemon_restart() {
-    daemon_stop && daemon_start
+    daemon_stop_for_restart && daemon_start
 }
 
 # Init.d hooks (called under state lock by bifrost_config.sh).
@@ -487,6 +510,7 @@ hook_start() {
         log daemon "core recovery failed: ${BIFROST_ERR:-internal}"
         BIFROST_ERR=""
     fi
+    if has_cmd migrate_recover; then migrate_recover || return 1; fi
     [ "$(cfg bifrost_enable)" = 1 ] || return 0
     if daemon_running; then
         daemon_watchdog_register
@@ -503,16 +527,18 @@ daemon_deactivate() {
         _dda_err=${BIFROST_ERR:-internal}
         daemon_find_pid >/dev/null 2>&1 && { fail "$_dda_err"; return 1; }
     fi
-    if [ "$1" = disable ]; then
-        cfg_set bifrost_enable 0 || { fail "${_dda_err:-internal}"; return 1; }
-    fi
-    daemon_watchdog_remove || { fail "${_dda_err:-internal}"; return 1; }
+    daemon_unschedule "$1" || { fail "${_dda_err:-internal}"; return 1; }
     if [ -n "$_dda_err" ]; then
         status_refresh || true
         fail "$_dda_err"
         return 1
     fi
     return 0
+}
+
+daemon_unschedule() {
+    if [ "$1" = disable ]; then cfg_set bifrost_enable 0 || return 1; fi
+    daemon_watchdog_remove
 }
 
 hook_stop() { daemon_deactivate hook; }
@@ -587,44 +613,37 @@ $_wd_ts"
     fi
 
     _wd_changed=0
-    _wd_prefs_ok=1
-    _wd_fw_ok=1
-    if daemon_read_prefs; then
-        _wd_drift=$(daemon_prefs_drifted "$_BIFROST_PREFS_JSON")
-        if [ -n "$_wd_drift" ]; then
-            if daemon_fix_prefs; then
-                _wd_changed=1
-            else
-                _wd_prefs_ok=0
-            fi
-        fi
-    else
-        _wd_prefs_ok=0
+    _wd_problem=""
+    if ! daemon_fix_prefs; then
+        _wd_problem=${BIFROST_ERR:-cli_failed}
+    elif daemon_should_disable_logs && ! daemon_running_has_nologs; then
+        log watchdog "restarting to enforce the active profile logging setting"
+        daemon_restart
+        return $?
+    elif [ -n "$_df_flags" ]; then
+        _wd_changed=1
     fi
-
     if [ "$_wd_error" = fw_failed ] || ! fw_check; then
-        log watchdog "fw_check failed; reapplying firewall"
-        if fw_apply; then
-            _wd_changed=1
-        else
-            daemon_err_set fw_failed
-            _wd_fw_ok=0
-        fi
+        fw_apply || _wd_problem=${_wd_problem:-fw_failed}
+        _wd_changed=1
     fi
-
-    if ! dns_check; then
-        log watchdog "dns_check failed; reapplying dns"
-        dns_apply && _wd_changed=1
+    # dns_check reports stale files. A policy error can still exist while
+    # the file is correct, so replay dns_apply before clearing a prior error.
+    if [ -n "$_wd_error" ] || ! dns_check; then
+        dns_apply || _wd_problem=${_wd_problem:-${BIFROST_ERR:-internal}}
+        _wd_changed=1
     fi
-
-    case "$_wd_error" in
-        fw_failed | cli_failed | "timeout" | not_running)
-            if [ "$_wd_prefs_ok" = 1 ] && [ "$_wd_fw_ok" = 1 ]; then
-                daemon_err_clear
-                _wd_changed=1
-            fi
-            ;;
-    esac
+    if [ -n "$_wd_problem" ]; then
+        daemon_err_set "$_wd_problem"
+        _wd_changed=1
+    else
+        case "$_wd_error" in
+            internal) daemon_watchdog_register && daemon_err_clear ;;
+            state_not_writable) daemon_precheck && daemon_err_clear ;;
+            fw_failed | cli_failed | "timeout" | not_running | no_conf_dir | no_magicdns)
+                daemon_err_clear ;;
+        esac
+    fi
 
     [ "$_wd_changed" = 1 ] && { status_refresh || true; }
     return 0
@@ -673,6 +692,10 @@ job_daemon() {
         purge)
             job_data daemon '{"action":"purge"}'
             job_phase daemon purge 10
+            if has_cmd migrate_recover; then
+                migrate_recover || return 1
+                [ ! -d "$_BIFROST_MIGRATION" ] || { fail state_not_writable; return 1; }
+            fi
             if daemon_running; then
                 log daemon "purge: logging out"
                 ts_cli logout >/dev/null 2>&1 || log daemon "purge: logout failed; continuing"

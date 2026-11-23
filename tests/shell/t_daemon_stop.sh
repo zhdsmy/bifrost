@@ -42,18 +42,27 @@ eq disable-survivor-still-enabled 1 "$(cfg bifrost_enable)"
 has disable-survivor-supervised "#$BIFROST_WATCHDOG_NAME#" "$(cru l)"
 
 echo live >"$BIFROST_STATE/test-state"
-backup="${BIFROST_STATE}.bak.123"
-mkdir "$backup"
+backup="$_BIFROST_MIGRATION/backup"
+mkdir -p "$backup"
+echo 'replacing 1 1 1 1' >"$_BIFROST_MIGRATION/record"
+dbus_seed tailscale_enable=0
 echo saved >"$backup/test-state"
 job_begin migrate
-no migration-survivor migrate_rollback "$backup" 0 "" migrate_verify_failed
+no migration-survivor migrate_recover
 eq migration-survivor-code migrate_rollback_failed "$BIFROST_ERR"
-eq migration-survivor-rollback false "$(jq -r .data.rolled_back "$(job_file migrate)")"
+eq migration-survivor-original-disabled 0 "$(dbus get tailscale_enable)"
+no migration-survivor-original-down orig_running
+no restart-survivor daemon_restart
+eq restart-survivor-same-pid "$target_pid" "$(daemon_pid)"
 eq migration-survivor-keeps-live live "$(cat "$BIFROST_STATE/test-state")"
 eq migration-survivor-keeps-backup saved "$(cat "$backup/test-state")"
 ok migration-survivor-fw fw_check
 ok migration-survivor-dns dns_check
 
+rm "$_BIFROST_MIGRATION/record"
+mv "$backup" "${BIFROST_STATE}.bak.123"
+backup="${BIFROST_STATE}.bak.123"
+rmdir "$_BIFROST_MIGRATION"
 unset -f kill
 BIFROST_STOP_TIMEOUT=2
 # Make both clear operations fail. Check that the first error survives
@@ -62,16 +71,19 @@ echo 1 >"$MOCK_STATE/iptables.fail_count"
 echo '-F BIFROST_INPUT' >"$MOCK_STATE/iptables.fail_match"
 rm -f "$BIFROST_DNSMASQ_CONF"
 mkdir "$BIFROST_DNSMASQ_CONF"
-no stop-with-two-clear-failures daemon_restart 2>/dev/null
+no stop-with-two-clear-failures daemon_stop 2>/dev/null
 eq stop-first-clear-code fw_failed "$BIFROST_ERR"
-no restart-skipped-on-failed-stop daemon_running
-no failed-stop-pid-removed [ -e "$BIFROST_PIDFILE" ]
-no failed-stop-socket-removed [ -e "$BIFROST_SOCK" ]
+no failed-stop-cleaned-pid [ -e "$BIFROST_PIDFILE" ]
+no failed-stop-cleaned-socket [ -e "$BIFROST_SOCK" ]
+ok restart-after-clear-error daemon_restart 2>/dev/null
+ok restart-running daemon_running
+ok restart-restored-fw fw_check
+ok restart-new-pid [ "$(daemon_pid)" != "$target_pid" ]
 has failed-stop-ran-cleanup cleanup "$(cat "$MOCK_STATE/daemon.log")"
 has failed-stop-checked-dns "dns_clear failed during stop" "$(cat "$BIFROST_LOG")"
 has restart-keeps-supervision "#$BIFROST_WATCHDOG_NAME#" "$(cru l)"
 
-# Already stopped, DNS still cannot be cleared. A purge is retryable and
+# DNS still cannot be cleared. A purge is retryable and
 # must retain both copies of the state until network cleanup succeeds.
 ok purge-failed-clear-queued act_purge
 bg_drain 2>/dev/null
