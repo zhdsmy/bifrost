@@ -16,8 +16,8 @@ not edit baseline files; they report needed changes instead.
 | P1 core | `core/**`, `plugin/bifrost/lib/update.sh`, `plugin/bifrost/keys/**`, `tools/sign.sh`, `tools/dev-keys.sh`, `.github/workflows/core.yml`, `tests/shell/t_update*.sh`, `tests/shell/fixtures/update/**`, `tests/shell/mock/bin/{curl,df}` |
 | P2 runtime | `plugin/bifrost/lib/{daemon,login,settings,migrate}.sh`, `plugin/bifrost/bin/bifrost`, `tests/shell/t_{daemon,login,settings,migrate}*.sh`, `tests/shell/fixtures/runtime/**` |
 | P3 net | `plugin/bifrost/lib/{fw,dns,status,diag}.sh`, `tests/shell/t_{fw,dns,status,diag}*.sh`, `tests/shell/fixtures/net/**`, `tests/shell/mock/bin/{iptables,ip6tables}` |
-| P4 web | `web/**`, `plugin/bifrost/webs/Module_bifrost.asp`, `plugin/bifrost/res/icon-bifrost.png` |
-| P5 release | `plugin/bifrost/{install.sh,uninstall.sh,.valid}`, `packaging/**`, `tests/container/**`, `.github/workflows/{ci,release}.yml`, `NOTICE.md`, `CHANGELOG.md`, `README.md`, `README.en.md`, `docs/README.md`, `.gitignore` (append only) |
+| P4 web | `web/**`, `plugin/bifrost/webs/Module_bifrost.asp`, `plugin/bifrost/res/icon-bifrost.png`, `docs/images/**` |
+| P5 release | `plugin/bifrost/{install.sh,uninstall.sh,.valid}`, `packaging/**`, `tests/container/**`, `tests/install/**`, `.github/workflows/{ci,release}.yml`, `NOTICE.md`, `CHANGELOG.md`, `README.md`, `README.en.md`, `docs/README.md`, `.gitignore` (append only) |
 
 A package may read every file. It must not create or edit files outside its row.
 
@@ -93,7 +93,7 @@ calls the function below through `run_act`, which sends exactly one response.
 | `core-arch` | `arm` or `arm64` | `act_core_arch` (P1) | job | `update` |
 | `netcheck` | — | `act_netcheck` (P3) | job | `netcheck` |
 | `ping` | tailnet IP | `act_ping` (P3) | sync, result fields | — |
-| `logs` | — | `act_logs` (P3) | sync, writes `bifrost_logs.txt` | — |
+| `logs` | — | `act_logs` (P3) | sync, writes `bifrost_logs.txt` and `bifrost_diag.json` | — |
 | `ui` | lang, mode | `act_ui` (baseline) | sync | — |
 
 `bifrost_status.sh <id>` calls `status_refresh` (P3), which writes
@@ -267,9 +267,19 @@ All in `$BIFROST_UPLOAD` (`/tmp/upload`), written with `json_write` or
 
 ### 6.3 Other files
 
-- `bifrost_logs.txt` (P3, `logs`): redacted (PLAN 13.10). First line lists
-  the replacements made. Then `== bifrost.log ==` and the last 200 lines,
-  `== bifrostd.log ==` and the last 200 lines.
+- `bifrost_logs.txt` (P3, `logs`): the diagnostic text, redacted (PLAN
+  13.10). The page shows it and copies it as is for "复制诊断信息", so the
+  page never redacts anything itself. Content, in English:
+  1. one line listing the replacement kinds that were applied;
+  2. `== summary ==`: plugin and core versions, state, `BackendState`,
+     settings, prefs, environment checks (one `key: value` per line);
+  3. `== bifrost.log ==` and its last 200 lines;
+  4. `== bifrostd.log ==` and its last 200 lines.
+- `bifrost_diag.json` (P3, `logs`): the environment checks for the
+  diagnostics page (PLAN 13.4):
+  `{"schema":1,"time":<unix>,"tun":bool,"fw_complete":bool|null,"conflict":bool,"wan_cgnat":bool|null,"jffs_free_kb":<int>|null,"time_synced":bool|null,"dnsmasq_conf_dir":bool}`.
+  `null` means "could not be checked". `fw_complete` is `null` when the
+  daemon does not run.
 
 ## 7. Cross-package functions
 
@@ -331,6 +341,8 @@ PLAN 12.2 plus a `build` object (for the core page):
   (section 1) or stubs functions in its test file.
 - `BIFROST_BG_SYNC=1` (set by `t_setup`) queues jobs; call `bg_drain`.
 - Tests must not need the network, the router, or root on the host.
+- Install, upgrade and uninstall tests (PLAN 13.11 "安装测试", 15) live in
+  `tests/install/` (P5), not in `web/test/`.
 
 ## 10. Page assets (P4 builds, P5 packages)
 
