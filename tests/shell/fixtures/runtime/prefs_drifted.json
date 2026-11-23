@@ -1,0 +1,17 @@
+{
+  "ControlURL": "https://controlplane.tailscale.com",
+  "RouteAll": true,
+  "CorpDNS": true,
+  "WantRunning": true,
+  "LoggedOut": false,
+  "ShieldsUp": true,
+  "Hostname": "home-router",
+  "AdvertiseRoutes": ["192.168.1.0/24", "0.0.0.0/0", "::/0"],
+  "NoSNAT": true,
+  "NetfilterMode": 2,
+  "Config": {
+    "UserProfile": {
+      "LoginName": "alice@example.com"
+    }
+  }
+}

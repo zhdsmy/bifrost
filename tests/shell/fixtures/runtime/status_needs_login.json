@@ -1,0 +1,12 @@
+{
+  "Version": "1.104.7",
+  "TUN": true,
+  "BackendState": "NeedsLogin",
+  "HaveNodeKey": false,
+  "AuthURL": "https://login.example.com/a/0123456789abcdef",
+  "Self": {
+    "ID": "",
+    "PublicKey": "nodekey:0000000000000000000000000000000000000000000000000000000000000000",
+    "HostName": "router"
+  }
+}

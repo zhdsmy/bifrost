@@ -1,0 +1,17 @@
+{
+  "ControlURL": "https://headscale.example.com",
+  "RouteAll": true,
+  "CorpDNS": false,
+  "WantRunning": true,
+  "LoggedOut": false,
+  "ShieldsUp": false,
+  "Hostname": "edge-router",
+  "AdvertiseRoutes": ["192.168.1.0/24", "198.51.100.0/24"],
+  "NoSNAT": false,
+  "NetfilterMode": 0,
+  "Config": {
+    "UserProfile": {
+      "LoginName": "router"
+    }
+  }
+}
