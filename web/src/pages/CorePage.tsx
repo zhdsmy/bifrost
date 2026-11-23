@@ -10,7 +10,7 @@ import { JobProgress } from "../components/JobProgress";
 import { DetailItem, DetailList, SectionCard } from "../components/SectionCard";
 import { api } from "../core/api";
 import { CORE_VERIFY_COMMAND, formatBytes, formatDateTime, isCoreUpToDate } from "../core/format";
-import type { CoreArch, JobState, UpdateJobData } from "../core/types";
+import type { CoreArch, JobProgressState, UpdateJobData } from "../core/types";
 
 type CoreConfirmKind = "update" | "rollback" | { arch: CoreArch };
 
@@ -27,7 +27,8 @@ export function CorePage() {
 
   const core = status.core;
   const build = core.build;
-  const updateJob = jobs.update as JobState<UpdateJobData> | undefined;
+  const omit = Array.isArray(build?.omit) ? build.omit : null;
+  const updateJob = jobs.update as JobProgressState<UpdateJobData> | undefined;
   const checkedLatest = updateJob?.ok && updateJob.data.action === "check" ? updateJob.data.latest : null;
   const latest = core.update ?? (checkedLatest && checkedLatest.serial > core.serial ? checkedLatest : null);
   const canSwitchArch = core.kernel_arch === "aarch64";
@@ -183,15 +184,15 @@ export function CorePage() {
 
         <div className="grid gap-2">
           <span className="text-xs font-medium text-kumo-subtle">
-            {build
-              ? t("core.recipe.omit", { count: build.omit.length })
+            {omit
+              ? t("core.recipe.omit", { count: omit.length })
               : t("core.recipe.omitLabel")}
           </span>
-          {!build ? (
+          {!omit ? (
             <span className="text-sm text-kumo-subtle">{t("common.unknown")}</span>
-          ) : build.omit.length > 0 ? (
+          ) : omit.length > 0 ? (
             <div data-raw-value="true" className="flex flex-wrap gap-1.5">
-              {build.omit.map((tag) => (
+              {omit.map((tag) => (
                 <Badge key={tag} variant="outline">
                   {tag}
                 </Badge>

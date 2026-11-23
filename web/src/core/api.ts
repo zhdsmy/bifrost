@@ -177,38 +177,43 @@ export async function pollJob<TData = unknown>(
   job: JobName,
   options: {
     intervalMs?: number;
-    maxTicks?: number;
-    maxConsecutiveErrors?: number;
+    fastPolls?: number;
+    slowIntervalMs?: number;
+    restoring?: boolean;
+    notifyAfterErrors?: number;
     onUpdate?: (state: JobState<TData>) => void;
     onUnavailable?: (error: unknown) => void;
     signal?: AbortSignal;
   } = {},
 ): Promise<JobState<TData>> {
   const intervalMs = options.intervalMs ?? JOB_POLL_INTERVAL_MS;
-  const maxTicks = options.maxTicks ?? 360;
-  const maxConsecutiveErrors = options.maxConsecutiveErrors ?? 4;
+  const fastPolls = options.fastPolls ?? 360;
+  const slowIntervalMs = options.slowIntervalMs ?? 10_000;
+  const notifyAfterErrors = options.notifyAfterErrors ?? 4;
   let consecutiveErrors = 0;
 
-  for (let tick = 0; tick < maxTicks; tick++) {
+  let observed = false;
+  for (let tick = 1; ; tick++) {
     if (options.signal?.aborted) {
       throw new DOMException("Aborted", "AbortError");
     }
+    let state: JobState<TData> | undefined;
     try {
-      const state = await readJob<TData>(job, options.signal);
+      state = await readJob<TData>(job, options.signal);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") throw err;
+      if (options.restoring && !observed && err instanceof ApiError && err.httpStatus === 404) throw err;
+      consecutiveErrors++;
+      if (consecutiveErrors === notifyAfterErrors) options.onUnavailable?.(err);
+    }
+    if (state) {
+      observed = true;
       consecutiveErrors = 0;
       options.onUpdate?.(state);
       if (!state.running) return state;
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") throw err;
-      consecutiveErrors++;
-      if (consecutiveErrors === maxConsecutiveErrors) {
-        if (!options.onUnavailable) throw err;
-        options.onUnavailable(err);
-      }
     }
-    await sleep(intervalMs, options.signal);
+    await sleep(tick < fastPolls ? intervalMs : slowIntervalMs, options.signal);
   }
-  throw new ApiError("timeout");
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

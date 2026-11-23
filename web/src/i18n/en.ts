@@ -27,6 +27,7 @@ export const en: Record<MessageKey, string> = {
   "common.close": "Close",
   "common.copy": "Copy",
   "common.copied": "Copied",
+  "common.latency": "{ms} ms",
   "common.copyFailed": "Copy failed. Select the text and copy it manually.",
   "common.copyAction": "Copy to clipboard",
   "common.optional": "(optional)",
@@ -37,6 +38,8 @@ export const en: Record<MessageKey, string> = {
   "common.enabled": "Enabled",
   "common.disabled": "Disabled",
   "common.unknown": "Unknown",
+  "common.notifications": "Notifications",
+  "common.loadingAction": "Loading",
   "common.loading": "Loading status…",
   "common.saved": "Saved",
   "common.actionSuccess": "Action completed",
@@ -144,7 +147,9 @@ export const en: Record<MessageKey, string> = {
   "login.authKeyLabel": "Auth Key",
   "login.authKeyPlaceholder": "Optional; provide for unattended login",
   "login.authKeyDesc": "Use a one-time, short-lived auth key. It is never stored in dbus or written to logs.",
-  "login.qrHeading": "Scan QR code or open link to authorize",
+  "login.qrHeading": "Authorization link",
+  "login.jobWaiting": "Waiting for login to finish. It expires after 10 minutes. Disable Bifrost to cancel this login.",
+  "login.qrUnavailable": "The QR code is unavailable. Open the authorization link to continue.",
   "login.qrAlt": "Login authorization QR code",
   "login.openLink": "Open Auth URL",
   "login.waitingAuth": "Waiting for authorization; checking status every 2 seconds…",
@@ -191,7 +196,6 @@ export const en: Record<MessageKey, string> = {
   "devices.exitNodeBadge": "Exit Node",
   "devices.ping": "Ping",
   "devices.pinging": "Pinging…",
-  "devices.pingResult": "{ms} ms · {path}",
 
   // Settings page (PLAN 8, 13.4)
   "settings.daemonRequiredBanner": "Daemon is not running. Tailscaled routing and device name settings are disabled until Bifrost starts.",
@@ -324,7 +328,6 @@ export const en: Record<MessageKey, string> = {
   "diag.logs.desc": "The text below is already redacted on the router and can be copied directly into bug reports.",
   "diag.logs.load": "Refresh Logs",
   "diag.logs.copyAll": "Copy Diagnostics",
-  "diag.logs.copied": "Diagnostics copied to clipboard",
   "diag.logs.empty": "No logs loaded yet. Click Refresh Logs to fetch.",
 
   "diag.section.danger": "Danger Zone",

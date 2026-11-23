@@ -3,7 +3,7 @@ import { Button } from "@cloudflare/kumo/components/button";
 import { useApp } from "../../app/context";
 import { JobProgress } from "../../components/JobProgress";
 import { SectionCard } from "../../components/SectionCard";
-import type { JobState, MigrateJobData } from "../../core/types";
+import type { JobProgressState, MigrateJobData } from "../../core/types";
 
 export function MigrateCard({
   showAction,
@@ -15,7 +15,7 @@ export function MigrateCard({
   onRequestMigrate: (anchor: HTMLElement) => void;
 }) {
   const { jobs, t } = useApp();
-  const migrateJob = jobs.migrate as JobState<MigrateJobData> | undefined;
+  const migrateJob = jobs.migrate as JobProgressState<MigrateJobData> | undefined;
 
   return (
     <SectionCard
@@ -45,10 +45,9 @@ export function MigrateCard({
       {migrateJob &&
         !migrateJob.running &&
         migrateJob.ok === false &&
-        migrateJob.data?.rolled_back && (
+        migrateJob.data?.rolled_back ? (
           <Banner variant="alert" role="alert" title={t("migrate.doneRolledBack")} />
-        )}
-      <JobProgress job={migrateJob} hideSuccess />
+        ) : <JobProgress job={migrateJob} hideSuccess />}
     </SectionCard>
   );
 }

@@ -11,7 +11,6 @@ import type { SettingKey, SnatMode } from "../core/types";
 import {
   findOverlappingPeerRoutes,
   isAccessingFromTailnet,
-  validCidr4,
   validHostname,
   validMirror,
   validPort,
@@ -36,6 +35,7 @@ export function SettingsPage() {
   const settings = status?.settings;
   const lanCidr = status?.lan.cidr ?? "";
 
+  const [readBackRoutes, setReadBackRoutes] = useState<string[] | null>(prefs?.advertise_routes ?? null);
   const [routesDraft, setRoutesDraft] = useState<string[]>([]);
   const [hostnameDraft, setHostnameDraft] = useState("");
   const [portDraft, setPortDraft] = useState("41641");
@@ -49,9 +49,11 @@ export function SettingsPage() {
   const localAccessRef = useRef<HTMLSpanElement>(null);
   const noLogsRef = useRef<HTMLSpanElement>(null);
 
-  const syncedRoutesKey = (prefs?.advertise_routes ?? []).join(",");
+  const syncedRoutesKey = prefs?.advertise_routes.join(",") ?? null;
   useEffect(() => {
-    setRoutesDraft(syncedRoutesKey ? syncedRoutesKey.split(",") : []);
+    const routes = syncedRoutesKey ? syncedRoutesKey.split(",") : [];
+    setReadBackRoutes(syncedRoutesKey === null ? null : routes);
+    setRoutesDraft(routes);
   }, [syncedRoutesKey]);
 
   const syncedHostname = prefs?.hostname ?? "";
@@ -88,6 +90,7 @@ export function SettingsPage() {
       } else {
         if (key === "advertise_routes" && Array.isArray(res.value)) {
           setRoutesDraft(res.value);
+          setReadBackRoutes(res.value);
         } else if (key === "hostname" && typeof res.value === "string") {
           setHostnameDraft(res.value);
         } else if (key === "port" && typeof res.value === "number") {
@@ -105,20 +108,6 @@ export function SettingsPage() {
     } finally {
       setSavingKey(null);
     }
-  }
-
-  function handleSaveRoutes() {
-    if (routesDraft.length > 16) {
-      setFieldError("advertise_routes", t("validate.cidrMax"));
-      return;
-    }
-    for (const cidr of routesDraft) {
-      if (!validCidr4(cidr)) {
-        setFieldError("advertise_routes", t("validate.cidr"));
-        return;
-      }
-    }
-    void commitSetting("advertise_routes", routesDraft.join(","));
   }
 
   function handleToggleAcceptRoutes(checked: boolean) {
@@ -228,14 +217,14 @@ export function SettingsPage() {
           <AdvertiseRoutesField
             lanCidr={lanCidr}
             routesDraft={routesDraft}
-            readBackRoutes={prefs?.advertise_routes ?? null}
+            readBackRoutes={readBackRoutes}
             routeStatuses={status.routes}
             disabled={prefsDisabled}
             saving={savingKey === "advertise_routes"}
             error={fieldErrors.advertise_routes}
             onChangeDraft={setRoutesDraft}
             onError={(msg) => setFieldError("advertise_routes", msg)}
-            onSave={handleSaveRoutes}
+            onSave={() => void commitSetting("advertise_routes", routesDraft.join(","))}
           />
           <SwitchSettingRow
             label={t("settings.exitNode.label")}

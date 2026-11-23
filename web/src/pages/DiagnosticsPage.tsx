@@ -12,9 +12,9 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { JobProgress } from "../components/JobProgress";
 import { DetailItem, DetailList, SectionCard } from "../components/SectionCard";
 import { api } from "../core/api";
-import { copyText } from "../core/clipboard";
+import { useCopy } from "../components/CopyInline";
 import { formatKb } from "../core/format";
-import type { DiagData, JobState, NetcheckJobData } from "../core/types";
+import type { DiagData, JobProgressState, NetcheckJobData } from "../core/types";
 
 export function DiagnosticsPage() {
   const { busy, jobs, runJob, notify, t, tError } = useApp();
@@ -22,10 +22,10 @@ export function DiagnosticsPage() {
   const [logsText, setLogsText] = useState<string>("");
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsError, setLogsError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const { copied, handleCopy } = useCopy(logsText);
   const [purgeAnchor, setPurgeAnchor] = useState<HTMLElement | null>(null);
 
-  const netcheckJob = jobs.netcheck as JobState<NetcheckJobData> | undefined;
+  const netcheckJob = jobs.netcheck as JobProgressState<NetcheckJobData> | undefined;
   const report = netcheckJob?.data?.report ?? null;
 
   const fetchLogsAndDiag = useCallback(async () => {
@@ -49,18 +49,6 @@ export function DiagnosticsPage() {
   useEffect(() => {
     void fetchLogsAndDiag();
   }, [fetchLogsAndDiag]);
-
-  async function copyDiagnostics() {
-    if (!logsText) return;
-    const ok = await copyText(logsText);
-    if (ok) {
-      setCopied(true);
-      notify({ title: t("diag.logs.copied"), variant: "success" });
-      setTimeout(() => setCopied(false), 2000);
-    } else {
-      notify({ title: t("common.copyFailed"), variant: "error" });
-    }
-  }
 
   function renderTriBool(val: boolean | null | undefined, invertWarn = false) {
     if (val === null || val === undefined) {
@@ -153,7 +141,7 @@ export function DiagnosticsPage() {
                           <Table.Cell className="font-mono">
                             <span data-raw-value="true">{d.code}</span>
                           </Table.Cell>
-                          <Table.Cell className="tabular-nums">{d.latency_ms} ms</Table.Cell>
+                          <Table.Cell className="tabular-nums">{t("common.latency", { ms: d.latency_ms })}</Table.Cell>
                         </Table.Row>
                       ))}
                     </Table.Body>
@@ -219,7 +207,7 @@ export function DiagnosticsPage() {
               size="sm"
               disabled={!logsText}
               onClick={() => {
-                void copyDiagnostics();
+                void handleCopy();
               }}
             >
               {copied ? <CheckIcon size={14} aria-hidden /> : <CopyIcon size={14} aria-hidden />}

@@ -1,4 +1,4 @@
-import type { JobState, PageState, StatusData, UpdateJobData } from "./types";
+import type { JobProgressState, PageState, StatusData, UpdateJobData } from "./types";
 import type { MessageKey } from "../i18n/zh-CN";
 
 export type StateBadgeVariant = "success" | "warning" | "error" | "info" | "secondary";
@@ -103,7 +103,7 @@ export function describeState(status: StatusData): StatePresentation {
   }
 }
 
-export function isCoreUpToDate(status: StatusData, check?: JobState<UpdateJobData>): boolean {
+export function isCoreUpToDate(status: StatusData, check?: JobProgressState<UpdateJobData>): boolean {
   return !status.core.update && check?.ok === true && !check.running &&
     check.data.action === "check" && check.data.up_to_date === true;
 }

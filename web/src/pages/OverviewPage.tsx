@@ -9,7 +9,7 @@ import { JobProgress } from "../components/JobProgress";
 import { SectionCard } from "../components/SectionCard";
 import { api } from "../core/api";
 import { describeState, type PrimaryActionKind } from "../core/format";
-import type { LoginJobData, MigrateJobData } from "../core/types";
+import type { LoginJobData } from "../core/types";
 import { isAccessingFromTailnet } from "../core/validate";
 import { HealthCard } from "./overview/HealthCard";
 import { LoginCard } from "./overview/LoginCard";
@@ -48,10 +48,10 @@ export function OverviewPage() {
   const actionDisabled = busy || syncActionBusy;
   const fromTailnet = isAccessingFromTailnet(window.location.hostname, status.self);
 
-  async function handleConnect() {
+  async function runSync(action: () => Promise<unknown>) {
     setSyncActionBusy(true);
     try {
-      await api.connect();
+      await action();
       await reloadStatus();
       notify({ title: t("common.actionSuccess"), variant: "success" });
     } catch (err) {
@@ -70,27 +70,14 @@ export function OverviewPage() {
       return;
     }
     if (kind === "logout") {
-      setSyncActionBusy(true);
-      try {
-        await api.logout();
-        await reloadStatus();
-        notify({ title: t("common.actionSuccess"), variant: "success" });
-      } catch (err) {
-        notify({ title: tError(err), variant: "error" });
-      } finally {
-        setSyncActionBusy(false);
-      }
+      await runSync(api.logout);
       return;
     }
     if (kind === "relogin") {
       await runJob<LoginJobData>("login", () => api.relogin());
       return;
     }
-    await runJob<MigrateJobData>("migrate", () => api.migrate(), {
-      onDone: (final) => {
-        if (final.ok) notify({ title: t("migrate.doneSuccess"), variant: "success" });
-      },
-    });
+    await runJob("migrate", api.migrate);
   }
 
   function stateDescription(): string {
@@ -159,7 +146,7 @@ export function OverviewPage() {
             disabled={actionDisabled}
             loading={syncActionBusy}
             onClick={() => {
-              void handleConnect();
+              void runSync(api.connect);
             }}
           >
             {t("overview.action.connect")}
@@ -238,14 +225,14 @@ export function OverviewPage() {
         }
         action={
           <>
-            {status.state === "starting" && <Loader size="sm" />}
+            {status.state === "starting" && <Loader size="sm" aria-label={t("common.loadingAction")} />}
             {renderAction(presentation.primaryAction)}
             {presentation.showAuthActions && (
               <>
                 <Button
                   variant="secondary"
                   size="sm"
-                  disabled={actionDisabled}
+                  disabled={actionDisabled || jobs.login?.running}
                   onClick={(e) => setConfirmState({ kind: "relogin", anchor: e.currentTarget })}
                 >
                   {t("overview.action.relogin")}
@@ -264,6 +251,9 @@ export function OverviewPage() {
           </>
         }
       >
+        {presentation.showAuthActions && jobs.login?.running && (
+          <p className="text-sm text-kumo-subtle">{t("login.jobWaiting")}</p>
+        )}
         <JobProgress job={jobs.daemon} hideSuccess />
       </SectionCard>
 

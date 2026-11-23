@@ -438,6 +438,10 @@ export function createPreviewServer({
           case "port": {
             if (!validPort(value)) return { ok: false, code: "invalid_param" };
             const nextPort = Number(readBack(key, Number(value)));
+            if (!status.daemon.running) {
+              status.settings.port = nextPort;
+              return { ok: true, value: nextPort };
+            }
             const ok = scheduleJob(
               "daemon",
               { action: "restart" },

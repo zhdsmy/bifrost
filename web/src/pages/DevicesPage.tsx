@@ -45,14 +45,10 @@ export function DevicesPage() {
   const truncated = filtered.length > MAX_RENDERED_PEERS;
   const nowSec = status?.time ?? Math.floor(Date.now() / 1000);
 
-  function formatPath(path: PeerInfo["path"], relay: string): string {
+  function renderPath(path: PeerInfo["path"], relay: string) {
     if (path === "direct") return t("devices.path.direct");
     if (path === "peer-relay") return t("devices.path.peerRelay");
-    return relay ? t("devices.path.derpRegion", { relay }) : t("devices.path.derp");
-  }
-
-  function renderPath(path: PeerInfo["path"], relay: string) {
-    if (path === "derp" && relay) {
+    if (relay) {
       const [prefix, suffix = ""] = t("devices.path.derpRegion", { relay: "\0" }).split("\0");
       return (
         <span>
@@ -62,7 +58,7 @@ export function DevicesPage() {
         </span>
       );
     }
-    return formatPath(path, relay);
+    return t("devices.path.derp");
   }
 
   async function handlePing(ip: string) {
@@ -202,10 +198,7 @@ export function DevicesPage() {
                           </Button>
                           {ping?.result && (
                             <span className="whitespace-nowrap text-xs text-kumo-success tabular-nums">
-                              {t("devices.pingResult", {
-                                ms: ping.result.latency_ms,
-                                path: formatPath(ping.result.path, ping.result.relay),
-                              })}
+                              {t("common.latency", { ms: ping.result.latency_ms })} · {renderPath(ping.result.path, ping.result.relay)}
                             </span>
                           )}
                           {ping?.error && (

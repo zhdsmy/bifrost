@@ -25,6 +25,7 @@ export const zhCN = {
   "common.close": "关闭",
   "common.copy": "复制",
   "common.copied": "已复制",
+  "common.latency": "{ms} ms",
   "common.copyFailed": "复制失败，请选中文字后手动复制。",
   "common.copyAction": "复制到剪贴板",
   "common.optional": "（可选）",
@@ -35,6 +36,8 @@ export const zhCN = {
   "common.enabled": "已开启",
   "common.disabled": "已关闭",
   "common.unknown": "未知",
+  "common.notifications": "通知",
+  "common.loadingAction": "正在加载",
   "common.loading": "正在加载状态…",
   "common.saved": "已保存",
   "common.actionSuccess": "操作已完成",
@@ -142,7 +145,9 @@ export const zhCN = {
   "login.authKeyLabel": "预授权密钥",
   "login.authKeyPlaceholder": "可选；填写后直接完成无人值守登录",
   "login.authKeyDesc": "建议使用一次性、短有效期的密钥。密钥不会写入路由器持久化配置或日志。",
-  "login.qrHeading": "扫码或打开链接完成授权",
+  "login.qrHeading": "授权链接",
+  "login.jobWaiting": "正在等待登录完成，10 分钟后过期。要放弃这次登录，可以先停用 Bifrost。",
+  "login.qrUnavailable": "无法生成二维码，请打开授权链接继续。",
   "login.qrAlt": "登录授权二维码",
   "login.openLink": "打开授权链接",
   "login.waitingAuth": "正在等待授权完成，页面每 2 秒自动检测状态…",
@@ -189,7 +194,6 @@ export const zhCN = {
   "devices.exitNodeBadge": "出口节点",
   "devices.ping": "Ping",
   "devices.pinging": "测速中…",
-  "devices.pingResult": "{ms} ms · {path}",
 
   // Settings page (PLAN 8, 13.4)
   "settings.daemonRequiredBanner": "后台服务未运行，属于 tailscaled 的路由与设备名设置已置灰，启动后可以修改。",
@@ -322,7 +326,6 @@ export const zhCN = {
   "diag.logs.desc": "以下文本已由路由器脚本完成脱敏处理，可直接复制用于反馈问题。",
   "diag.logs.load": "刷新日志",
   "diag.logs.copyAll": "复制诊断信息",
-  "diag.logs.copied": "诊断信息已复制到剪贴板",
   "diag.logs.empty": "暂无日志内容，点击「刷新日志」获取。",
 
   "diag.section.danger": "危险操作",

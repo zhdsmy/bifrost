@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { clickTab, openPreview, ready } from "./fixture.mjs";
+import { choose, clickTab, openPreview, ready } from "./fixture.mjs";
 import { zhCN } from "../src/i18n/zh-CN.ts";
 import { getKumoTranslations } from "../src/i18n/index.ts";
 
@@ -26,9 +26,7 @@ const ALLOWED_TOKENS = new Set([
   "jffs",
   "usb2jffs",
   "ssh",
-  "go",
   "upx",
-  "ap",
   "ping",
   "english",
   "macos",
@@ -50,8 +48,10 @@ const ALLOWED_TOKENS = new Set([
   "sha256",
   "koolshare",
   "bifrostd",
-  "tun",
 ]);
+
+// Exact names: the Go language, AP (access point) mode, and the Linux tun module.
+const EXACT_NAMES = new Set(["Go", "AP", "tun"]);
 
 function findUntranslatedEnglish(texts) {
   return texts.flatMap((raw) => {
@@ -62,13 +62,13 @@ function findUntranslatedEnglish(texts) {
       .replace(/(?:\d+(?:\.\d+)?|\{[a-z]+\})\s*(?:ms|[KMGT]?B)\b/gi, " ")
       .replace(/\{[A-Za-z0-9_]+\}/g, " ");
     const unknown = (text.match(/[A-Za-z][A-Za-z0-9]*/g) ?? [])
-      .filter((word) => !ALLOWED_TOKENS.has(word.toLowerCase()));
+      .filter((word) => !EXACT_NAMES.has(word) && !ALLOWED_TOKENS.has(word.toLowerCase()));
     return unknown.length ? [{ raw, unknown }] : [];
   });
 }
 
 test("the Chinese leak check rejects untranslated words even inside Chinese labels", () => {
-  for (const word of ["a", "s", "w", "enabled", "auth", "session", "relay", "home", "router"]) {
+  for (const word of ["a", "s", "w", "enabled", "auth", "session", "relay", "home", "router", "go", "ap", "TUN"]) {
     assert.ok(findUntranslatedEnglish([`设置 ${word} 状态`]).length);
   }
 });
@@ -89,6 +89,12 @@ async function collectShadowTexts(page) {
       if (style.display === "none" || style.visibility === "hidden") continue;
       const text = node.textContent?.trim();
       if (text) results.push(text);
+    }
+    for (const el of shadow.querySelectorAll("[aria-label], [placeholder], [title]")) {
+      for (const attr of ["aria-label", "placeholder", "title"]) {
+        const label = el.getAttribute(attr)?.trim();
+        if (label) results.push(label);
+      }
     }
     return results;
   });
@@ -121,7 +127,7 @@ test("i18n leak check: tabs, states, tooltips, confirmation popovers, validation
     fastJobPoll: true,
     jobStepMs: 20,
     mutateStatus: (s) => {
-      s.peers[1].name = "测试设备";
+      s.peers.forEach((peer, i) => { peer.name = `测试设备${i + 1}`; });
       s.peers[1].routes = ["192.168.1.0/24"];
       s.self.ips.push("127.0.0.1");
     },
@@ -185,6 +191,16 @@ test("i18n leak check: tabs, states, tooltips, confirmation popovers, validation
   assertClean(await collectShadowTexts(page), "diagnostics purge popover");
   await page.keyboard.press("Escape");
 
+  // Render both top-level error banners against a usable cached snapshot.
+  await page.route("**/_api/", (route) => JSON.parse(route.request().postData()).method === "bifrost_status.sh"
+    ? route.fulfill({ status: 503 })
+    : route.fulfill({ json: { result: { ok: false, code: "busy" } } }));
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await page.getByRole("alert").getByText("请求失败（HTTP 503）。", { exact: true }).waitFor();
+  await choose(page, "外观", "浅色");
+  await page.getByRole("alert").getByText("另一个操作正在进行中，请稍候再试。", { exact: true }).waitFor();
+  assertClean(await collectShadowTexts(page), "statusLoadError and uiError banners");
+
   // 2. All other 8 states.
   for (const state of [
     "disabled",
@@ -202,6 +218,13 @@ test("i18n leak check: tabs, states, tooltips, confirmation popovers, validation
     if (state === "needs_login_qr") {
       await ctx.page.getByRole("button", { name: /高级选项/ }).click();
       await ctx.page.getByLabel("控制服务器地址", { exact: true }).fill("http://192.0.2.10:8080");
+      const key = ctx.page.getByLabel("预授权密钥", { exact: true });
+      await key.fill("example-only");
+      assert.equal(await key.getAttribute("type"), "password");
+      // The collapsible panel contains only the server and password inputs.
+      const panelId = await ctx.page.getByRole("button", { name: /高级选项/ }).getAttribute("aria-controls");
+      assert.ok(panelId);
+      assert.equal(await ctx.page.locator(`[id="${panelId}"]`).getByRole("button").count(), 0);
     }
     assertClean(await collectShadowTexts(ctx.page), `state "${state}"`);
     await ctx.page.close();
@@ -263,5 +286,10 @@ test("i18n leak check: tabs, states, tooltips, confirmation popovers, validation
   await clickTab(coreErr.page, "核心");
   await coreErr.page.getByRole("button", { name: "检查更新", exact: true }).click();
   await coreErr.page.getByRole("alert").waitFor();
+  const notifications = coreErr.page.getByRole("region", { name: "通知" });
+  await notifications.locator('button[aria-label="关闭"]').waitFor({ state: "attached" });
   assertClean(await collectShadowTexts(coreErr.page), "core old_serial error state");
+  await choose(coreErr.page, "语言", "English");
+  await coreErr.page.getByRole("region", { name: "Notifications" })
+    .locator('button[aria-label="Close"]').waitFor({ state: "attached" });
 });

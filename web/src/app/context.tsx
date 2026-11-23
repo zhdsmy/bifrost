@@ -9,6 +9,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { localizeKumoLabels } from "../i18n/kumo-labels";
 import { KumoLocaleProvider } from "@cloudflare/kumo/utils";
 import { Toasty, useKumoToastManager } from "@cloudflare/kumo/components/toast";
 import { TooltipProvider } from "@cloudflare/kumo/components/tooltip";
@@ -16,17 +17,18 @@ import {
   ALL_JOBS,
   ApiError,
   DEFAULT_UI_CONFIG,
-  JOB_POLL_INTERVAL_MS,
   LOGIN_STATUS_POLL_INTERVAL_MS,
   STATUS_POLL_INTERVAL_MS,
   pollJob,
-  readJob,
   readStatusFile,
   readUiConfig,
   refreshStatus,
   saveUiConfig,
 } from "../core/api";
-import type { JobName, JobState, StatusData, UiLang, UiMode } from "../core/types";
+import type {
+  JobName, JobProgressState, JobState, MigrateJobData, NetcheckJobData,
+  StatusData, UiLang, UiMode, UpdateJobData,
+} from "../core/types";
 import {
   getKumoTranslations,
   t as translate,
@@ -53,7 +55,7 @@ export interface AppContextValue {
   statusLoadError: string | null;
   uiError: string | null;
   savingUi: boolean;
-  jobs: Partial<Record<JobName, JobState>>;
+  jobs: Partial<Record<JobName, JobProgressState>>;
   busy: boolean;
   changeLang: (next: UiLang) => Promise<void>;
   changeMode: (next: UiMode) => Promise<void>;
@@ -110,13 +112,13 @@ function AppContextInner({
 
   const [uiError, setUiError] = useState<string | null>(null);
   const [savingUi, setSavingUi] = useState(false);
-  const [jobs, setJobs] = useState<Partial<Record<JobName, JobState>>>({});
+  const [jobs, setJobs] = useState<Partial<Record<JobName, JobProgressState>>>({});
 
   const langRef = useRef(lang);
   langRef.current = lang;
   const modeRef = useRef(mode);
   modeRef.current = mode;
-  const suppressLoginErrRef = useRef(false);
+  const stoppingLoginRef = useRef<AbortController | undefined>(undefined);
   const jobAbortRefs = useRef<Partial<Record<JobName, AbortController>>>({});
   const mountedRef = useRef(true);
 
@@ -157,6 +159,8 @@ function AppContextInner({
     themeRoot.dataset.mode = resolvedMode;
     themeRoot.style.colorScheme = resolvedMode;
   }, [themeRoot, resolvedMode, uiSettled]);
+
+  useLayoutEffect(() => localizeKumoLabels(themeRoot, lang), [themeRoot, lang]);
 
   const t = useCallback(
     (key: MessageKey, vars?: Record<string, string | number>) => translate(lang, key, vars),
@@ -226,6 +230,7 @@ function AppContextInner({
     async <TData = unknown>(
       job: JobName,
       options?: {
+        onInitialRead?: () => void;
         onDone?: (finalState: JobState<TData>) => void;
       },
     ): Promise<JobState<TData> | null> => {
@@ -233,49 +238,51 @@ function AppContextInner({
       const ctrl = new AbortController();
       jobAbortRefs.current[job] = ctrl;
 
-      function releaseProgress(err: unknown) {
-        if (ctrl.signal.aborted) return;
-        setJobs((prev) => {
-          const next = { ...prev };
-          delete next[job];
-          return next;
-        });
-        notify({ title: tError(err), variant: "error" });
-      }
-
+      let observedRunning = false;
+      const restoring = Boolean(options?.onInitialRead);
       try {
-        const finalState = await pollJob<TData>(job, {
-          intervalMs: JOB_POLL_INTERVAL_MS,
+        const final = await pollJob<TData>(job, {
           signal: ctrl.signal,
-          onUnavailable: releaseProgress,
+          restoring,
+          onUnavailable: (err) => {
+            if (ctrl.signal.aborted) return;
+            options?.onInitialRead?.();
+            notify({ title: tError(err), variant: "error" });
+          },
           onUpdate: (state) => {
             if (ctrl.signal.aborted || !state.running) return;
-            setJobs((prev) => ({ ...prev, [job]: state as JobState }));
+            observedRunning = true;
+            setJobs((prev) => ({ ...prev, [job]: state }));
+            options?.onInitialRead?.();
           },
         });
         if (ctrl.signal.aborted) return null;
-        const fresh = await reloadStatus();
-        if (ctrl.signal.aborted) return null;
-        if (job === "login" && finalState.ok === false &&
-            (suppressLoginErrRef.current || (fresh && fresh.state !== "needs_login"))) {
+        if (restoring && !observedRunning) {
+          const isCheck = job === "update" && (final.data as UpdateJobData).action === "check";
+          const hasReport = job === "netcheck" && (final.data as NetcheckJobData).report;
+          if (isCheck || hasReport) setJobs((prev) => ({ ...prev, [job]: final }));
+          return final;
+        }
+        if (job === "login" && !final.ok && stoppingLoginRef.current === ctrl) {
           setJobs(({ login: _login, ...rest }) => rest);
-          return finalState;
+        } else {
+          setJobs((prev) => ({ ...prev, [job]: final }));
+          options?.onDone?.(final);
+          const hasExplanation = (job === "login" && final.code === "login_expired") ||
+            (job === "migrate" && (final.data as MigrateJobData).rolled_back);
+          if (final.ok === false && final.code && !hasExplanation) {
+            notify({ title: translateError(langRef.current, final.code), variant: "error" });
+          }
         }
-        setJobs((prev) => ({ ...prev, [job]: finalState as JobState }));
-        options?.onDone?.(finalState);
-        if (finalState.ok === false && finalState.code) {
-          notify({
-            title: translateError(langRef.current, finalState.code),
-            variant: "error",
-          });
-        }
-        return finalState;
+        void reloadStatus();
+        return final;
       } catch (err) {
-        if (ctrl.signal.aborted) return null;
-        releaseProgress(err);
-        await reloadStatus();
+        if (!ctrl.signal.aborted && !(restoring && err instanceof ApiError && err.httpStatus === 404)) {
+          notify({ title: tError(err), variant: "error" });
+        }
         return null;
       } finally {
+        options?.onInitialRead?.();
         if (jobAbortRefs.current[job] === ctrl) {
           delete jobAbortRefs.current[job];
         }
@@ -285,8 +292,8 @@ function AppContextInner({
   );
 
   // Initial boot sequence:
-  // 1. Read UI config, cached status snapshot, and any existing job files in parallel.
-  // 2. Resume polling for any job already running on the router.
+  // 1. Read UI config and the cached snapshot.
+  // 2. Discover jobs after the snapshot settles so it cannot overwrite a live refresh.
   // 3. Refresh live status via bifrost_status.sh before unlocking mutating controls.
   useEffect(() => {
     const controller = new AbortController();
@@ -318,25 +325,14 @@ function AppContextInner({
         if (err instanceof DOMException && err.name === "AbortError") return;
       });
 
-    const jobsTask = Promise.all(
-      ALL_JOBS.map((job) =>
-        readJob(job, controller.signal)
-          .then((state) => [job, state] as const)
-          .catch(() => null),
-      ),
-    );
-    Promise.all([uiTask, snapshotTask, jobsTask]).then(async ([, , entries]) => {
+    const jobsTask = snapshotTask.then(() => {
       if (controller.signal.aborted) return;
-      const loaded: Partial<Record<JobName, JobState>> = {};
-      for (const entry of entries) {
-        if (!entry) continue;
-        const [job, state] = entry;
-        if (state.running || job !== "login") loaded[job] = state;
-      }
-      setJobs(loaded);
-      for (const entry of entries) {
-        if (entry?.[1].running) void attachJobPoll(entry[0]);
-      }
+      return Promise.all(ALL_JOBS.map((job) =>
+        new Promise<void>((resolve) => { void attachJobPoll(job, { onInitialRead: resolve }); }),
+      ));
+    });
+    Promise.all([uiTask, jobsTask]).then(async () => {
+      if (controller.signal.aborted) return;
       const fresh = await reloadStatus();
       if (controller.signal.aborted) return;
       if (!fresh && !initialSnapshotFound) {
@@ -448,23 +444,29 @@ function AppContextInner({
         suppressLoginFailure?: boolean;
       },
     ): Promise<JobState<TData> | null> => {
-      if (job === "login") {
-        suppressLoginErrRef.current = false;
-      } else if (options?.suppressLoginFailure) {
-        suppressLoginErrRef.current = true;
-      }
-
-      // Do NOT abort any existing poller for `job` until `trigger()` succeeds,
-      // so a `busy` rejection leaves the in-flight job poller intact.
+      const stopping = options?.suppressLoginFailure ? jobAbortRefs.current.login : undefined;
+      if (stopping) stoppingLoginRef.current = stopping;
       try {
+        // Keep the current watcher if the backend rejects a competing action.
         await trigger();
+        if (!mountedRef.current) return null;
+        // job_start creates a queued job before acknowledging the action. Keep
+        // its controls locked even if the first job-file read fails.
+        setJobs((prev) => ({ ...prev, [job]: {
+          running: true, phase: "queued", progress: null, ok: null, code: null, data: {},
+        } }));
+        const final = await attachJobPoll<TData>(job, options);
+        if (final?.ok && stopping && jobAbortRefs.current.login === stopping) {
+          stopping.abort();
+          setJobs(({ login: _login, ...rest }) => rest);
+        }
+        return final;
       } catch (err) {
-        if (options?.suppressLoginFailure) suppressLoginErrRef.current = false;
         notify({ title: tError(err), variant: "error" });
         return null;
+      } finally {
+        if (stopping && stoppingLoginRef.current === stopping) stoppingLoginRef.current = undefined;
       }
-
-      return attachJobPoll<TData>(job, options);
     },
     [attachJobPoll, notify, tError],
   );

@@ -5,6 +5,20 @@ import { SAMPLE_LOGS_TEXT, SAMPLE_NETCHECK_REPORT, SAMPLE_NOW } from "./fixtures
 
 const PASTE_SHORTCUT = process.platform === "darwin" ? "Meta+v" : "Control+v";
 
+async function withStatusReadHeld(page, verify) {
+  const release = Promise.withResolvers();
+  const path = "**/_temp/bifrost_status.json";
+  await page.route(path, async (route) => {
+    await release.promise;
+    await route.continue();
+  }, { times: 1 });
+  try {
+    await Promise.all([page.waitForRequest(path), verify()]);
+  } finally {
+    release.resolve();
+  }
+}
+
 test("all nine PLAN 7.1 page states render expected status and primary actions", async (t) => {
   const cases = [
     ["disabled", "未启用", "启用"],
@@ -38,6 +52,10 @@ test("disable requires confirmation and warns when accessed via tailnet", async 
     fastJobPoll: true,
     jobStepMs: 20,
   });
+  let disablePosts = 0;
+  lan.page.on("request", (req) => {
+    if (req.method() === "POST" && JSON.parse(req.postData()).params?.[0] === "disable") disablePosts++;
+  });
   await lan.page.goto(lan.url);
   await ready(lan.page);
   await lan.page.getByRole("button", { name: "停用", exact: true }).click();
@@ -46,12 +64,15 @@ test("disable requires confirmation and warns when accessed via tailnet", async 
   await lanDialog.getByText(/停用会停止后台服务/).waitFor();
   await lanDialog.getByRole("button", { name: "取消", exact: true }).click();
   await lanDialog.waitFor({ state: "hidden" });
+  assert.equal(disablePosts, 0);
   await lan.page.getByRole("heading", { name: "运行中" }).waitFor();
 
   await lan.page.getByRole("button", { name: "停用", exact: true }).click();
   await lanDialog.waitFor();
   await lanDialog.getByRole("button", { name: "确认", exact: true }).click();
   await lan.page.getByRole("heading", { name: "未启用" }).waitFor();
+
+  assert.equal(disablePosts, 1);
 
   // Tailnet-origin access: shows tailnet disconnect warning.
   const tailnet = await openPreview(t, {
@@ -129,6 +150,8 @@ test("login flow: interactive QR, custom server notice, http warning, authkey lo
   await ready(expiredCtx.page);
   await expiredCtx.page.getByRole("button", { name: "获取登录链接", exact: true }).click();
   await expiredCtx.page.getByText("登录链接已过期，请点击下方按钮重新获取。", { exact: true }).waitFor();
+  assert.equal(await expiredCtx.page.getByRole("alert").count(), 1);
+  assert.equal(await expiredCtx.page.getByText(/登录链接已过期|登录授权已过期/).count(), 1);
 
   // Unsafe auth_url (javascript:) is blocked: no link, no QR, shows error banner.
   const unsafeCtx = await openPreview(t, {
@@ -150,6 +173,26 @@ test("login flow: interactive QR, custom server notice, http warning, authkey lo
   assert.equal(badLinks, 0);
 });
 
+test("an oversized authorization URL keeps a usable link across reloads", async (t) => {
+  const longUrl = "https://auth.example.org/" + "a".repeat(3072);
+  const { page, url } = await openPreview(t, {
+    initialState: "needs_login",
+    mutateStatus: (s) => { s.auth_url = longUrl; },
+  });
+  await page.goto(url);
+  for (let i = 0; i < 2; i++) {
+    if (i) await page.reload();
+    await ready(page);
+    await page.getByText("无法生成二维码，请打开授权链接继续。", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("img", { name: "登录授权二维码" }).count(), 0);
+    const link = page.getByRole("link", { name: "打开授权链接" });
+    assert.equal(await link.getAttribute("href"), longUrl);
+    assert.equal(await link.isVisible(), true);
+    await clickTab(page, "设置");
+    assert.equal(await page.locator("#setting-port").isEnabled(), true);
+  }
+});
+
 test("login waiting does not block actions; disabling during login cleanly cancels without stale error", async (t) => {
   const { page, url } = await openPreview(t, {
     initialState: "needs_login",
@@ -163,15 +206,19 @@ test("login waiting does not block actions; disabling during login cleanly cance
   await page.getByRole("button", { name: "获取登录链接", exact: true }).click();
   await page.getByRole("img", { name: "登录授权二维码", exact: true }).waitFor();
 
-  // While waiting on interactive login, disable, control server input, and retry remain enabled.
+  // A waiting login blocks other login attempts, while settings and disable stay available.
   const disableBtn = page.getByRole("button", { name: "停用", exact: true });
   const retryBtn = page.getByRole("button", { name: "重新获取链接", exact: true });
   assert.equal(await disableBtn.isEnabled(), true);
-  assert.equal(await retryBtn.isEnabled(), true);
+  assert.equal(await retryBtn.isDisabled(), true);
+  await page.getByText(/正在等待登录完成，10 分钟后过期/).waitFor();
   await page.getByRole("button", { name: /高级选项/ }).click();
-  assert.equal(await page.getByLabel("控制服务器地址", { exact: true }).isEnabled(), true);
-  assert.equal(await page.getByLabel("预授权密钥", { exact: true }).isEnabled(), true);
+  assert.equal(await page.getByLabel("控制服务器地址", { exact: true }).isDisabled(), true);
+  assert.equal(await page.getByLabel("预授权密钥", { exact: true }).isDisabled(), true);
 
+  await clickTab(page, "设置");
+  assert.equal(await page.locator("#setting-port").isEnabled(), true);
+  await clickTab(page, "概览");
   // Clicking disable while login is waiting confirms, stops daemon, cancels login, and shows no stale error.
   await disableBtn.click();
   await page.getByRole("alertdialog").getByRole("button", { name: "确认", exact: true }).click();
@@ -183,32 +230,71 @@ test("login waiting does not block actions; disabling during login cleanly cance
   assert.equal(await page.getByRole("alert").count(), 0);
 });
 
-test("pollJob error recovery: transient errors recover, persistent errors unlock UI, busy preserves active poll", async (t) => {
+test("a failed disable leaves the waiting login watched and reports its eventual failure", async (t) => {
+  const login = {
+    schema: 1, job: "login", phase: "waiting", running: true, progress: null,
+    ok: null, code: null, started: SAMPLE_NOW, finished: null, pid: 4300, data: { action: "relogin" },
+  };
+  const { page, url } = await openPreview(t, {
+    initialState: "running", initialJobs: { login }, fastJobPoll: true,
+  });
+  await page.goto(url);
+  await ready(page);
+  const relogin = page.getByRole("button", { name: "重新登录", exact: true });
+  assert.equal(await relogin.isDisabled(), true);
+  await page.route("**/_api/", (route) => JSON.parse(route.request().postData()).params[0] === "disable"
+    ? route.fulfill({ json: { result: { ok: true, job: "daemon" } } })
+    : route.continue());
+  await page.route("**/_temp/bifrost_daemon.json", (route) => route.fulfill({ json: {
+    ...login, job: "daemon", phase: "done", running: false, ok: false, code: "internal", data: {},
+  } }));
+  await page.getByRole("button", { name: "停用", exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "确认", exact: true }).click();
+  await page.getByRole("main").getByRole("alert").waitFor();
+  assert.equal(await relogin.isDisabled(), true);
+  await page.route("**/_temp/bifrost_login.json", (route) => route.fulfill({ json: {
+    ...login, phase: "done", running: false, ok: false, code: "cli_failed", finished: SAMPLE_NOW + 2,
+  } }));
+  await page.getByText("Tailscale 命令执行失败，请查看诊断日志。", { exact: true }).waitFor();
+  assert.equal(await relogin.isEnabled(), true);
+});
+
+test("pollJob error recovery: transient errors recover, persistent errors retain active progress until the job file recovers", async (t) => {
   // 1. Transient 503 x2 during core-check recovers and finishes cleanly.
   const transient = await openPreview(t, {
     initialState: "running",
     fastJobPoll: true,
     jobStepMs: 20,
   });
+  await transient.page.goto(transient.url);
+  await ready(transient.page);
+  await clickTab(transient.page, "核心");
   let transientFails = 0;
+  const firstFailed = Promise.withResolvers();
+  const retry = Promise.withResolvers();
   await transient.page.route("**/_temp/bifrost_update.json", async (route) => {
     if (transientFails < 2) {
       transientFails++;
+      if (transientFails === 2) {
+        firstFailed.resolve();
+        await retry.promise;
+      }
       await route.fulfill({ status: 503, contentType: "text/plain", body: "unavailable" });
       return;
     }
     await route.continue();
   });
-  await transient.page.goto(transient.url);
-  await ready(transient.page);
-  await clickTab(transient.page, "核心");
-  // Reset counter right before clicking check so init's 404 probe doesn't consume it.
-  transientFails = 0;
   await transient.page.getByRole("button", { name: "检查更新", exact: true }).click();
+  try {
+    await firstFailed.promise;
+    assert.equal(await transient.page.getByRole("button", { name: "检查更新", exact: true }).isDisabled(), true);
+  } finally {
+    retry.resolve();
+  }
   await transient.page.getByText(/发现新核心：1\.106\.0/).waitFor();
   assert.equal(transientFails, 2);
 
-  // 2. Persistent 503 after starting job cleans up running state and re-enables buttons.
+  // 2. A persistent 503 keeps the last running state and recovers once reads succeed.
   const persistent = await openPreview(t, {
     initialState: "running",
     fastJobPoll: true,
@@ -237,34 +323,10 @@ test("pollJob error recovery: transient errors recover, persistent errors unlock
   } finally {
     allowFailure.resolve();
   }
-  // Wait for error toast and verify buttons unlock instead of staying permanently disabled.
   await persistent.page.getByText(/请求失败（HTTP 503）/).waitFor();
-  await persistent.page.waitForFunction(() => {
-    const shadow = document.getElementById("bifrost-app")?.shadowRoot;
-    const btn = Array.from(shadow?.querySelectorAll("button") ?? []).find(
-      (b) => b.textContent?.trim() === "检查更新",
-    );
-    return Boolean(btn && !btn.disabled);
-  });
-
+  assert.equal(await persistent.page.getByRole("button", { name: "更新核心", exact: true }).isDisabled(), true);
   interruptAfterProgress = false;
   await persistent.page.getByText(/发现新核心：1\.106\.0/).waitFor();
-
-  // 3. Busy rejection on a duplicate login trigger does NOT abort the already-running login poller.
-  const busyCase = await openPreview(t, {
-    initialState: "needs_login",
-    loginStayWaiting: true,
-    fastJobPoll: true,
-    jobStepMs: 20,
-  });
-  await busyCase.page.goto(busyCase.url);
-  await ready(busyCase.page);
-  await busyCase.page.getByRole("button", { name: "获取登录链接", exact: true }).click();
-  await busyCase.page.getByRole("img", { name: "登录授权二维码", exact: true }).waitFor();
-
-  await busyCase.page.getByRole("button", { name: "重新获取链接", exact: true }).click();
-  await busyCase.page.getByText(/另一个操作正在进行中/).waitFor();
-  await busyCase.page.waitForRequest((req) => req.url().endsWith("/_temp/bifrost_login.json"));
 });
 
 test("initialization reads existing job files: resumes running update and restores saved netcheck/update results", async (t) => {
@@ -320,9 +382,34 @@ test("initialization reads existing job files: resumes running update and restor
   await clickTab(page, "概览");
   await page.getByText("当前已是最新核心", { exact: true }).waitFor();
 
-  // Diagnostics tab already displays the saved netcheck report.
+  // A second visit now discovers only the completed update check and the saved report.
+  await page.reload();
+  await ready(page);
+  await page.getByText("当前已是最新核心", { exact: true }).waitFor();
   await clickTab(page, "诊断");
   await page.getByText("28 ms", { exact: true }).waitFor();
+});
+
+test("a fresh page omits finished daemon, migration and update mutation results", async (t) => {
+  const finished = {
+    schema: 1, running: false, phase: "done", progress: 100, ok: true, code: null,
+    started: SAMPLE_NOW - 5, finished: SAMPLE_NOW, pid: 4300, data: {},
+  };
+  const { page, url } = await openPreview(t, {
+    initialState: "running",
+    initialJobs: {
+      daemon: { ...finished, job: "daemon", ok: false, code: "cli_failed" },
+      migrate: { ...finished, job: "migrate" },
+      update: { ...finished, job: "update", data: { action: "update", kept_prev: false } },
+    },
+  });
+  await page.goto(url);
+  await ready(page);
+  assert.equal(await page.getByRole("alert").count(), 0);
+  assert.equal(await page.getByRole("heading", { name: "从原版插件迁移" }).count(), 0);
+  await clickTab(page, "核心");
+  assert.equal(await page.getByText("操作已完成", { exact: true }).count(), 0);
+  assert.equal(await page.getByText(/剩余空间不足，未保留上一版/).count(), 0);
 });
 
 test("reloading during migration keeps its progress and actions locked until completion", async (t) => {
@@ -342,9 +429,12 @@ test("reloading during migration keeps its progress and actions locked until com
   await ready(page);
   const jobPath = "**/_temp/bifrost_migrate.json";
   await page.route(jobPath, (route) => route.fulfill({ json: migration }));
+  let failedReads = 0;
+  await page.route(jobPath, (route) => { failedReads++; return route.fulfill({ status: 503 }); }, { times: 1 });
   await page.reload();
   await ready(page);
   await page.getByRole("meter", { name: "复制状态文件" }).waitFor();
+  assert.equal(failedReads, 1);
   const disable = page.getByRole("button", { name: "停用", exact: true });
   assert.equal(await disable.isDisabled(), true);
   await page.unroute(jobPath);
@@ -378,6 +468,8 @@ test("migration flow: success and automatic rollback", async (t) => {
   await rb.page.getByRole("button", { name: "迁移并切换", exact: true }).first().click();
   await rb.page.getByRole("alertdialog").getByRole("button", { name: "确认", exact: true }).click();
   await rb.page.getByText(/已自动回滚到原版状态/).waitFor();
+  assert.equal(await rb.page.getByText(/已自动回滚/).count(), 1);
+  assert.equal(await rb.page.getByRole("alert").count(), 1);
 });
 
 test("devices page: preserves backend peer order, filters, caps at 200 rows, and pings per row", async (t) => {
@@ -476,8 +568,10 @@ test("settings page: saves send requests and display server read-back values, va
 
   await routeInput.fill("198.51.100.0/24");
   await page.getByRole("button", { name: "添加", exact: true }).click();
-  await page.getByRole("button", { name: "保存", exact: true }).first().click();
-  await page.getByText(/当前读回值：.*198\.51\.100\.128\/25/).waitFor();
+  await withStatusReadHeld(page, async () => {
+    await page.getByRole("button", { name: "保存", exact: true }).first().click();
+    await page.getByText(/当前读回值：.*198\.51\.100\.128\/25/).waitFor();
+  });
   assert.deepEqual(sentSets.at(-1).fields, {});
   assert.deepEqual(sentSets.at(-1).params, [
     "set",
@@ -517,21 +611,13 @@ test("settings page: saves send requests and display server read-back values, va
   await page.getByRole("button", { name: "保存 设备名", exact: true }).click();
   await page.getByRole("alert").getByText(/不能以连字符开头或结尾/).waitFor();
   // Hold status read-back until the form has displayed the sync action's own value.
-  const releaseStatus = Promise.withResolvers();
-  const holdStatus = async (route) => {
-    await releaseStatus.promise;
-    await route.continue();
-  };
-  await page.route("**/_temp/bifrost_status.json", holdStatus, { times: 1 });
-  try {
+  await withStatusReadHeld(page, async () => {
     await hostInput.fill("edge-router");
     await page.getByRole("button", { name: "保存 设备名", exact: true }).click();
     await page.waitForFunction(() =>
       document.getElementById("bifrost-app").shadowRoot.querySelector("#setting-hostname")?.value === "edge-router-rb",
     );
-  } finally {
-    releaseStatus.resolve();
-  }
+  });
   assert.deepEqual(sentSets.at(-1).fields, {});
   assert.deepEqual(sentSets.at(-1).params, ["set", "hostname", "edge-router"]);
 
@@ -556,16 +642,19 @@ test("settings page: saves send requests and display server read-back values, va
   await mirrorInput.fill("http://insecure.example.org/");
   await page.getByRole("button", { name: "保存 下载镜像", exact: true }).click();
   await page.getByRole("alert").getByText(/以 https:\/\/ 开头/).waitFor();
-  await mirrorInput.fill("https://mirror.example.org/");
-  await page.getByRole("button", { name: "保存 下载镜像", exact: true }).click();
-  await page.waitForFunction(() =>
-    document.getElementById("bifrost-app").shadowRoot.querySelector("#setting-mirror")?.value === "https://mirror.example.org/rb/",
-  );
+  await withStatusReadHeld(page, async () => {
+    await mirrorInput.fill("https://mirror.example.org/");
+    await page.getByRole("button", { name: "保存 下载镜像", exact: true }).click();
+    await page.waitForFunction(() =>
+      document.getElementById("bifrost-app").shadowRoot.querySelector("#setting-mirror")?.value === "https://mirror.example.org/rb/",
+    );
+  });
   assert.deepEqual(sentSets.at(-1).params, ["set", "mirror", "https://mirror.example.org/"]);
 
   // 8. Disabled daemon disables tailscaled prefs and missing conf_dir disables magicdns.
   const off = await openPreview(t, {
     initialState: "disabled",
+    onSetReadBack: (key, value) => key === "port" ? value + 1 : value,
     mutateStatus: (s) => { s.dns.conf_dir = false; },
   });
   await off.page.goto(off.url);
@@ -574,6 +663,17 @@ test("settings page: saves send requests and display server read-back values, va
   await off.page.getByText(/启动后可以修改/).waitFor();
   assert.equal(await off.page.locator("#setting-hostname").isDisabled(), true);
   assert.equal(await off.page.getByRole("switch", { name: "局域网解析 tailnet 主机名" }).isDisabled(), true);
+
+  // A stopped daemon returns port synchronously. No status-file read may supply the value.
+  await withStatusReadHeld(off.page, async () => {
+    await off.page.locator("#setting-port").fill("41642");
+    await off.page.getByRole("button", { name: "保存 监听端口", exact: true }).click();
+    const response = off.page.waitForResponse((r) => r.request().postData()?.includes('"port","41642"'));
+    await off.page.getByRole("alertdialog").getByRole("button", { name: "确认", exact: true }).click();
+    assert.deepEqual(JSON.parse((await (await response).json()).result), { ok: true, value: 41643 });
+    await off.page.waitForFunction(() => document.getElementById("bifrost-app").shadowRoot
+      .querySelector("#setting-port").value === "41643");
+  });
 
   // 9. Running daemon with prefs === null (e.g. starting) disables all 4 prefs controls and explains why.
   const starting = await openPreview(t, { initialState: "starting" });
@@ -613,8 +713,15 @@ test("core page: core.build display, null build fallback, update flow, up_to_dat
   await page.getByRole("button", { name: "检查更新", exact: true }).click();
   await page.getByText(/发现新核心：1\.106\.0/).waitFor();
 
-  await page.getByRole("button", { name: "更新核心", exact: true }).click();
-  await page.getByRole("alertdialog").getByRole("button", { name: "确认", exact: true }).click();
+  await withStatusReadHeld(page, async () => {
+    await page.getByRole("button", { name: "更新核心", exact: true }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "确认", exact: true }).click();
+    // Result banner and onDone toast must both precede the delayed status read.
+    await page.getByRole("main").getByText("操作已完成", { exact: true }).waitFor();
+    await page.getByText("操作已完成", { exact: true }).nth(1).waitFor();
+    assert.equal(await page.getByRole("button", { name: "检查更新", exact: true }).isEnabled(), true);
+    assert.equal(await page.getByText("1.104.7", { exact: true }).isVisible(), true);
+  });
   await page.getByText("1.106.0", { exact: true }).waitFor();
 
   // Check again -> ok: true + data.up_to_date: true renders neutral notice with zero alerts.
@@ -666,6 +773,18 @@ test("core page: core.build display, null build fallback, update flow, up_to_dat
   await clickTab(noBuild.page, "核心");
   assert.equal(await noBuild.page.getByText("未知", { exact: true }).count(), 3);
   assert.equal(await noBuild.page.getByText("aws", { exact: true }).count(), 0);
+
+  for (const omit of [undefined, "aws"]) {
+    const partial = await openPreview(t, {
+      initialState: "running",
+      mutateStatus: (s) => { s.core.build.omit = omit; },
+    });
+    await partial.page.goto(partial.url);
+    await ready(partial.page);
+    await clickTab(partial.page, "核心");
+    await partial.page.getByText("1.27.4", { exact: true }).waitFor();
+    assert.equal(await partial.page.getByText("未知", { exact: true }).count(), 1);
+  }
 });
 
 test("HTTP clipboard fallback (navigator.clipboard undefined) copies real text across all copy surfaces", async (t) => {
@@ -725,7 +844,7 @@ test("HTTP clipboard fallback (navigator.clipboard undefined) copies real text a
   await page.getByRole("heading", { name: "未启用" }).waitFor();
 });
 
-test("visibility-aware status polling serializes requests and never spawns duplicate loops", async (t) => {
+test("visibility-aware status polling serializes requests and never spawns duplicate loops", { timeout: 15000 }, async (t) => {
   const { page, url } = await openPreview(t, { initialState: "running" });
   await page.addInitScript(() => {
     let vis = "visible";
@@ -737,59 +856,74 @@ test("visibility-aware status polling serializes requests and never spawns dupli
       vis = next;
       document.dispatchEvent(new Event("visibilitychange"));
     };
-    const nativeSetTimeout = window.setTimeout;
+    const timers = new Map();
+    const nativeSet = window.setTimeout;
+    const nativeClear = window.clearTimeout;
+    let scheduled = 0;
     window.setTimeout = (fn, delay, ...args) => {
-      if (delay === 3000) delay = 80;
-      return nativeSetTimeout(fn, delay, ...args);
+      if (delay !== 3000) return nativeSet(fn, delay, ...args);
+      const id = -(++scheduled);
+      timers.set(id, () => fn(...args));
+      return id;
     };
-  });
-
-  let statusPolls = 0;
-  let inFlight = 0;
-  let maxInFlight = 0;
-  await page.route("**/_api/", async (route) => {
-    const b = JSON.parse(route.request().postData() || "{}");
-    if (b.method === "bifrost_status.sh") {
-      statusPolls++;
-      inFlight++;
-      if (inFlight > maxInFlight) maxInFlight = inFlight;
-      await new Promise((r) => setTimeout(r, 35));
-      try {
-        await route.continue();
-      } finally {
-        inFlight--;
-      }
-      return;
-    }
-    await route.continue();
+    window.clearTimeout = (id) => {
+      if (!timers.delete(id)) nativeClear(id);
+    };
+    window.__pollClock = {
+      get size() { return timers.size; },
+      get scheduled() { return scheduled; },
+      tick() {
+        if (timers.size !== 1) throw new Error(`Expected one status timer, found ${timers.size}`);
+        const [id, fn] = timers.entries().next().value;
+        timers.delete(id);
+        fn();
+      },
+    };
   });
 
   await page.goto(url);
   await ready(page);
-  await page.waitForTimeout(260);
-  const pollsWhileVisible = statusPolls;
-  assert.ok(pollsWhileVisible >= 2, `expected visible polling, got ${pollsWhileVisible}`);
-  assert.equal(maxInFlight, 1, "at most one bifrost_status.sh request may run concurrently");
+  await page.waitForFunction(() => window.__pollClock.size === 1);
 
-  // Rapid hide/show bursts must not create parallel polling loops or concurrent status calls.
-  for (let i = 0; i < 4; i++) {
-    await page.evaluate(() => window.__setVis("hidden"));
-    await page.evaluate(() => window.__setVis("visible"));
+  let requests = 0;
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  await page.route("**/_api/", async (route) => {
+    if (JSON.parse(route.request().postData()).method === "bifrost_status.sh") {
+      requests++;
+      started.resolve();
+      await release.promise;
+    }
+    await route.continue();
+  });
+  try {
+    await page.evaluate(() => window.__pollClock.tick());
+    await started.promise;
+    await page.evaluate(() => {
+      for (let i = 0; i < 4; i++) {
+        window.__setVis("hidden");
+        window.__setVis("visible");
+      }
+    });
+    assert.equal(requests, 1);
+    assert.equal(await page.evaluate(() => window.__pollClock.size), 0);
+  } finally {
+    release.resolve();
   }
-  await page.waitForTimeout(150);
-  assert.equal(maxInFlight, 1, "rapid visibility toggles must still serialize status requests");
 
+  // All visibility handlers shared the same request. Only the latest may
+  // schedule its successor, even if an extra timer would later be cleared.
+  await page.waitForFunction(() => window.__pollClock.size > 0);
+  assert.equal(await page.evaluate(() => window.__pollClock.scheduled), 2);
+  await page.evaluate(() => window.__pollClock.tick());
+  await page.waitForFunction(() => window.__pollClock.size > 0);
+  assert.equal(await page.evaluate(() => window.__pollClock.scheduled), 3);
+  assert.equal(requests, 2);
   await page.evaluate(() => window.__setVis("hidden"));
-  await page.waitForTimeout(120);
-  const countAfterHide = statusPolls;
-  await page.waitForTimeout(260);
-  assert.equal(statusPolls, countAfterHide, "polling must stop while document is hidden");
-
+  assert.equal(await page.evaluate(() => window.__pollClock.size), 0);
   await page.evaluate(() => window.__setVis("visible"));
-  await page.waitForTimeout(260);
-  const pollsAfterResume = statusPolls - countAfterHide;
-  assert.ok(pollsAfterResume >= 1 && pollsAfterResume <= 4, `unexpected resumed poll burst: ${pollsAfterResume}`);
-  assert.equal(maxInFlight, 1);
+  await page.waitForFunction(() => window.__pollClock.size === 1);
+  assert.equal(requests, 3);
 });
 
 test("a setting saved during a status read is followed by a fresh status snapshot", { timeout: 15000 }, async (t) => {

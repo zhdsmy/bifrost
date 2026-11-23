@@ -10,25 +10,28 @@ import { Tooltip } from "@cloudflare/kumo/components/tooltip";
 import { copyText } from "../core/clipboard";
 import { useApp } from "../app/context";
 
-function useCopy(text: string) {
+export function useCopy(text: string) {
   const { notify, t } = useApp();
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(
-    () => () => {
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
       if (timerRef.current !== null) clearTimeout(timerRef.current);
-    },
-    [],
-  );
+    };
+  }, []);
 
   async function handleCopy() {
-    if (timerRef.current !== null) clearTimeout(timerRef.current);
     const ok = await copyText(text);
+    if (!mountedRef.current) return;
     if (!ok) {
       notify({ title: t("common.copyFailed"), variant: "error" });
       return;
     }
+    if (timerRef.current !== null) clearTimeout(timerRef.current);
     setCopied(true);
     timerRef.current = setTimeout(() => {
       setCopied(false);

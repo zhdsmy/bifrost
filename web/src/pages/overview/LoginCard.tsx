@@ -5,14 +5,13 @@ import { Button } from "@cloudflare/kumo/components/button";
 import { Collapsible } from "@cloudflare/kumo/components/collapsible";
 import { Input } from "@cloudflare/kumo/components/input";
 import { Loader } from "@cloudflare/kumo/components/loader";
-import { SensitiveInput } from "@cloudflare/kumo/components/sensitive-input";
 import { useApp } from "../../app/context";
 import { CopyField } from "../../components/CopyInline";
 import { JobProgress } from "../../components/JobProgress";
 import { QrCode } from "../../components/QrCode";
 import { SectionCard } from "../../components/SectionCard";
 import { api } from "../../core/api";
-import type { JobState, LoginJobData, StatusData } from "../../core/types";
+import type { JobProgressState, LoginJobData, StatusData } from "../../core/types";
 import {
   isHttpLoginServer,
   isSafeHttpUrl,
@@ -33,7 +32,8 @@ export function LoginCard({
   const [validationError, setValidationError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
-  const loginJob = jobs.login as JobState<LoginJobData> | undefined;
+  const loginJob = jobs.login as JobProgressState<LoginJobData> | undefined;
+  const loginDisabled = disabled || Boolean(loginJob?.running);
   const isCustomControl =
     status.self?.official === false ||
     loginJob?.data?.official === false ||
@@ -77,7 +77,7 @@ export function LoginCard({
       {safeAuthUrl && (
         <div className="grid gap-4 rounded-lg border border-kumo-line bg-kumo-recessed p-4">
           <div className="flex flex-wrap items-start gap-4">
-            <QrCode value={status.auth_url} alt={t("login.qrAlt")} />
+            <QrCode value={status.auth_url} alt={t("login.qrAlt")} fallback={t("login.qrUnavailable")} />
             <div className="grid min-w-0 flex-1 gap-3">
               <h3 className="text-sm font-semibold text-kumo-strong">
                 {t("login.qrHeading")}
@@ -95,7 +95,7 @@ export function LoginCard({
                 </a>
               </div>
               <div className="flex items-center gap-2 text-xs text-kumo-subtle">
-                <Loader size="sm" />
+                <Loader size="sm" aria-label={t("common.loadingAction")} />
                 <span>{t("login.waitingAuth")}</span>
               </div>
             </div>
@@ -106,9 +106,11 @@ export function LoginCard({
         </div>
       )}
 
-      {loginJob && !hasAuthUrl && (
+      {loginJob && !loginExpired && !hasAuthUrl && (
         <JobProgress job={loginJob} label={t("login.startingNotice")} hideSuccess />
       )}
+
+      {loginJob?.running && <p className="text-sm text-kumo-subtle">{t("login.jobWaiting")}</p>}
 
       <Collapsible.Root
         open={advancedOpen}
@@ -125,7 +127,7 @@ export function LoginCard({
             placeholder={t("login.serverPlaceholder")}
             description={t("login.serverDesc")}
             value={serverDraft}
-            disabled={disabled}
+            disabled={loginDisabled}
             onChange={(e) => {
               setServerDraft(e.target.value);
               setValidationError(null);
@@ -136,15 +138,16 @@ export function LoginCard({
           {isHttpLoginServer(serverDraft.trim()) && (
             <Banner variant="alert" size="sm" description={t("login.serverHttpWarn")} />
           )}
-          <SensitiveInput
+          <Input
+            type="password"
             id="login-auth-key"
             label={t("login.authKeyLabel")}
             placeholder={t("login.authKeyPlaceholder")}
             description={t("login.authKeyDesc")}
             value={authKeyDraft}
-            disabled={disabled}
-            onValueChange={(v) => {
-              setAuthKeyDraft(v);
+            disabled={loginDisabled}
+            onChange={(e) => {
+              setAuthKeyDraft(e.target.value);
               setValidationError(null);
             }}
             autoComplete="off"
@@ -160,7 +163,7 @@ export function LoginCard({
       <div className="flex flex-wrap gap-2">
         <Button
           variant="primary"
-          disabled={disabled}
+          disabled={loginDisabled}
           onClick={() => {
             void handleStartLogin();
           }}

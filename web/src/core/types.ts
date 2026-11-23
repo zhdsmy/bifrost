@@ -171,9 +171,8 @@ export interface JobState<TData = unknown> {
   data: TData;
 }
 
-export interface DaemonJobData {
-  action?: "start" | "stop" | "restart" | "purge";
-}
+export type JobProgressState<TData = unknown> = Pick<JobState<TData>,
+  "running" | "phase" | "progress" | "ok" | "code" | "data">;
 
 export interface LoginJobData {
   action?: "login" | "relogin";

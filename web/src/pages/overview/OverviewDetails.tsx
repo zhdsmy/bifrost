@@ -7,7 +7,7 @@ import { CopyInline } from "../../components/CopyInline";
 import { DetailItem, DetailList, SectionCard } from "../../components/SectionCard";
 import { analyzeKeyExpiry, formatIsoDate, isCoreUpToDate } from "../../core/format";
 import type {
-  JobState,
+  JobProgressState,
   NetcheckJobData,
   StatusData,
   UpdateJobData,
@@ -19,8 +19,8 @@ const OFFICIAL_CONSOLE_URL = "https://login.tailscale.com/admin/machines";
 export function OverviewDetails({ status }: { status: StatusData }) {
   const { jobs, setTab, t, tErrorCode } = useApp();
   const self = status.self;
-  const netcheckJob = jobs.netcheck as JobState<NetcheckJobData> | undefined;
-  const updateJob = jobs.update as JobState<UpdateJobData> | undefined;
+  const netcheckJob = jobs.netcheck as JobProgressState<NetcheckJobData> | undefined;
+  const updateJob = jobs.update as JobProgressState<UpdateJobData> | undefined;
   const netcheckReport = netcheckJob?.data?.report ?? null;
 
   const keyExpiry = self ? analyzeKeyExpiry(self.key_expiry, status.time * 1000) : null;
@@ -100,7 +100,7 @@ export function OverviewDetails({ status }: { status: StatusData }) {
               {self?.relay ? (
                 <span data-raw-value="true" className="font-mono">
                   {self.relay}
-                  {preferredDerpLatency !== undefined ? ` (${preferredDerpLatency} ms)` : ""}
+                  {preferredDerpLatency !== undefined ? ` (${t("common.latency", { ms: preferredDerpLatency })})` : ""}
                 </span>
               ) : (
                 "—"

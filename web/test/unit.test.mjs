@@ -10,6 +10,7 @@ import {
   parseActionPayload,
   pollJob,
   postScript,
+  readJob,
   readUiConfig,
 } from "../src/core/api.ts";
 import {
@@ -409,7 +410,7 @@ describe("api.ts envelope parsing, request contract, and pollJob recovery", () =
       const seen = [];
       const finalState = await pollJob("update", {
         intervalMs: 5,
-        maxConsecutiveErrors: 4,
+        notifyAfterErrors: 4,
         onUpdate: (s) => seen.push(s.phase),
       });
       assert.deepEqual(seen, ["download", "done"]);
@@ -420,25 +421,47 @@ describe("api.ts envelope parsing, request contract, and pollJob recovery", () =
     }
   });
 
-  it("rejects malformed job files and bounds a stalled read", async (ctx) => {
-    ctx.mock.method(globalThis, "fetch", async () => new Response("null"));
-    await assert.rejects(pollJob("update", { maxConsecutiveErrors: 1 }), { code: "invalid_response" });
-    ctx.mock.method(AbortSignal, "timeout", () => AbortSignal.abort(new DOMException("Timed out", "TimeoutError")));
-    globalThis.fetch = async (_url, init) => { init.signal.throwIfAborted(); };
-    await assert.rejects(pollJob("update", { maxConsecutiveErrors: 1 }), { code: "timeout" });
+  it("continues at a slower interval beyond the fast poll budget and reports a single outage once", async (ctx) => {
+    const delays = [];
+    const notices = [];
+    const nativeTimeout = globalThis.setTimeout;
+    ctx.mock.method(globalThis, "setTimeout", (fn, delay, ...args) => {
+      delays.push(delay);
+      return nativeTimeout(fn, 0, ...args);
+    });
+    let reads = 0;
+    ctx.mock.method(globalThis, "fetch", async () => {
+      reads++;
+      if (reads > 1 && reads < 7) return new Response("", { status: 503 });
+      return Response.json({ job: "update", running: reads === 1, phase: reads === 1 ? "queued" : "done", data: {} });
+    });
+    const final = await pollJob("update", {
+      fastPolls: 2, intervalMs: 5, slowIntervalMs: 50, notifyAfterErrors: 2,
+      onUnavailable: (err) => notices.push(err.httpStatus),
+    });
+    assert.deepEqual(delays, [5, 50, 50, 50, 50, 50]);
+    assert.deepEqual(notices, [503]);
+    assert.equal(final.running, false);
   });
 
-  it("throws after maxConsecutiveErrors persistent poll failures", async () => {
-    const origFetch = globalThis.fetch;
-    globalThis.fetch = async () => new Response("down", { status: 503 });
-    try {
-      await assert.rejects(
-        () => pollJob("update", { intervalMs: 5, maxConsecutiveErrors: 3 }),
-        (err) => err instanceof ApiError && err.code === "http_error" && err.httpStatus === 503,
-      );
-    } finally {
-      globalThis.fetch = origFetch;
-    }
+  it("rejects malformed job files and bounds a stalled read", async (ctx) => {
+    ctx.mock.method(globalThis, "fetch", async () => new Response("null"));
+    await assert.rejects(readJob("update"), { code: "invalid_response" });
+    ctx.mock.method(AbortSignal, "timeout", () => AbortSignal.abort(new DOMException("Timed out", "TimeoutError")));
+    globalThis.fetch = async (_url, init) => { init.signal.throwIfAborted(); };
+    await assert.rejects(readJob("update"), { code: "timeout" });
+  });
+
+  it("continues through read errors without a notification handler until cancelled", async (ctx) => {
+    const ctrl = new AbortController();
+    let reads = 0;
+    ctx.mock.method(globalThis, "fetch", async () => {
+      if (++reads === 4) ctrl.abort();
+      return new Response("", { status: 503 });
+    });
+    await assert.rejects(pollJob("update", { signal: ctrl.signal, intervalMs: 1, notifyAfterErrors: 2 }),
+      { name: "AbortError" });
+    assert.equal(reads, 4);
   });
 });
 

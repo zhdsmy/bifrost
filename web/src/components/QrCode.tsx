@@ -1,9 +1,14 @@
 import { useMemo } from "react";
 import { encode } from "uqr";
 
-export function QrCode({ value, alt, size = 184 }: { value: string; alt: string; size?: number }) {
-  const { modules, path } = useMemo(() => {
-    const result = encode(value, { ecc: "M", border: 2 });
+export function QrCode({ value, alt, fallback, size = 184 }: { value: string; alt: string; fallback: string; size?: number }) {
+  const qr = useMemo(() => {
+    let result;
+    try {
+      result = encode(value, { ecc: "M", border: 2 });
+    } catch {
+      return null;
+    }
     const parts: string[] = [];
     for (let y = 0; y < result.size; y++) {
       const row = result.data[y];
@@ -14,6 +19,8 @@ export function QrCode({ value, alt, size = 184 }: { value: string; alt: string;
     return { modules: result.size, path: parts.join("") };
   }, [value]);
 
+  if (!qr) return <p className="text-sm text-kumo-subtle">{fallback}</p>;
+  const { modules, path } = qr;
   return (
     <div className="inline-flex rounded-lg border border-kumo-line bg-white p-2 text-black shadow-xs">
       <svg
