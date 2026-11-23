@@ -1,7 +1,7 @@
 import { Banner } from "@cloudflare/kumo/components/banner";
 import { Loader } from "@cloudflare/kumo/components/loader";
 import { Meter } from "@cloudflare/kumo/components/meter";
-import type { JobState } from "../core/types";
+import type { JobProgressState } from "../core/types";
 import { useApp } from "../app/context";
 
 export function JobProgress({
@@ -9,7 +9,7 @@ export function JobProgress({
   label,
   hideSuccess = false,
 }: {
-  job: JobState<unknown> | undefined;
+  job: JobProgressState<unknown> | undefined;
   label?: string;
   hideSuccess?: boolean;
 }) {
@@ -30,13 +30,13 @@ export function JobProgress({
     }
     return (
       <div className="flex items-center gap-2 rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 text-sm text-kumo-default">
-        <Loader size="sm" />
+        <Loader size="sm" aria-label={t("common.loadingAction")} />
         <span>{label ? `${label} · ${phaseText}` : phaseText}</span>
       </div>
     );
   }
 
-  if (job.ok === false && job.code && job.code !== "up_to_date") {
+  if (job.ok === false && job.code) {
     return <Banner variant="error" role="alert" size="sm" title={tErrorCode(job.code)} />;
   }
 

@@ -3,22 +3,20 @@
 
 export const SAMPLE_NOW = 1795430000;
 
+export const SAMPLE_BUILD = {
+  go: "1.27.4",
+  commit: "cbc74fe48ef1b1649f69a4d9a602319427e25102",
+  omit: [
+    "aws", "bird", "tap", "kube", "completion", "completion_scripts",
+    "systray", "tpm", "debugeventbus", "syspolicy", "capture", "ssh",
+    "taildrop", "clientupdate", "webclient", "drive", "desktop_sessions",
+    "webbrowser", "networkmanager", "resolved", "dbus", "synology",
+    "sdnotify", "flashappliance", "cloud",
+  ],
+};
+
+// Sorted online first, then by name (contract section 6.1).
 export const SAMPLE_PEERS = [
-  {
-    name: "workstation",
-    dns_name: "workstation.example.ts.net",
-    ip: "100.64.0.2",
-    ips: ["100.64.0.2", "fd7a:115c:a1e0::2"],
-    os: "macOS",
-    online: true,
-    path: "direct",
-    relay: "",
-    last_handshake: SAMPLE_NOW - 18,
-    rx: 15_728_640,
-    tx: 42_991_616,
-    exit_node_option: false,
-    routes: [],
-  },
   {
     name: "office-gw",
     dns_name: "office-gw.example.ts.net",
@@ -48,6 +46,21 @@ export const SAMPLE_PEERS = [
     tx: 524_288,
     exit_node_option: false,
     routes: ["203.0.113.0/24"],
+  },
+  {
+    name: "workstation",
+    dns_name: "workstation.example.ts.net",
+    ip: "100.64.0.2",
+    ips: ["100.64.0.2", "fd7a:115c:a1e0::2"],
+    os: "macOS",
+    online: true,
+    path: "direct",
+    relay: "",
+    last_handshake: SAMPLE_NOW - 18,
+    rx: 15_728_640,
+    tx: 42_991_616,
+    exit_node_option: false,
+    routes: [],
   },
   {
     name: "tablet",
@@ -83,6 +96,7 @@ function baseRunningStatus() {
       installed: 1795000000,
       prev: true,
       update: null,
+      build: structuredClone(SAMPLE_BUILD),
     },
     daemon: { running: true, pid: 1234, restarts: 0 },
     conflict: { original_installed: false, original_running: false },
@@ -162,7 +176,16 @@ export function createStatusFixture(name = "running") {
       return {
         ...s,
         state: "core_missing",
-        core: { ...s.core, tailscale: "", revision: 0, serial: 0, size: 0, installed: 0, prev: false },
+        core: {
+          ...s.core,
+          tailscale: "",
+          revision: 0,
+          serial: 0,
+          size: 0,
+          installed: 0,
+          prev: false,
+          build: null,
+        },
         daemon: { running: false, pid: null, restarts: 0 },
         self: null,
         prefs: null,

@@ -12,8 +12,9 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { JobProgress } from "../components/JobProgress";
 import { DetailItem, DetailList, SectionCard } from "../components/SectionCard";
 import { api } from "../core/api";
+import { useCopy } from "../components/CopyInline";
 import { formatKb } from "../core/format";
-import type { DiagData, JobState, NetcheckJobData } from "../core/types";
+import type { DiagData, JobProgressState, NetcheckJobData } from "../core/types";
 
 export function DiagnosticsPage() {
   const { busy, jobs, runJob, notify, t, tError } = useApp();
@@ -21,10 +22,10 @@ export function DiagnosticsPage() {
   const [logsText, setLogsText] = useState<string>("");
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsError, setLogsError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const { copied, handleCopy } = useCopy(logsText);
   const [purgeAnchor, setPurgeAnchor] = useState<HTMLElement | null>(null);
 
-  const netcheckJob = jobs.netcheck as JobState<NetcheckJobData> | undefined;
+  const netcheckJob = jobs.netcheck as JobProgressState<NetcheckJobData> | undefined;
   const report = netcheckJob?.data?.report ?? null;
 
   const fetchLogsAndDiag = useCallback(async () => {
@@ -49,18 +50,6 @@ export function DiagnosticsPage() {
     void fetchLogsAndDiag();
   }, [fetchLogsAndDiag]);
 
-  async function copyDiagnostics() {
-    if (!logsText) return;
-    try {
-      await navigator.clipboard.writeText(logsText);
-      setCopied(true);
-      notify({ title: t("diag.logs.copied"), variant: "success" });
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      notify({ title: t("err.internal"), variant: "error" });
-    }
-  }
-
   function renderTriBool(val: boolean | null | undefined, invertWarn = false) {
     if (val === null || val === undefined) {
       return <Badge variant="secondary">{t("diag.env.unchecked")}</Badge>;
@@ -81,14 +70,13 @@ export function DiagnosticsPage() {
 
   return (
     <div className="grid gap-4">
-      {/* Network check */}
       <SectionCard
         title={t("diag.section.netcheck")}
         description={t("diag.netcheck.desc")}
         action={
           <Button
             variant="secondary"
-            disabled={busy}
+            disabled={busy || netcheckJob?.running}
             loading={netcheckJob?.running}
             onClick={() => {
               void runJob<NetcheckJobData>("netcheck", () => api.netcheck());
@@ -125,10 +113,12 @@ export function DiagnosticsPage() {
                     : t("common.no")}
               </DetailItem>
               <DetailItem label={t("diag.netcheck.portmap")}>
-                {report.portmap || t("common.none")}
+                <span data-raw-value="true">{report.portmap || t("common.none")}</span>
               </DetailItem>
               <DetailItem label={t("diag.netcheck.preferred")}>
-                <Badge variant="info">{report.preferred_derp || "—"}</Badge>
+                <Badge variant="info">
+                  <span data-raw-value="true">{report.preferred_derp || "—"}</span>
+                </Badge>
               </DetailItem>
             </DetailList>
 
@@ -148,8 +138,10 @@ export function DiagnosticsPage() {
                     <Table.Body>
                       {report.derp.map((d) => (
                         <Table.Row key={d.code}>
-                          <Table.Cell className="font-mono">{d.code}</Table.Cell>
-                          <Table.Cell className="tabular-nums">{d.latency_ms} ms</Table.Cell>
+                          <Table.Cell className="font-mono">
+                            <span data-raw-value="true">{d.code}</span>
+                          </Table.Cell>
+                          <Table.Cell className="tabular-nums">{t("common.latency", { ms: d.latency_ms })}</Table.Cell>
                         </Table.Row>
                       ))}
                     </Table.Body>
@@ -163,7 +155,6 @@ export function DiagnosticsPage() {
         )}
       </SectionCard>
 
-      {/* Environment checks */}
       <SectionCard title={t("diag.section.env")}>
         <DetailList>
           <DetailItem label={t("diag.env.tun")}>{renderTriBool(diag?.tun)}</DetailItem>
@@ -194,7 +185,6 @@ export function DiagnosticsPage() {
         </DetailList>
       </SectionCard>
 
-      {/* Logs & Copy diagnostics */}
       <SectionCard
         title={t("diag.section.logs")}
         description={t("diag.logs.desc")}
@@ -217,7 +207,7 @@ export function DiagnosticsPage() {
               size="sm"
               disabled={!logsText}
               onClick={() => {
-                void copyDiagnostics();
+                void handleCopy();
               }}
             >
               {copied ? <CheckIcon size={14} aria-hidden /> : <CopyIcon size={14} aria-hidden />}
@@ -236,7 +226,6 @@ export function DiagnosticsPage() {
         </pre>
       </SectionCard>
 
-      {/* Danger zone: Purge login state */}
       <SectionCard title={t("diag.section.danger")}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="grid min-w-0 flex-1 gap-0.5">
@@ -268,6 +257,7 @@ export function DiagnosticsPage() {
         onConfirm={async () => {
           setPurgeAnchor(null);
           await runJob("daemon", () => api.purge(), {
+            suppressLoginFailure: true,
             onDone: (final) => {
               if (final.ok) notify({ title: t("common.actionSuccess"), variant: "success" });
             },

@@ -20,6 +20,10 @@ export const DEFAULT_UI_CONFIG: UiConfig = {
   mode: "dark",
 };
 
+const REQUEST_TIMEOUT_MS = 90_000;
+
+export const ALL_JOBS: readonly JobName[] = ["daemon", "login", "migrate", "update", "netcheck"];
+
 export const JOB_POLL_INTERVAL_MS = 2000;
 export const STATUS_POLL_INTERVAL_MS = 3000;
 export const LOGIN_STATUS_POLL_INTERVAL_MS = 2000;
@@ -44,10 +48,11 @@ function nextRequestId(): number {
   return 1 + Math.floor(Math.random() * 99_999_999);
 }
 
-async function rawRequest(path: string, body?: object, signal?: AbortSignal): Promise<Response> {
-  let response: Response;
+async function rawRequest(path: string, body?: object, signal?: AbortSignal): Promise<string> {
+  const deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
   try {
-    response = await fetch(path, {
+    const response = await fetch(path, {
       cache: "no-store",
       method: body ? "POST" : "GET",
       headers: {
@@ -55,16 +60,22 @@ async function rawRequest(path: string, body?: object, signal?: AbortSignal): Pr
         ...(body && { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" }),
       },
       body: body ? JSON.stringify(body) : undefined,
-      signal,
+      signal: requestSignal,
     });
+    if (!response.ok) throw new ApiError("http_error", response.status);
+    return await response.text();
   } catch (err) {
-    if (err instanceof DOMException && err.name === "AbortError") throw err;
-    throw new ApiError("network_error");
+    if (signal?.aborted || err instanceof ApiError) throw err;
+    throw new ApiError(deadline.aborted ? "timeout" : "network_error");
   }
-  if (!response.ok) {
-    throw new ApiError("http_error", response.status);
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new ApiError("invalid_response");
   }
-  return response;
 }
 
 export function parseActionPayload<T extends object>(body: unknown): T {
@@ -108,23 +119,13 @@ export async function postScript<T extends object = Record<string, unknown>>(
     },
     signal,
   );
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    throw new ApiError("invalid_response");
-  }
+  const body = parseJson(response);
   return parseActionPayload<T>(body);
 }
 
 export async function readUiConfig(signal?: AbortSignal): Promise<UiConfig> {
   const response = await rawRequest("/_api/bifrost", undefined, signal);
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    throw new ApiError("invalid_response");
-  }
+  const body = parseJson(response);
   const result = (body as { result?: unknown[] })?.result;
   const row = (Array.isArray(result) && result[0] && typeof result[0] === "object" ? result[0] : {}) as Record<
     string,
@@ -144,16 +145,11 @@ export async function saveUiConfig(lang: UiLang, mode: UiMode, signal?: AbortSig
 
 export async function readTempJson<T>(name: string, signal?: AbortSignal): Promise<T> {
   const response = await rawRequest(`/_temp/${name}`, undefined, signal);
-  try {
-    return (await response.json()) as T;
-  } catch {
-    throw new ApiError("invalid_response");
-  }
+  return parseJson(response) as T;
 }
 
 export async function readTempText(name: string, signal?: AbortSignal): Promise<string> {
-  const response = await rawRequest(`/_temp/${name}`, undefined, signal);
-  return response.text();
+  return rawRequest(`/_temp/${name}`, undefined, signal);
 }
 
 export async function refreshStatus(signal?: AbortSignal): Promise<StatusData> {
@@ -165,45 +161,59 @@ export function readStatusFile(signal?: AbortSignal): Promise<StatusData> {
   return readTempJson<StatusData>("bifrost_status.json", signal);
 }
 
-export function readJob<TData = Record<string, unknown>>(
+export async function readJob<TData = unknown>(
   job: JobName,
   signal?: AbortSignal,
 ): Promise<JobState<TData>> {
-  return readTempJson<JobState<TData>>(`bifrost_${job}.json`, signal);
+  const state = await readTempJson<JobState<TData>>(`bifrost_${job}.json`, signal);
+  if (state?.job !== job || typeof state.running !== "boolean" ||
+      typeof state.phase !== "string" || !state.data || typeof state.data !== "object") {
+    throw new ApiError("invalid_response");
+  }
+  return state;
 }
 
-export async function pollJob<TData = Record<string, unknown>>(
+export async function pollJob<TData = unknown>(
   job: JobName,
   options: {
     intervalMs?: number;
-    maxTicks?: number;
+    fastPolls?: number;
+    slowIntervalMs?: number;
+    restoring?: boolean;
+    notifyAfterErrors?: number;
     onUpdate?: (state: JobState<TData>) => void;
+    onUnavailable?: (error: unknown) => void;
     signal?: AbortSignal;
   } = {},
 ): Promise<JobState<TData>> {
   const intervalMs = options.intervalMs ?? JOB_POLL_INTERVAL_MS;
-  const maxTicks = options.maxTicks ?? 360;
-  let missingRetries = 0;
+  const fastPolls = options.fastPolls ?? 360;
+  const slowIntervalMs = options.slowIntervalMs ?? 10_000;
+  const notifyAfterErrors = options.notifyAfterErrors ?? 4;
+  let consecutiveErrors = 0;
 
-  for (let tick = 0; tick < maxTicks; tick++) {
+  let observed = false;
+  for (let tick = 1; ; tick++) {
     if (options.signal?.aborted) {
       throw new DOMException("Aborted", "AbortError");
     }
+    let state: JobState<TData> | undefined;
     try {
-      const state = await readJob<TData>(job, options.signal);
-      missingRetries = 0;
+      state = await readJob<TData>(job, options.signal);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") throw err;
+      if (options.restoring && !observed && err instanceof ApiError && err.httpStatus === 404) throw err;
+      consecutiveErrors++;
+      if (consecutiveErrors === notifyAfterErrors) options.onUnavailable?.(err);
+    }
+    if (state) {
+      observed = true;
+      consecutiveErrors = 0;
       options.onUpdate?.(state);
       if (!state.running) return state;
-    } catch (err) {
-      if (err instanceof ApiError && err.httpStatus === 404 && missingRetries < 3) {
-        missingRetries++;
-      } else {
-        throw err;
-      }
     }
-    await sleep(intervalMs, options.signal);
+    await sleep(tick < fastPolls ? intervalMs : slowIntervalMs, options.signal);
   }
-  throw new ApiError("timeout");
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
