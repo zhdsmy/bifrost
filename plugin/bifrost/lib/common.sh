@@ -113,21 +113,24 @@ lock_acquire() {
     _la_wait=${2:-0}
     _la_i=0
     _la_nopid=0
-    [ -d "$BIFROST_RUN" ] || mkdir -p "$BIFROST_RUN"
-    while ! mkdir "$_la_dir" 2>/dev/null; do
+    _la_stale=0
+    while :; do
+        [ -d "$BIFROST_RUN" ] || mkdir -p "$BIFROST_RUN" 2>/dev/null
+        mkdir "$_la_dir" 2>/dev/null && break
         _la_pid=$(cat "$_la_dir/pid" 2>/dev/null)
         if [ -n "$_la_pid" ]; then
             _la_nopid=0
-            if ! kill -0 "$_la_pid" 2>/dev/null; then
-                rm -rf "$_la_dir"
-                continue
-            fi
+            kill -0 "$_la_pid" 2>/dev/null || _la_nopid=3
         else
             _la_nopid=$((_la_nopid + 1))
-            if [ "$_la_nopid" -ge 3 ]; then
-                rm -rf "$_la_dir"
-                continue
-            fi
+        fi
+        # The owner is gone, or wrote no pid within 3 tries. Retaking is
+        # bounded so a directory that cannot be created never spins.
+        if [ "$_la_nopid" -ge 3 ] && [ "$_la_stale" -lt 3 ]; then
+            rm -rf "$_la_dir"
+            _la_nopid=0
+            _la_stale=$((_la_stale + 1))
+            continue
         fi
         if [ "$_la_i" -ge "$_la_wait" ]; then
             fail busy

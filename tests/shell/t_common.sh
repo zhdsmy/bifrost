@@ -63,6 +63,8 @@ mkdir -p "$BIFROST_RUN/lock.stale"
 echo 999999 >"$BIFROST_RUN/lock.stale/pid"
 ok lock-stale-pid lock_acquire stale 0
 lock_release stale
+# a run directory that cannot be created ends in busy, not a busy loop
+no lock-unwritable sh -c ". '$BIFROST_LIB/env.sh'; . '$BIFROST_LIB/validate.sh'; . '$BIFROST_LIB/common.sh'; : >'$T/notadir'; BIFROST_RUN='$T/notadir/run'; lock_acquire x 1"
 ok with-lock with_lock test 0 true
 no with-lock-rc with_lock test 0 false
 ok with-lock-released lock_acquire test 0
