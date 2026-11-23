@@ -32,3 +32,4 @@ plugin/bifrost/res/bifrost-app.*
 plugin/bifrost/bin/*
 !plugin/bifrost/bin/bifrost
 core/out/
+*.key.pem
