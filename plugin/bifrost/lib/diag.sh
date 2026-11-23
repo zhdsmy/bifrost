@@ -7,11 +7,13 @@
 : "${BIFROST_PING_TIMEOUT:=5}"
 : "${BIFROST_PING_CMD_TIMEOUT:=10}"
 : "${BIFROST_LOG_TAIL_LINES:=200}"
+: "${BIFROST_REDACT_SHORT_LEN:=4}"
 : "${BIFROST_JFFS_PATH:=$BIFROST_KSROOT}"
 
 # redact [tailnet_or_suffix...]: filter stdin -> stdout applying all 7 PLAN 13.10
 # redaction classes while preserving private IPv4, 100.64.0.0/10,
-# fd7a:115c:a1e0::/48, and device names. Pure BusyBox awk (no grep -P).
+# fd7a:115c:a1e0::/48, and device names. Each argument may contain multiple
+# newline-separated hints. Pure BusyBox awk.
 redact() {
     _rd_extra=""
     for _rd_arg in "$@"; do
@@ -19,7 +21,7 @@ redact() {
         _rd_extra="${_rd_extra}${_rd_arg}
 "
     done
-    awk -v extra="$_rd_extra" '
+    awk -v extra="$_rd_extra" -v short_len="$BIFROST_REDACT_SHORT_LEN" '
     BEGIN {
         n_tn = 0
         n = split(extra, raw_tn, "\n")
@@ -27,10 +29,14 @@ redact() {
             s = raw_tn[i]
             sub(/^\.+/, "", s)
             sub(/\.+$/, "", s)
-            if (length(s) >= 3) {
-                n_tn++
-                tn[n_tn] = s
-                tn_lc[n_tn] = tolower(s)
+            if (length(s) > 0) {
+                lc = tolower(s)
+                if (!(lc in seen_tn)) {
+                    seen_tn[lc] = 1
+                    n_tn++
+                    tn[n_tn] = s
+                    tn_lc[n_tn] = lc
+                }
             }
         }
         # Sort longest first so suffixes replace before shorter substrings.
@@ -74,12 +80,11 @@ redact() {
         return out rest
     }
 
-    function redact_keys(line,    out, rest, prev, m) {
+    function redact_keys(line,    out, rest, prev) {
         out = ""
         rest = line
         while (match(rest, /(tskey|hskey)-[A-Za-z0-9._-]+/)) {
             prev = (RSTART > 1) ? substr(rest, RSTART - 1, 1) : ""
-            m = substr(rest, RSTART, RLENGTH)
             if (is_alnum(prev)) {
                 out = out substr(rest, 1, RSTART + RLENGTH - 1)
             } else {
@@ -105,7 +110,7 @@ redact() {
         return out rest
     }
 
-    function redact_literal_ci(line, pat_lc,    out, rest, lc, pos, plen, prev, nxt) {
+    function redact_literal_ci(line, pat_lc,    out, rest, lc, pos, plen, prev, nxt, before, ambiguous) {
         plen = length(pat_lc)
         out = ""
         rest = line
@@ -117,7 +122,13 @@ redact() {
             nxt = substr(rest, pos + plen, 1)
             # Token boundary: do not match in the middle of a label; "." before is
             # allowed so "<device>.<suffix>" becomes "<device>.<tailnet>".
-            if (is_alnum(prev) || prev == "-" || is_alnum(nxt) || nxt == "-") {
+            # Short single labels are also ordinary words. Match a DNS suffix,
+            # a URL host, or an explicitly named tailnet/control value.
+            before = tolower(substr(rest, 1, pos - 1))
+            ambiguous = plen <= short_len && index(pat_lc, ".") == 0 && prev != "." &&
+                before !~ /:\/\/$/ &&
+                before !~ /(^|[^a-z0-9_-])(tailnet|domain|suffix|magicdns|control|server|host)([ _-]?(name|url))?"?[ \t]*([:=][ \t]*|[ \t]+)"?$/
+            if (ambiguous || is_alnum(prev) || prev == "-" || is_alnum(nxt) || nxt == "-") {
                 out = out substr(rest, 1, pos + plen - 1)
                 rest = substr(rest, pos + plen)
             } else {
@@ -295,19 +306,26 @@ redact() {
         return 0
     }
 
-    function redact_ipv4(line,    out, rest, cand, prev, nxt) {
+    function redact_ipv4(line,    out, rest, ms, ml, cand, prev, prev2, nxt, nxt2, bad_left, bad_right) {
         out = ""
         rest = line
         while (match(rest, /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/)) {
-            cand = substr(rest, RSTART, RLENGTH)
-            prev = (RSTART > 1) ? substr(rest, RSTART - 1, 1) : ""
-            nxt = substr(rest, RSTART + RLENGTH, 1)
-            if (prev ~ /[0-9.]/ || nxt ~ /[0-9.]/ || !valid_ipv4_str(cand) || keep_ipv4(cand)) {
-                out = out substr(rest, 1, RSTART + RLENGTH - 1)
+            ms = RSTART
+            ml = RLENGTH
+            cand = substr(rest, ms, ml)
+            prev = (ms > 1) ? substr(rest, ms - 1, 1) : ""
+            prev2 = (ms > 2) ? substr(rest, ms - 2, 1) : ""
+            nxt = substr(rest, ms + ml, 1)
+            nxt2 = substr(rest, ms + ml, 2)
+            # Only block when glued to digits (e.g. 5-octet 1.2.3.4.5); allow sentence-ending ".".
+            bad_left = (prev ~ /^[0-9]$/ || (prev == "." && prev2 ~ /^[0-9]$/))
+            bad_right = (nxt ~ /^[0-9]$/ || nxt2 ~ /^\.[0-9]/)
+            if (bad_left || bad_right || !valid_ipv4_str(cand) || keep_ipv4(cand)) {
+                out = out substr(rest, 1, ms + ml - 1)
             } else {
-                out = out substr(rest, 1, RSTART - 1) "<ipv4>"
+                out = out substr(rest, 1, ms - 1) "<ipv4>"
             }
-            rest = substr(rest, RSTART + RLENGTH)
+            rest = substr(rest, ms + ml)
         }
         return out rest
     }
@@ -336,6 +354,7 @@ act_netcheck() {
 }
 
 # job_netcheck: run "tailscale netcheck --format=json" and format report (contract 6.2).
+# Runs outside the state lock (contract section 2); purely read-only on Bifrost state.
 job_netcheck() {
     job_phase netcheck running 10 || return 1
     [ -d "$BIFROST_RUN" ] || mkdir -p "$BIFROST_RUN"
@@ -525,6 +544,66 @@ _diag_jffs_free_kb() {
     fi
 }
 
+# _diag_url_host <url>: print host of a non-official control server URL (else empty).
+_diag_url_host() {
+    _duh_u=${1:-}
+    [ -n "$_duh_u" ] || return 0
+    _duh_h=${_duh_u#*://}
+    _duh_h=${_duh_h%%/*}
+    _duh_h=${_duh_h%%:*}
+    case "$_duh_h" in
+        "" | controlplane.tailscale.com | login.tailscale.com) return 0 ;;
+    esac
+    printf '%s\n' "$_duh_h"
+}
+
+# _diag_hints_from_status <status_json_path>: print tailnet/suffix/control host hints.
+_diag_hints_from_status() {
+    [ -r "$1" ] || return 0
+    jq -r '
+        (.self.magicdns_suffix // empty),
+        (.self.tailnet // empty),
+        (.self.control // empty)
+    ' "$1" 2>/dev/null | while IFS= read -r _dhs_v; do
+        [ -n "$_dhs_v" ] || continue
+        case "$_dhs_v" in
+            http://* | https://*) _diag_url_host "$_dhs_v" ;;
+            *) printf '%s\n' "$_dhs_v" ;;
+        esac
+    done
+}
+
+# _diag_collect_redact_hints <pre_hints>: gather custom tailnet/MagicDNS/server
+# domains from every offline and online source so stopping the daemon never
+# reduces redaction strength.
+_diag_collect_redact_hints() {
+    {
+        [ -n "${1:-}" ] && printf '%s\n' "$1"
+        _diag_hints_from_status "$BIFROST_UPLOAD/bifrost_status.json"
+        [ -r "$BIFROST_RUN/redact_hints" ] && cat "$BIFROST_RUN/redact_hints"
+        # Existing dnsmasq MagicDNS forwarding rule: server=/<suffix>/100.100.100.100
+        if [ -r "$BIFROST_DNSMASQ_CONF" ]; then
+            sed -n 's|^server=/\([^/][^/]*\)/100\.100\.100\.100$|\1|p' "$BIFROST_DNSMASQ_CONF" 2>/dev/null
+        fi
+        # Custom control server recorded by P2
+        _diag_url_host "$(daemon_control_server)"
+        # Tailscale state file: base64-encoded _profiles map (NetworkProfile + ControlURL)
+        if [ -r "$BIFROST_STATE/tailscaled.state" ]; then
+            jq -r '
+                ._profiles | strings | @base64d | fromjson | .[] |
+                (.NetworkProfile.MagicDNSName, .NetworkProfile.DomainName,
+                 .NetworkProfile.DisplayName, .ControlURL) | strings
+            ' "$BIFROST_STATE/tailscaled.state" 2>/dev/null |
+                while IFS= read -r _dcr_v; do
+                    case "$_dcr_v" in
+                        http://* | https://*) _diag_url_host "$_dcr_v" ;;
+                        *) printf '%s\n' "$_dcr_v" ;;
+                    esac
+                done
+        fi
+    } | awk 'length($0) > 0 && !seen[$0]++'
+}
+
 # act_logs: write $BIFROST_UPLOAD/bifrost_diag.json and $BIFROST_UPLOAD/bifrost_logs.txt (contract 6.3).
 act_logs() {
     [ -d "$BIFROST_UPLOAD" ] || mkdir -p "$BIFROST_UPLOAD" 2>/dev/null || {
@@ -532,15 +611,18 @@ act_logs() {
         return 1
     }
     _al_now=$(now)
-
-    # Refresh status file first so summary reflects live state/settings/prefs.
-    status_refresh >/dev/null 2>&1 || true
     _al_st_json="$BIFROST_UPLOAD/bifrost_status.json"
+
+    # Capture any prior status hints BEFORE status_refresh overwrites bifrost_status.json.
+    _al_pre_hints=$(_diag_hints_from_status "$_al_st_json")
+
+    # Refresh status file so summary reflects live state/settings/prefs.
+    status_refresh >/dev/null 2>&1 || true
 
     # Environment checks (contract 6.3, PLAN 13.4)
     if [ -e "$BIFROST_TUN_DEV" ]; then _al_tun=true; else _al_tun=false; fi
     if daemon_running; then
-        if fw_check; then _al_fw=true; else _al_fw=false; fi
+        if fw_complete; then _al_fw=true; else _al_fw=false; fi
     else
         _al_fw=null
     fi
@@ -571,42 +653,52 @@ act_logs() {
             dnsmasq_conf_dir: $conf_dir
         }' | json_write "$BIFROST_UPLOAD/bifrost_diag.json" || return 1
 
-    # Gather tailnet names / MagicDNS suffix and BackendState for summary & redaction.
-    _al_tn=""
-    _al_msuf=""
+    # Gather BackendState (--peers=false) when daemon runs, and offline+online redaction hints.
     _al_bstate=""
-    if [ -r "$_al_st_json" ]; then
-        _al_tn=$(jq -r '.self.tailnet // ""' "$_al_st_json" 2>/dev/null)
-        _al_msuf=$(jq -r '.self.magicdns_suffix // ""' "$_al_st_json" 2>/dev/null)
-    fi
     if daemon_running; then
-        _al_bstate=$(ts_cli status --json 2>/dev/null | jq -r '.BackendState // ""' 2>/dev/null)
+        _al_bstate=$(ts_cli status --json --peers=false 2>/dev/null | jq -r '.BackendState // ""' 2>/dev/null)
     fi
+    _al_hints=$(_diag_collect_redact_hints "$_al_pre_hints")
 
     _al_pver=""
     [ -r "$BIFROST_VERSION_FILE" ] && _al_pver=$(head -n 1 "$BIFROST_VERSION_FILE" | tr -d '\r\n')
     _al_cver=""
     _al_carch=""
-    if [ -r "$BIFROST_MANIFEST" ]; then
-        _al_cver=$(jq -r '.tailscale // ""' "$BIFROST_MANIFEST" 2>/dev/null)
-        _al_carch=$(jq -r 'if (.arch // "") != "" then .arch elif ((.assets // {}) | keys | length) == 1 then (.assets | keys)[0] else "" end' "$BIFROST_MANIFEST" 2>/dev/null)
-    fi
     _al_state=""
-    _al_prefs_adv=""
-    _al_prefs_exit=""
-    _al_prefs_acc=""
-    _al_prefs_host=""
+    _al_prefs_adv="unavailable"
+    _al_prefs_exit="unavailable"
+    _al_prefs_acc="unavailable"
+    _al_prefs_host="unavailable"
     if [ -r "$_al_st_json" ]; then
-        _al_state=$(jq -r '.state // ""' "$_al_st_json" 2>/dev/null)
-        _al_prefs_adv=$(jq -r 'if .prefs then (.prefs.advertise_routes | join(",")) else "unavailable" end' "$_al_st_json" 2>/dev/null)
-        _al_prefs_exit=$(jq -r 'if .prefs then (.prefs.advertise_exit_node | tostring) else "unavailable" end' "$_al_st_json" 2>/dev/null)
-        _al_prefs_acc=$(jq -r 'if .prefs then (.prefs.accept_routes | tostring) else "unavailable" end' "$_al_st_json" 2>/dev/null)
-        _al_prefs_host=$(jq -r 'if .prefs then .prefs.hostname else "unavailable" end' "$_al_st_json" 2>/dev/null)
+        _al_sum=$(jq -r '
+            (.core.tailscale // ""),
+            (.core.arch // ""),
+            (.state // ""),
+            (if .prefs then (.prefs.advertise_routes | join(",")) else "unavailable" end),
+            (if .prefs then (.prefs.advertise_exit_node | tostring) else "unavailable" end),
+            (if .prefs then (.prefs.accept_routes | tostring) else "unavailable" end),
+            (if .prefs then .prefs.hostname else "unavailable" end)
+        ' "$_al_st_json" 2>/dev/null)
+        if [ -n "$_al_sum" ]; then
+            _al_cver=$(printf '%s\n' "$_al_sum" | sed -n '1p')
+            _al_carch=$(printf '%s\n' "$_al_sum" | sed -n '2p')
+            _al_state=$(printf '%s\n' "$_al_sum" | sed -n '3p')
+            _al_prefs_adv=$(printf '%s\n' "$_al_sum" | sed -n '4p')
+            _al_prefs_exit=$(printf '%s\n' "$_al_sum" | sed -n '5p')
+            _al_prefs_acc=$(printf '%s\n' "$_al_sum" | sed -n '6p')
+            _al_prefs_host=$(printf '%s\n' "$_al_sum" | sed -n '7p')
+        fi
     fi
+    [ -n "$_al_carch" ] || _al_carch=$(jq -r "$(status_core_arch_jq)" "$BIFROST_MANIFEST" 2>/dev/null) || _al_carch=""
 
     if fw_snat_effective; then _al_snat_eff=true; else _al_snat_eff=false; fi
 
-    {
+    # Keep the redactor as the last stage of the producing pipeline. Publish
+    # only after its exit status is known; a partial export is never visible.
+    _al_tmp="$BIFROST_RUN/diag.redacted.$$"
+    if (
+        umask 077
+        exec >"$_al_tmp" || exit 1
         printf 'Redacted: public IPv4 (<ipv4>), non-tailnet IPv6 (<ipv6>), emails (<email>), tailnet/MagicDNS (<tailnet>), auth URLs (<auth-url>), auth keys (<key>), MAC addresses (<mac>).\n'
         {
             printf '== summary ==\n'
@@ -648,10 +740,11 @@ act_logs() {
             else
                 printf '(empty)\n'
             fi
-        } | redact "$_al_msuf" "$_al_tn"
-    } | atomic_write "$BIFROST_UPLOAD/bifrost_logs.txt" 644 || {
-        fail internal
-        return 1
-    }
-    return 0
+        } | redact "$_al_hints"
+    ) && atomic_write "$BIFROST_UPLOAD/bifrost_logs.txt" 644 <"$_al_tmp"; then
+        rm -f "$_al_tmp"
+        return 0
+    fi
+    rm -f "$_al_tmp"
+    fail internal
 }
