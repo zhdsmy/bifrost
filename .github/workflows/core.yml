@@ -1,0 +1,350 @@
+name: Core Release
+
+on:
+  push:
+    tags:
+      - 'core-*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: core-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate recipe and tag
+    runs-on: ubuntu-latest
+    outputs:
+      go_version: ${{ steps.meta.outputs.go_version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      serial: ${{ steps.meta.outputs.serial }}
+      tailscale_version: ${{ steps.meta.outputs.tailscale_version }}
+      tailscale_commit: ${{ steps.meta.outputs.tailscale_commit }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify tag matches core/recipe.json and compute serial
+        id: meta
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          ts_ver=$(jq -r '.tailscale.version' core/recipe.json)
+          ts_commit=$(jq -r '.tailscale.commit' core/recipe.json)
+          go_ver=$(jq -r '.go' core/recipe.json)
+          rev=$(jq -r '.revision' core/recipe.json)
+          want_tag="core-${ts_ver}-${rev}"
+
+          if [ "$REF_TAG" != "$want_tag" ]; then
+            echo "Tag mismatch: pushed '$REF_TAG', recipe expects '$want_tag'" >&2
+            exit 1
+          fi
+
+          if gh release view "$want_tag" >/dev/null 2>&1; then
+            echo "Release '$want_tag' already exists; refusing to overwrite" >&2
+            exit 1
+          fi
+
+          prev_serial=0
+          if gh release download channel-stable -p core.json -O /tmp/prev-core.json 2>/dev/null; then
+            prev_serial=$(jq -r '.serial' /tmp/prev-core.json)
+            case "$prev_serial" in
+              '' | *[!0-9]*)
+                echo "Invalid serial in channel-stable/core.json: $prev_serial" >&2
+                exit 1
+                ;;
+            esac
+          fi
+          next_serial=$((prev_serial + 1))
+
+          {
+            echo "go_version=$go_ver"
+            echo "tag=$want_tag"
+            echo "serial=$next_serial"
+            echo "tailscale_version=$ts_ver"
+            echo "tailscale_commit=$ts_commit"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.meta.outputs.go_version }}
+          cache: false
+
+      - name: Validate recipe and featuretags
+        run: core/build.sh --check-recipe
+
+  build-a:
+    name: Build core (runner A)
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ needs.validate.outputs.go_version }}
+          cache: false
+
+      - name: Build release cores and manifest
+        run: |
+          set -eu
+          core/build.sh --serial "${{ needs.validate.outputs.serial }}"
+          (
+            cd core/out
+            LC_ALL=C sha256sum bifrost-core-*.gz core.json LICENSE.tailscale >SHA256SUMS
+          )
+
+      - name: Upload build A artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-build-a
+          if-no-files-found: error
+          path: |
+            core/out/bifrost-core-*.gz
+            core/out/core.json
+            core/out/LICENSE.tailscale
+            core/out/SHA256SUMS
+
+  build-b:
+    name: Build core (runner B)
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ needs.validate.outputs.go_version }}
+          cache: false
+
+      - name: Build release cores and manifest
+        run: |
+          set -eu
+          core/build.sh --serial "${{ needs.validate.outputs.serial }}"
+          (
+            cd core/out
+            LC_ALL=C sha256sum bifrost-core-*.gz core.json LICENSE.tailscale >SHA256SUMS
+          )
+
+      - name: Upload build B artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-build-b
+          if-no-files-found: error
+          path: |
+            core/out/bifrost-core-*.gz
+            core/out/core.json
+            core/out/LICENSE.tailscale
+            core/out/SHA256SUMS
+
+  smoke:
+    name: Smoke test linux/amd64 core
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ needs.validate.outputs.go_version }}
+          cache: false
+
+      - name: Build test binary
+        run: core/build.sh --test-arch amd64
+
+      - name: Check CLI version, omitted clientupdate, status --json and debug prefs
+        env:
+          WANT_VERSION: ${{ needs.validate.outputs.tailscale_version }}
+          WANT_COMMIT: ${{ needs.validate.outputs.tailscale_commit }}
+        run: |
+          set -eu
+          bin=core/out/test/bifrostd-linux-amd64
+          tmp=$(mktemp -d)
+          dpid=""
+          cleanup() {
+            if [ -n "$dpid" ]; then
+              kill -TERM "$dpid" 2>/dev/null || true
+              wait "$dpid" 2>/dev/null || true
+            fi
+            rm -rf "$tmp"
+          }
+          trap cleanup EXIT
+
+          daemon_ver=$("$bin" --version)
+          cli_ver=$(TS_BE_CLI=1 "$bin" version)
+          [ "$(printf '%s\n' "$daemon_ver" | head -n 1)" = "$WANT_VERSION" ]
+          [ "$(printf '%s\n' "$cli_ver" | head -n 1)" = "$WANT_VERSION" ]
+          printf '%s\n' "$daemon_ver" | grep -Fq "tailscale commit: $WANT_COMMIT"
+
+          if TS_BE_CLI=1 "$bin" update --help >/dev/null 2>&1; then
+            echo "smoke: clientupdate subcommand must be omitted" >&2
+            exit 1
+          fi
+
+          mkdir -p "$tmp/state"
+          "$bin" \
+            --tun=userspace-networking \
+            --statedir="$tmp/state" \
+            --socket="$tmp/ts.sock" \
+            --no-logs-no-support >"$tmp/daemon.log" 2>&1 &
+          dpid=$!
+
+          i=0
+          while [ ! -S "$tmp/ts.sock" ] && [ "$i" -lt 30 ]; do
+            sleep 1
+            i=$((i + 1))
+          done
+          [ -S "$tmp/ts.sock" ] || { cat "$tmp/daemon.log" >&2; exit 1; }
+
+          status_json=$(TS_BE_CLI=1 "$bin" --socket="$tmp/ts.sock" status --json)
+          printf '%s\n' "$status_json" | jq -e '
+            has("BackendState") and has("AuthURL") and has("Health") and
+            has("MagicDNSSuffix") and has("CurrentTailnet") and has("Self") and
+            has("Peer") and has("TailscaleIPs") and has("Version") and
+            (.Self | type == "object" and
+              has("HostName") and has("DNSName") and has("OS") and
+              has("Online") and has("Active") and has("CurAddr") and
+              has("Relay") and has("PeerRelay") and has("LastHandshake") and
+              has("LastSeen") and has("RxBytes") and has("TxBytes") and
+              has("ExitNodeOption") and has("TailscaleIPs") and
+              has("ID") and has("PublicKey"))
+          ' >/dev/null
+
+          prefs_json=$(TS_BE_CLI=1 "$bin" --socket="$tmp/ts.sock" debug prefs)
+          printf '%s\n' "$prefs_json" | jq -e '
+            has("ControlURL") and has("RouteAll") and has("CorpDNS") and
+            has("AdvertiseRoutes") and has("Hostname") and has("NoSNAT") and
+            has("NetfilterMode") and has("ShieldsUp")
+          ' >/dev/null
+
+          echo "smoke test OK: version=$WANT_VERSION state=$(printf '%s\n' "$status_json" | jq -r .BackendState)"
+
+  release:
+    name: Verify reproducibility, sign and publish
+    needs: [validate, build-a, build-b, smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download build A
+        uses: actions/download-artifact@v4
+        with:
+          name: core-build-a
+          path: dist/a
+
+      - name: Download build B
+        uses: actions/download-artifact@v4
+        with:
+          name: core-build-b
+          path: dist/b
+
+      - name: Compare SHA256 and bytes of independent builds
+        run: |
+          set -eu
+          diff -u dist/a/SHA256SUMS dist/b/SHA256SUMS
+          diff -u dist/a/core.json dist/b/core.json
+          (cd dist/a && sha256sum -c SHA256SUMS)
+          (cd dist/b && sha256sum -c SHA256SUMS)
+          for f in dist/a/bifrost-core-*.gz dist/a/LICENSE.tailscale; do
+            base=$(basename "$f")
+            cmp "$f" "dist/b/$base"
+          done
+          mkdir -p dist/release
+          cp dist/a/bifrost-core-*.gz dist/a/core.json dist/a/LICENSE.tailscale dist/a/SHA256SUMS dist/release/
+
+      - name: Sign core.json and SHA256SUMS
+        env:
+          BIFROST_SIGNING_KEY: ${{ secrets.BIFROST_SIGNING_KEY }}
+        run: |
+          set -eu
+          if [ -z "$BIFROST_SIGNING_KEY" ]; then
+            echo "Missing required secret: BIFROST_SIGNING_KEY" >&2
+            exit 1
+          fi
+          key_tmp=$(mktemp)
+          trap 'rm -f "$key_tmp"' EXIT
+          (
+            umask 077
+            printf '%s\n' "$BIFROST_SIGNING_KEY" >"$key_tmp"
+          )
+          tools/sign.sh "$key_tmp" dist/release/core.json dist/release/SHA256SUMS
+
+          # Verify against bundled public keys when present in plugin/bifrost/keys/.
+          found_pub=0
+          verified=0
+          for pub in plugin/bifrost/keys/*.pub.pem; do
+            [ -r "$pub" ] || continue
+            found_pub=1
+            if openssl dgst -sha256 -verify "$pub" -signature dist/release/core.json.sig dist/release/core.json >/dev/null 2>&1 &&
+               openssl dgst -sha256 -verify "$pub" -signature dist/release/SHA256SUMS.sig dist/release/SHA256SUMS >/dev/null 2>&1; then
+              verified=1
+              break
+            fi
+          done
+          if [ "$found_pub" = 1 ] && [ "$verified" != 1 ]; then
+            echo "Signature failed verification against plugin/bifrost/keys/*.pub.pem" >&2
+            exit 1
+          fi
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/release/bifrost-core-*.gz
+            dist/release/core.json
+            dist/release/core.json.sig
+            dist/release/SHA256SUMS
+            dist/release/SHA256SUMS.sig
+
+      - name: Publish tag release and update channel-stable
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.validate.outputs.tag }}
+          SERIAL: ${{ needs.validate.outputs.serial }}
+          TS_VER: ${{ needs.validate.outputs.tailscale_version }}
+          TS_COMMIT: ${{ needs.validate.outputs.tailscale_commit }}
+          GO_VER: ${{ needs.validate.outputs.go_version }}
+        run: |
+          set -eu
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release '$TAG' already exists; refusing to overwrite" >&2
+            exit 1
+          fi
+
+          gh release create "$TAG" \
+            dist/release/bifrost-core-*.gz \
+            dist/release/core.json \
+            dist/release/core.json.sig \
+            dist/release/SHA256SUMS \
+            dist/release/SHA256SUMS.sig \
+            dist/release/LICENSE.tailscale \
+            --title "Bifrost Core ${TAG}" \
+            --notes "Tailscale ${TS_VER} (\`${TS_COMMIT}\`), Go ${GO_VER}, manifest serial ${SERIAL}."
+
+          if ! gh release view channel-stable >/dev/null 2>&1; then
+            gh release create channel-stable \
+              --target "$GITHUB_SHA" \
+              --title "Stable Core Channel" \
+              --notes "Latest verified stable Bifrost core manifest."
+          fi
+
+          gh release upload channel-stable \
+            dist/release/core.json \
+            dist/release/core.json.sig \
+            --clobber
