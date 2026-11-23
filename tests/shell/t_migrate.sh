@@ -32,6 +32,14 @@ seed_orig_state() {
     printf 'should-not-copy\n' >"$BIFROST_ORIG_STATE/files/a.txt"
 }
 
+wait_original_phase() {
+    _wo_until=$(($(now) + 30))
+    until [ "$(jq -r .phase "$jf" 2>/dev/null)" = wait_original ]; do
+        [ "$(now)" -lt "$_wo_until" ] || return 1
+        sleep 1
+    done
+}
+
 seed_orig_cli() {
     cat >"$BIFROST_KSBIN/tailscale" <<EOF
 #!/bin/sh
@@ -109,15 +117,9 @@ pidof_set tailscaled 7777
 echo "OLD_PRIVATE_STATE" >"$BIFROST_STATE/old.state"
 BIFROST_MIGRATE_WAIT_TIMEOUT=60
 job_begin migrate
-job_run migrate &
+(export BIFROST_MIGRATE_WAIT_TIMEOUT BIFROST_MIGRATE_WAIT_POLL; t_call local job migrate) &
 mig_bg_pid=$!
-i=0
-while [ "$i" -lt 20 ]; do
-    [ "$(jq -r .phase "$jf" 2>/dev/null)" = wait_original ] && break
-    sleep 1
-    i=$((i + 1))
-done
-eq mig-wait-phase wait_original "$(jq -r .phase "$jf")"
+ok mig-wait-phase wait_original_phase
 no mig-wait-no-lock [ -d "$BIFROST_RUN/lock.state" ]
 ok mig-wait-set-unblocked act_set mirror "https://mirror.example.com/"
 rm -f "$MOCK_STATE/pidof/tailscaled"
@@ -189,19 +191,11 @@ pidof_set tailscaled 7777
 echo "OLD_BIFROST" >"$BIFROST_STATE/old.txt"
 ts_out status '{"BackendState":"Running","Self":{"ID":"nDIFFERENT","PublicKey":"nodekey:9999"}}'
 BIFROST_MIGRATE_WAIT_TIMEOUT=60
-(
-    i=0
-    while [ "$i" -lt 30 ]; do
-        i=$((i + 1))
-        [ "$(jq -r .phase "$jf" 2>/dev/null)" = wait_original ] && break
-        sleep 1
-    done
-    rm -f "$MOCK_STATE/pidof/tailscaled"
-) &
+(wait_original_phase && rm -f "$MOCK_STATE/pidof/tailscaled") &
 wait_helper=$!
 ok mig-verify-fail-start act_migrate
 bg_drain
-wait "$wait_helper" 2>/dev/null || true
+ok mig-verify-saw-wait-original wait "$wait_helper"
 eq mig-verify-fail-job "false migrate_verify_failed true" \
     "$(jq -r '"\(.ok) \(.code) \(.data.rolled_back)"' "$jf")"
 no mig-verify-fail-stopped daemon_running

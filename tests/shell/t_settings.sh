@@ -134,6 +134,7 @@ eq set-exit-bad-no-cli "" "$(ts_log)"
 # advertise_exit_node fw_apply failure fails with fw_failed and rolls back pref
 ts_out debug-prefs '{"CorpDNS":false,"NetfilterMode":0,"NoSNAT":false,"ShieldsUp":false,"AdvertiseRoutes":null}'
 : >"$MOCK_STATE/ts.log"
+iptables -t filter -D BIFROST_INPUT -p udp --dport 41641 -j ACCEPT
 echo 4 >"$MOCK_STATE/iptables.fail_count"
 printf '%s\n' '-A BIFROST_INPUT' >"$MOCK_STATE/iptables.fail_match"
 no set-exit-fw-fail act_set advertise_exit_node 1

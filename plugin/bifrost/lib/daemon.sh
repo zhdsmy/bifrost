@@ -481,6 +481,12 @@ daemon_restart() {
 
 # Init.d hooks (called under state lock by bifrost_config.sh).
 hook_start() {
+    # Restore the core first. The current enable setting controls startup
+    # even if the daemon was running when the update was interrupted.
+    if has_cmd core_recover && ! core_recover stopped; then
+        log daemon "core recovery failed: ${BIFROST_ERR:-internal}"
+        BIFROST_ERR=""
+    fi
     [ "$(cfg bifrost_enable)" = 1 ] || return 0
     if daemon_running; then
         daemon_watchdog_register

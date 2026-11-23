@@ -165,7 +165,8 @@ no wd-clears-fw-err [ -f "$BIFROST_DAEMON_ERR" ]
 eq wd-status-recovered running "$(jq -r .state "$BIFROST_UPLOAD/bifrost_status.json")"
 # A partial apply can leave every jump intact and a single rule missing.
 iptables -t filter -D BIFROST_INPUT -p udp --dport 41641 -j ACCEPT
-ok wd-partial-jumps-still-valid fw_check
+ok wd-partial-jump-intact iptables -t filter -C INPUT -j BIFROST_INPUT
+no wd-partial-rule-detected fw_check
 daemon_err_set fw_failed
 ok wd-partial-recovered watchdog_run
 ok wd-partial-rule-restored iptables -t filter -C BIFROST_INPUT -p udp --dport 41641 -j ACCEPT
