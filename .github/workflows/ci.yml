@@ -18,6 +18,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          package-manager-cache: false
       - name: Check shell scripts (shellcheck, BusyBox 1.25 sh -n, forbidden patterns)
         run: tools/check-sh.sh
       - name: Check for private details
@@ -34,6 +40,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - name: Read Go version from core/recipe.json
         id: go-ver
         run: |
@@ -47,27 +55,26 @@ jobs:
         run: core/build.sh --check-recipe
 
   web:
-    name: Web typecheck, tests & build
+    name: Web typecheck, build & tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Install dependencies
+      - name: Install dependencies (no lifecycle scripts)
         working-directory: web
-        run: npm ci --include=dev --no-audit --no-fund
+        run: npm ci --include=dev --no-audit --no-fund --ignore-scripts
       - name: Install Chromium for Playwright tests
         working-directory: web
         run: npx playwright-core install --with-deps chromium
       - name: Typecheck
         working-directory: web
         run: npm run check
-      - name: Build and verify bundle size budgets
-        working-directory: web
-        run: npm run build
-      - name: Run unit and page tests
+      - name: Build (via pretest) and run unit + page tests
         working-directory: web
         run: npm test
 
@@ -77,6 +84,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - name: Read Go version from core/recipe.json
         id: go-ver
         run: |
@@ -86,5 +95,9 @@ jobs:
         with:
           go-version: ${{ steps.go-ver.outputs.version }}
           cache: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          package-manager-cache: false
       - name: Run container integration suite
         run: tests/container/run.sh --full

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build a reproducible KoolCenter / Koolshare offline package tarball for Bifrost.
-# Follows docs/PLAN.md sections 12.2, 12.3, 16.1, 16.2 and docs/dev/contract.md sections 8 & 10.
+# Follows docs/PLAN.md sections 2.4, 12.2, 12.3, 16.1, 16.2 and docs/dev/contract.md sections 7, 8 & 10.
 # Package layout and build flow adapted from po0fw asus-merlin (MIT), commit 0d9532d.
 #
 # Usage:
@@ -9,8 +9,18 @@
 #                      [--keys-dir <dir>] [--release-base <url>]
 set -eu
 
+CALLER_PWD=$(pwd)
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+
+# Resolve relative paths against the caller's working directory (not REPO_ROOT).
+resolve_path() {
+    case "$1" in
+        /*) printf '%s\n' "$1" ;;
+        *) printf '%s/%s\n' "$CALLER_PWD" "$1" ;;
+    esac
+}
+
 cd "$REPO_ROOT"
 
 # shellcheck source=plugin/bifrost/lib/env.sh
@@ -19,10 +29,8 @@ cd "$REPO_ROOT"
 . "$REPO_ROOT/plugin/bifrost/lib/validate.sh"
 # shellcheck source=plugin/bifrost/lib/common.sh
 . "$REPO_ROOT/plugin/bifrost/lib/common.sh"
-if [ -f "$REPO_ROOT/plugin/bifrost/lib/update.sh" ]; then
-    # shellcheck disable=SC1091
-    . "$REPO_ROOT/plugin/bifrost/lib/update.sh"
-fi
+# shellcheck source=plugin/bifrost/lib/update.sh
+. "$REPO_ROOT/plugin/bifrost/lib/update.sh"
 
 usage() {
     cat <<'EOF'
@@ -32,7 +40,7 @@ Options:
   --core-dir <dir>         Local core build output directory (verifies hashes only)
   --core-release <tag>     Download core release <tag>, verify signature and hashes
   --arch <arm|arm64>       Core architecture to bundle (default: arm)
-  --out <dir>              Output directory (default: dist)
+  --out <dir>              Output directory (default: ./dist)
   --web-dist <dir>         Use pre-built web dist directory instead of running npm build
   --keys-dir <dir>         Public keys directory for signature verification (default: plugin/bifrost/keys)
   --release-base <url>     Override GitHub release download base URL
@@ -44,7 +52,7 @@ EOF
 core_dir=""
 core_release=""
 arch="arm"
-out_dir="dist"
+out_dir="$CALLER_PWD/dist"
 web_dist=""
 keys_dir="$REPO_ROOT/plugin/bifrost/keys"
 release_base="$BIFROST_RELEASE_BASE"
@@ -54,7 +62,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --core-dir)
             [ $# -ge 2 ] || { echo "missing value for --core-dir" >&2; exit 2; }
-            core_dir=$2
+            core_dir=$(resolve_path "$2")
             shift 2
             ;;
         --core-release)
@@ -69,17 +77,17 @@ while [ $# -gt 0 ]; do
             ;;
         --out)
             [ $# -ge 2 ] || { echo "missing value for --out" >&2; exit 2; }
-            out_dir=$2
+            out_dir=$(resolve_path "$2")
             shift 2
             ;;
         --web-dist)
             [ $# -ge 2 ] || { echo "missing value for --web-dist" >&2; exit 2; }
-            web_dist=$2
+            web_dist=$(resolve_path "$2")
             shift 2
             ;;
         --keys-dir)
             [ $# -ge 2 ] || { echo "missing value for --keys-dir" >&2; exit 2; }
-            keys_dir=$2
+            keys_dir=$(resolve_path "$2")
             shift 2
             ;;
         --release-base)
@@ -132,23 +140,25 @@ if ! valid_uint "$epoch"; then
     exit 2
 fi
 
-# Fallback manifest_verify when P1's plugin/bifrost/lib/update.sh is not present yet.
-if ! has_cmd manifest_verify; then
-    manifest_verify() {
-        _mv_json=$1
-        _mv_sig=$2
-        [ -s "$_mv_json" ] && [ -s "$_mv_sig" ] || return 1
-        _mv_ok=0
-        for _mv_pub in "$BIFROST_KEYS"/*.pub.pem; do
-            [ -f "$_mv_pub" ] || continue
-            if openssl dgst -sha256 -verify "$_mv_pub" -signature "$_mv_sig" "$_mv_json" >/dev/null 2>&1; then
-                _mv_ok=1
-                break
-            fi
-        done
-        [ "$_mv_ok" = 1 ]
-    }
+# Check public keys presence (Item 13): fatal for --core-release, warning for --core-dir.
+key_count=0
+if [ -d "$keys_dir" ]; then
+    for k in "$keys_dir"/*.pub.pem; do
+        [ -f "$k" ] || continue
+        key_count=$((key_count + 1))
+    done
 fi
+if [ "$key_count" -eq 0 ]; then
+    if [ -n "$core_release" ]; then
+        echo "error: no *.pub.pem public keys found in $keys_dir (required for --core-release)" >&2
+        exit 1
+    else
+        echo "warning: no *.pub.pem public keys found in $keys_dir; package cannot verify online core updates" >&2
+    fi
+fi
+
+version=$(tr -d ' \t\r\n' <"$REPO_ROOT/plugin/bifrost/version")
+[ -n "$version" ] || { echo "error: plugin/bifrost/version is empty" >&2; exit 1; }
 
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
@@ -160,10 +170,6 @@ mkdir -p "$core_work"
 if [ -n "$core_dir" ]; then
     [ -f "$core_dir/core.json" ] || { echo "error: $core_dir/core.json not found" >&2; exit 1; }
     cp "$core_dir/core.json" "$core_work/core.json"
-    asset_file=$(jq -r --arg a "$arch" '.assets[$a].file // empty' "$core_work/core.json")
-    [ -n "$asset_file" ] || { echo "error: manifest has no asset for arch '$arch'" >&2; exit 3; }
-    [ -f "$core_dir/$asset_file" ] || { echo "error: $core_dir/$asset_file not found" >&2; exit 1; }
-    cp "$core_dir/$asset_file" "$core_work/bifrostd.gz"
 else
     type curl >/dev/null 2>&1 || { echo "error: curl is required for --core-release" >&2; exit 1; }
     base_url="${release_base%/}/${core_release}"
@@ -179,27 +185,38 @@ else
         exit 1
     fi
 
-    asset_file=$(jq -r --arg a "$arch" '.assets[$a].file // empty' "$core_work/core.json")
-    [ -n "$asset_file" ] || { echo "error: release ${core_release} has no asset for arch '$arch'" >&2; exit 3; }
+    if [ "$(jq -r '.tag' "$core_work/core.json")" != "$core_release" ]; then
+        echo "error: signed manifest tag does not match requested release" >&2
+        exit 1
+    fi
+fi
+
+# Use the same schema, asset filename and minimum-version checks as the updater.
+BIFROST_VERSION_FILE="$REPO_ROOT/plugin/bifrost/version"
+if ! jq -e '.schema == 1 and (.assets | type == "object")' "$core_work/core.json" >/dev/null; then
+    echo "error: invalid core manifest" >&2
+    exit 1
+fi
+if ! jq -e --arg arch "$arch" '.assets | has($arch)' "$core_work/core.json" >/dev/null; then
+    echo "error: manifest has no asset for arch '$arch'" >&2
+    exit 3
+fi
+if ! _upd_parse_manifest "$core_work/core.json" "$arch" any 1; then
+    echo "error: invalid core manifest (${BIFROST_ERR:-bad_manifest}, min_plugin=$(jq -r '.min_plugin' "$core_work/core.json"))" >&2
+    exit 1
+fi
+asset_file=$_UM_FILE
+ts_ver=$_UM_TS
+want_size=$_UM_SIZE
+want_sha=$_UM_SHA
+want_raw_size=$_UM_RAW_SIZE
+want_raw_sha=$_UM_RAW_SHA
+if [ -n "$core_dir" ]; then
+    cp "$core_dir/$asset_file" "$core_work/bifrostd.gz"
+else
     echo "Downloading core asset ${asset_file}..."
     curl -fsSL --connect-timeout 15 --max-time 300 --retry 2 \
         "${base_url}/${asset_file}" -o "$core_work/bifrostd.gz"
-fi
-
-# Verify manifest schema, .gz size/sha256, and unpacked raw_size/raw_sha256.
-schema=$(jq -r '.schema // empty' "$core_work/core.json")
-serial=$(jq -r '.serial // empty' "$core_work/core.json")
-ts_ver=$(jq -r '.tailscale // empty' "$core_work/core.json")
-want_size=$(jq -r --arg a "$arch" '.assets[$a].size // empty' "$core_work/core.json")
-want_sha=$(jq -r --arg a "$arch" '.assets[$a].sha256 // empty' "$core_work/core.json")
-want_raw_size=$(jq -r --arg a "$arch" '.assets[$a].raw_size // empty' "$core_work/core.json")
-want_raw_sha=$(jq -r --arg a "$arch" '.assets[$a].raw_sha256 // empty' "$core_work/core.json")
-
-if [ "$schema" != 1 ] || ! valid_uint "$serial" || [ -z "$ts_ver" ] ||
-   ! valid_uint "$want_size" || [ -z "$want_sha" ] ||
-   ! valid_uint "$want_raw_size" || [ -z "$want_raw_sha" ]; then
-    echo "error: invalid core manifest fields" >&2
-    exit 1
 fi
 
 got_size=$(file_size "$core_work/bifrostd.gz")
@@ -209,7 +226,10 @@ if [ "$got_size" != "$want_size" ] || [ "$got_sha" != "$want_sha" ]; then
     exit 1
 fi
 
-gunzip -c "$core_work/bifrostd.gz" >"$core_work/bifrostd.raw"
+if ! gunzip -c "$core_work/bifrostd.gz" >"$core_work/bifrostd.raw" 2>/dev/null; then
+    echo "error: corrupted gz archive ($asset_file)" >&2
+    exit 1
+fi
 got_raw_size=$(file_size "$core_work/bifrostd.raw")
 got_raw_sha=$(sha256_file "$core_work/bifrostd.raw")
 rm -f "$core_work/bifrostd.raw"
@@ -223,9 +243,9 @@ if [ -z "$web_dist" ]; then
     for tool in node npm; do
         type "$tool" >/dev/null 2>&1 || { echo "error: $tool is required to build web/" >&2; exit 1; }
     done
-    [ -f "$REPO_ROOT/web/package.json" ] || { echo "error: web/package.json not found (pass --web-dist for pre-built assets)" >&2; exit 1; }
+    [ -f "$REPO_ROOT/web/package.json" ] || { echo "error: web/package.json not found" >&2; exit 1; }
     echo "Building web application..."
-    (cd "$REPO_ROOT/web" && npm ci --include=dev --no-audit --no-fund && npm run build)
+    (cd "$REPO_ROOT/web" && npm ci --include=dev --no-audit --no-fund --ignore-scripts && npm run build)
     web_dist="$REPO_ROOT/web/dist"
 fi
 
@@ -237,9 +257,6 @@ asset_css=${asset_js%.js}.css
 [ -s "$web_dist/res/$asset_css" ] || { echo "error: $web_dist/res/$asset_css not found" >&2; exit 1; }
 
 # 3. Assemble package staging tree: bifrost/ (PLAN 16.1 & 16.2).
-version=$(tr -d ' \t\r\n' <"$REPO_ROOT/plugin/bifrost/version")
-[ -n "$version" ] || { echo "error: plugin/bifrost/version is empty" >&2; exit 1; }
-
 pkg="$stage/bifrost"
 mkdir -p "$pkg/bin" "$pkg/lib" "$pkg/scripts" "$pkg/webs" "$pkg/res" "$pkg/keys"
 
@@ -250,12 +267,19 @@ cp "$REPO_ROOT/plugin/bifrost/uninstall.sh" "$pkg/uninstall.sh"
 cp "$REPO_ROOT/LICENSE" "$pkg/LICENSE"
 cp "$SCRIPT_DIR/LICENSE.tailscale" "$pkg/LICENSE.tailscale"
 cp "$REPO_ROOT/NOTICE.md" "$pkg/NOTICE.md"
+[ -s "$SCRIPT_DIR/THIRD_PARTY_NOTICES.core.md" ] || {
+    echo "error: packaging/THIRD_PARTY_NOTICES.core.md missing (run packaging/gen-core-notices.py)" >&2
+    exit 1
+}
+cp "$SCRIPT_DIR/THIRD_PARTY_NOTICES.core.md" "$pkg/THIRD_PARTY_NOTICES.core.md"
 
 cp "$core_work/bifrostd.gz" "$pkg/bin/bifrostd.gz"
 jq --arg a "$arch" '.assets = {($a): .assets[$a]}' "$core_work/core.json" >"$pkg/bin/core.json"
-if [ -f "$REPO_ROOT/plugin/bifrost/bin/bifrost" ]; then
-    cp "$REPO_ROOT/plugin/bifrost/bin/bifrost" "$pkg/bin/bifrost"
-fi
+[ -s "$REPO_ROOT/plugin/bifrost/bin/bifrost" ] || {
+    echo "error: plugin/bifrost/bin/bifrost not found" >&2
+    exit 1
+}
+cp "$REPO_ROOT/plugin/bifrost/bin/bifrost" "$pkg/bin/bifrost"
 
 for f in "$REPO_ROOT"/plugin/bifrost/scripts/*.sh; do
     [ -f "$f" ] || continue
@@ -270,14 +294,11 @@ cp "$web_dist/Module_bifrost.asp" "$pkg/webs/Module_bifrost.asp"
 cp "$web_dist/res/$asset_js" "$pkg/res/$asset_js"
 cp "$web_dist/res/$asset_css" "$pkg/res/$asset_css"
 
-if [ -f "$REPO_ROOT/plugin/bifrost/res/icon-bifrost.png" ]; then
-    cp "$REPO_ROOT/plugin/bifrost/res/icon-bifrost.png" "$pkg/res/icon-bifrost.png"
-elif [ -f "$web_dist/res/icon-bifrost.png" ]; then
-    cp "$web_dist/res/icon-bifrost.png" "$pkg/res/icon-bifrost.png"
-else
-    echo "error: icon-bifrost.png not found in plugin/bifrost/res/ or $web_dist/res/" >&2
+[ -s "$REPO_ROOT/plugin/bifrost/res/icon-bifrost.png" ] || {
+    echo "error: plugin/bifrost/res/icon-bifrost.png not found" >&2
     exit 1
-fi
+}
+cp "$REPO_ROOT/plugin/bifrost/res/icon-bifrost.png" "$pkg/res/icon-bifrost.png"
 
 if [ -d "$keys_dir" ]; then
     for k in "$keys_dir"/*.pub.pem; do
@@ -289,13 +310,12 @@ fi
 # Normalize permissions deterministically (independent of host umask).
 find "$pkg" -type d -exec chmod 755 {} +
 find "$pkg" -type f -exec chmod 644 {} +
-chmod 755 "$pkg/install.sh" "$pkg/uninstall.sh"
+chmod 755 "$pkg/install.sh" "$pkg/uninstall.sh" "$pkg/bin/bifrost"
 for f in "$pkg"/scripts/*.sh; do
     [ -f "$f" ] && chmod 755 "$f"
 done
-[ -f "$pkg/bin/bifrost" ] && chmod 755 "$pkg/bin/bifrost"
 
-# 4. Create reproducible ustar tar.gz on both Linux (GNU tar) and macOS (bsdtar).
+# 4. Create deterministic ustar tar.gz on Linux (GNU tar) and macOS (bsdtar).
 mkdir -p "$out_dir"
 if [ "$arch" = arm ]; then
     out_name="bifrost-${version}-hnd.tar.gz"
@@ -304,11 +324,9 @@ else
 fi
 out_path="${out_dir%/}/${out_name}"
 
-# Format UTC timestamp YYYYMMDDhhmm.ss for portable touch -t (works on macOS and Linux).
 utc_stamp=$(TZ=UTC date -u -r "$epoch" '+%Y%m%d%H%M.%S' 2>/dev/null ||
     TZ=UTC date -u -d "@$epoch" '+%Y%m%d%H%M.%S')
 
-# Normalize mtime on every staged file and directory (deepest first so directory mtimes stick).
 (
     cd "$stage"
     LC_ALL=C find bifrost | LC_ALL=C sort >"$stage/entries.txt"
@@ -326,7 +344,6 @@ if tar --version 2>/dev/null | grep -qi 'GNU tar'; then
         --owner=0 --group=0 --numeric-owner \
         -cf - -C "$stage" bifrost | gzip -9 -n >"$tar_out"
 else
-    # macOS bsdtar: explicit sorted entry list + --no-recursion + zero uid/gid/uname/gname.
     COPYFILE_DISABLE=1 LC_ALL=C tar \
         --format=ustar \
         --no-xattrs \
@@ -340,7 +357,6 @@ verify_dir="$stage/verify"
 mkdir -p "$verify_dir"
 tar -tzf "$tar_out" >"$verify_dir/list.txt"
 
-# Every entry must stay under bifrost/ and have no macOS metadata files.
 while IFS= read -r entry; do
     case "$entry" in
         bifrost | bifrost/*) ;;
@@ -359,8 +375,10 @@ for req in \
     bifrost/LICENSE \
     bifrost/LICENSE.tailscale \
     bifrost/NOTICE.md \
+    bifrost/THIRD_PARTY_NOTICES.core.md \
     bifrost/bin/bifrostd.gz \
     bifrost/bin/core.json \
+    bifrost/bin/bifrost \
     bifrost/scripts/bifrost_config.sh \
     bifrost/scripts/bifrost_status.sh \
     bifrost/lib/env.sh \
@@ -379,18 +397,34 @@ done
 tar -xzf "$tar_out" -C "$verify_dir"
 [ "$(tr -d ' \t\r\n' <"$verify_dir/bifrost/.valid")" = hnd ] || { echo "self-check failed: .valid != hnd" >&2; exit 1; }
 [ "$(tr -d ' \t\r\n' <"$verify_dir/bifrost/version")" = "$version" ] || { echo "self-check failed: version mismatch" >&2; exit 1; }
-if grep -Fq '__BIFROST_ASSETS__' "$verify_dir/bifrost/webs/Module_bifrost.asp"; then
+
+asp="$verify_dir/bifrost/webs/Module_bifrost.asp"
+if grep -Fq '__BIFROST_ASSETS__' "$asp"; then
     echo "self-check failed: unreplaced __BIFROST_ASSETS__ placeholder in Module_bifrost.asp" >&2
     exit 1
 fi
-if grep -Fq 'rogcss' "$verify_dir/bifrost/webs/Module_bifrost.asp"; then
+if grep -Fq 'rogcss' "$asp"; then
     echo "self-check failed: Module_bifrost.asp contains forbidden word rogcss" >&2
     exit 1
 fi
-if ! grep -Fq "src=\"/res/$asset_js\"" "$verify_dir/bifrost/webs/Module_bifrost.asp"; then
+if ! grep -Fq "src=\"/res/$asset_js\"" "$asp"; then
     echo "self-check failed: Module_bifrost.asp does not reference $asset_js" >&2
     exit 1
 fi
+
+# PLAN 2.4 item 6: <body> line must contain app, onload, and skin so Koolshare
+# does not rewrite the page with sed.
+body_line=$(grep -i '<body' "$asp" | head -n 1 || true)
+for token in app onload skin; do
+    case "$body_line" in
+        *"$token"*) ;;
+        *)
+            echo "self-check failed: Module_bifrost.asp <body> line missing '$token': $body_line" >&2
+            exit 1
+            ;;
+    esac
+done
+
 if grep -Eq 'detect_package|ks_tar_install' "$verify_dir/bifrost/install.sh"; then
     echo "self-check failed: install.sh contains forbidden software-center keyword" >&2
     exit 1

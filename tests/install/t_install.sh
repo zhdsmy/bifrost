@@ -1,50 +1,30 @@
 #!/bin/sh
 # Comprehensive install, upgrade and uninstall tests for plugin/bifrost/install.sh
 # and plugin/bifrost/uninstall.sh (PLAN sections 13.11 & 15).
+# Uses the real P1/P2/P3 libraries (update.sh, daemon.sh, fw.sh, dns.sh, status.sh)
+# with the BusyBox test image's mock core and mock commands; stubs are injected
+# ONLY to trigger specific fault/timing scenarios.
 # Page asset swap & concurrency checks adapted from po0fw asus-merlin (MIT), commit 0d9532d.
 
 # shellcheck source=tests/shell/lib.sh
 . tests/shell/lib.sh
 
-# Clean router-like sandbox WITHOUT pre-installing Bifrost (fresh Koolshare root).
-inst_setup() {
-    [ -n "$T" ] && rm -rf "$T"
-    T=/tmp/bi.$$
-    rm -rf "$T"
-    # shellcheck disable=SC2013
-    for _is_v in $(sed -n 's/^: "\${\(BIFROST_[A-Z0-9_]*\):=.*/\1/p' "$T_SRC/plugin/bifrost/lib/env.sh"); do
-        unset "$_is_v"
-    done
-    unset BIFROST_REQ_ID BIFROST_ERR BIFROST_RESULT BIFROST_NO_MAIN BIFROST_BG_SYNC BIFROST_INSTALL_LOCK_WAIT
-    export MOCK_STATE="$T/state"
-    export BIFROST_KSROOT="$T/koolshare"
-    export BIFROST_RUN="$T/run"
-    export BIFROST_SOCK_DIR="$T/sock"
-    export BIFROST_UPLOAD="$T/upload"
-    export BIFROST_DNSMASQ_DIR="$T/dnsmasq.d"
-    export BIFROST_TUN_DEV="$T/dev-net-tun"
-    export BIFROST_INSTALL_LOCK_WAIT=5
+# shellcheck source=tests/install/lib.sh
+. tests/install/lib.sh
 
-    for _is_d in "$MOCK_STATE" "$BIFROST_KSROOT/scripts" "$BIFROST_KSROOT/webs" \
-        "$BIFROST_KSROOT/res" "$BIFROST_KSROOT/init.d" "$BIFROST_KSROOT/bin" \
-        "$BIFROST_UPLOAD" "$BIFROST_DNSMASQ_DIR" "$T/pkgs"; do
-        mkdir -p "$_is_d"
+# Helper to verify no file matching a glob exists without silencing _t_fail.
+no_glob() {
+    _ng_name=$1
+    shift
+    _ng_found=0
+    for _ng_f in "$@"; do
+        [ -e "$_ng_f" ] && _ng_found=1
     done
-    : >"$MOCK_STATE/dbus.env"
-    : >"$MOCK_STATE/nvram.env"
-    : >"$BIFROST_TUN_DEV"
-    echo aarch64 >"$MOCK_STATE/uname_m"
-    cp "$T_SRC/tests/shell/mock/base.sh" "$BIFROST_KSROOT/scripts/base.sh"
-    # Verify BusyBox 1.25 has no "command -v" usage inside install/uninstall.
-    cat >>"$BIFROST_KSROOT/scripts/base.sh" <<'EOF'
-command() { touch "$MOCK_STATE/used-command"; return 127; }
-EOF
-    # Re-source env.sh to populate convenience path variables in test shell.
-    # shellcheck source=plugin/bifrost/lib/env.sh
-    . "$T_SRC/plugin/bifrost/lib/env.sh"
+    eq "$_ng_name" 0 "$_ng_found"
 }
 
 # make_pkg <dir> <version> <serial> <arch> <js_body> <css_body> [core_mode]
+# Uses the real plugin/bifrost/lib/*.sh and plugin/bifrost/bin/bifrost.
 # core_mode: ok (default) | bad_hash | bad_version
 # Prints the 20-char asset hash.
 make_pkg() {
@@ -66,88 +46,15 @@ make_pkg() {
     cp "$T_SRC/plugin/bifrost/scripts/bifrost_config.sh" "$_mp_dir/scripts/"
     cp "$T_SRC/plugin/bifrost/scripts/bifrost_status.sh" "$_mp_dir/scripts/"
     cp "$T_SRC"/plugin/bifrost/lib/*.sh "$_mp_dir/lib/"
+    cp "$T_SRC/plugin/bifrost/bin/bifrost" "$_mp_dir/bin/bifrost"
+    chmod 755 "$_mp_dir/bin/bifrost"
     printf '%s\n' "$_mp_ver" >"$_mp_dir/version"
     printf 'fake-png-icon\n' >"$_mp_dir/res/icon-bifrost.png"
     printf 'MIT License\n' >"$_mp_dir/LICENSE"
     printf 'BSD-3-Clause\n' >"$_mp_dir/LICENSE.tailscale"
     printf 'Third-party notices\n' >"$_mp_dir/NOTICE.md"
+    printf 'Core third-party notices\n' >"$_mp_dir/THIRD_PARTY_NOTICES.core.md"
     printf -- '-----BEGIN PUBLIC KEY-----\nTESTKEY\n-----END PUBLIC KEY-----\n' >"$_mp_dir/keys/dev.pub.pem"
-
-    cat >"$_mp_dir/bin/bifrost" <<'EOF'
-#!/bin/sh
-_bf_ks=$(cd "$(dirname "$0")/.." && pwd)
-. "${BIFROST_LIB:-$_bf_ks/bifrost/lib}/env.sh"
-exec "$BIFROST_CLI" --socket="$BIFROST_SOCK" "$@"
-EOF
-    chmod 755 "$_mp_dir/bin/bifrost"
-
-    # Inject stubs for P1 (core_install_file) and P2 (daemon_stop, daemon_start)
-    # when the real libraries are not present in this branch yet.
-    if [ "${BIFROST_INSTALL_REAL_LIBS:-0}" != 1 ] || [ ! -f "$_mp_dir/lib/daemon.sh" ]; then
-        cat >"$_mp_dir/lib/daemon.sh" <<'EOF'
-# shellcheck shell=sh
-daemon_stop() {
-    echo "daemon_stop" >>"$MOCK_STATE/install_calls.log"
-    _ds_pid=$(daemon_pid 2>/dev/null)
-    if [ -n "$_ds_pid" ]; then
-        kill "$_ds_pid" 2>/dev/null || true
-        sleep 1
-    fi
-    rm -f "$BIFROST_PIDFILE" "$BIFROST_SOCK"
-    return 0
-}
-daemon_start() {
-    echo "daemon_start" >>"$MOCK_STATE/install_calls.log"
-    mkdir -p "$BIFROST_RUN" "$BIFROST_SOCK_DIR"
-    "$BIFROST_CORE" --socket="$BIFROST_SOCK" >/dev/null 2>&1 &
-    echo "$!" >"$BIFROST_PIDFILE"
-    return 0
-}
-EOF
-    fi
-    if [ "${BIFROST_INSTALL_REAL_LIBS:-0}" != 1 ] || [ ! -f "$_mp_dir/lib/update.sh" ]; then
-        cat >"$_mp_dir/lib/update.sh" <<'EOF'
-# shellcheck shell=sh
-core_install_file() {
-    _ci_gz=$1
-    _ci_mf=$2
-    _ci_arch=$3
-    echo "core_install_file $_ci_arch" >>"$MOCK_STATE/install_calls.log"
-    if [ -f "$MOCK_STATE/core_sleep" ]; then
-        echo "ENTER $$" >>"$MOCK_STATE/concurrency.log"
-        sleep "$(cat "$MOCK_STATE/core_sleep")"
-        echo "LEAVE $$" >>"$MOCK_STATE/concurrency.log"
-    fi
-    mkdir -p "$BIFROST_BIN"
-    if ! gunzip -c "$_ci_gz" >"$BIFROST_CORE.new" 2>/dev/null; then
-        rm -f "$BIFROST_CORE.new"
-        fail no_space
-        return 1
-    fi
-    chmod 755 "$BIFROST_CORE.new"
-    _ci_want_sha=$(jq -r --arg a "$_ci_arch" '.assets[$a].raw_sha256 // empty' "$_ci_mf" 2>/dev/null)
-    _ci_got_sha=$(sha256_file "$BIFROST_CORE.new" 2>/dev/null)
-    if [ -z "$_ci_want_sha" ] || [ "$_ci_want_sha" != "$_ci_got_sha" ]; then
-        rm -f "$BIFROST_CORE.new"
-        fail hash_mismatch
-        return 1
-    fi
-    _ci_want_ver=$(jq -r '.tailscale // empty' "$_ci_mf" 2>/dev/null)
-    _ci_got_ver=$("$BIFROST_CORE.new" --version 2>/dev/null | head -n 1)
-    if [ -z "$_ci_want_ver" ] || [ "$_ci_want_ver" != "$_ci_got_ver" ]; then
-        rm -f "$BIFROST_CORE.new"
-        fail core_test_failed
-        return 1
-    fi
-    mv -f "$BIFROST_CORE.new" "$BIFROST_CORE" || {
-        rm -f "$BIFROST_CORE.new"
-        fail internal
-        return 1
-    }
-    return 0
-}
-EOF
-    fi
 
     # Build fake core binary (embed serial comment so different serials have distinct hashes).
     _mp_raw="$_mp_dir/bin/bifrostd.raw"
@@ -212,17 +119,16 @@ check_assets() {
     ok "$_ca_label-asp-ref" grep -Fq "src=\"/res/$_ca_js\"" "$BIFROST_WEBS/Module_bifrost.asp"
     ok "$_ca_label-js-exists" test -s "$BIFROST_RES/$_ca_js"
     ok "$_ca_label-css-exists" test -s "$BIFROST_RES/$_ca_css"
-    # Verify only this pair + icon + unrelated files exist in $BIFROST_RES.
     # shellcheck disable=SC2012
     _ca_got=$(ls -1A "$BIFROST_RES" | sort)
     _ca_want=$(printf '%s\n' "$_ca_js" "$_ca_css" icon-bifrost.png unrelated.js bifrost-app.notes.css | sort)
     eq "$_ca_label-res-exact" "$_ca_want" "$_ca_got"
-    no "$_ca_label-no-asp-tmp" ls "$BIFROST_WEBS"/.bifrost-app.new* >/dev/null 2>&1
-    no "$_ca_label-no-res-tmp" ls "$BIFROST_RES"/.bifrost-app.new* >/dev/null 2>&1
+    no_glob "$_ca_label-no-asp-tmp" "$BIFROST_WEBS"/.bifrost-app.new*
+    no_glob "$_ca_label-no-res-tmp" "$BIFROST_RES"/.bifrost-app.new*
 }
 
 # =====================================================================
-# 1. Fresh install (files, symlinks, dbus defaults, does not start, orig hint)
+# 1. Fresh install with REAL libs (files, symlinks, dbus defaults, does not start)
 # =====================================================================
 inst_setup
 mkdir -p "$BIFROST_ORIG_STATE"
@@ -231,6 +137,8 @@ printf 'orig-state\n' >"$BIFROST_ORIG_STATE/tailscaled.state"
 : >"$BIFROST_RES/bifrost-app.notes.css"
 
 h1=$(make_pkg "$T/pkgs/v1" "0.1.0" 1 arm "console.log('v1');" ":host{color:#111;}")
+# Add an extra scripts/bifrost_extra.sh to verify install + uninstall track dynamic scripts (Item 11).
+printf '#!/bin/sh\necho extra\n' >"$T/pkgs/v1/scripts/bifrost_extra.sh"
 out=$(sh "$T/pkgs/v1/install.sh" 2>&1)
 eq fresh-rc 0 "$?"
 has fresh-done "安装完成" "$out"
@@ -238,30 +146,34 @@ has fresh-orig-hint "迁移" "$out"
 eq fresh-orig-untouched "orig-state" "$(cat "$BIFROST_ORIG_STATE/tailscaled.state")"
 no fresh-no-command-v test -e "$MOCK_STATE/used-command"
 
-# Installed files & symlinks
+# Installed files, symlinks, real core_install_file manifest with top-level arch (contract 8)
 ok fresh-core test -x "$BIFROST_CORE"
 eq fresh-cli-link "bifrostd" "$(readlink "$BIFROST_CLI")"
 eq fresh-manifest-serial 1 "$(jq -r .serial "$BIFROST_MANIFEST")"
+eq fresh-manifest-arch arm "$(jq -r .arch "$BIFROST_MANIFEST")"
+eq fresh-manifest-asset-len 1 "$(jq -r '.assets | length' "$BIFROST_MANIFEST")"
 eq fresh-version-file "0.1.0" "$(cat "$BIFROST_VERSION_FILE")"
 ok fresh-license test -f "$BIFROST_HOME/LICENSE"
 ok fresh-license-ts test -f "$BIFROST_HOME/LICENSE.tailscale"
 ok fresh-notice test -f "$BIFROST_HOME/NOTICE.md"
+ok fresh-core-notice test -f "$BIFROST_HOME/THIRD_PARTY_NOTICES.core.md"
 ok fresh-key test -f "$BIFROST_KEYS/dev.pub.pem"
 ok fresh-cfg-script test -x "$BIFROST_SCRIPTS/bifrost_config.sh"
 ok fresh-status-script test -x "$BIFROST_SCRIPTS/bifrost_status.sh"
+ok fresh-extra-script test -x "$BIFROST_SCRIPTS/bifrost_extra.sh"
 ok fresh-uninst-script test -x "$BIFROST_SCRIPTS/uninstall_bifrost.sh"
 eq fresh-s99 "$BIFROST_SCRIPTS/bifrost_config.sh" "$(readlink "$BIFROST_INITD/S99bifrost.sh")"
 eq fresh-n99 "$BIFROST_SCRIPTS/bifrost_config.sh" "$(readlink "$BIFROST_INITD/N99bifrost.sh")"
 ok fresh-ksbin test -x "$BIFROST_KSBIN/bifrost"
 check_assets fresh "$h1"
 
-# dbus defaults & software center registration
+# dbus defaults & software center registration (NO bifrost_version key per Item 8)
 eq fresh-dbus-install 1 "$(dbus get softcenter_module_bifrost_install)"
 eq fresh-dbus-name bifrost "$(dbus get softcenter_module_bifrost_name)"
 eq fresh-dbus-title Bifrost "$(dbus get softcenter_module_bifrost_title)"
 has fresh-dbus-desc "Tailscale" "$(dbus get softcenter_module_bifrost_description)"
 eq fresh-dbus-scver "0.1.0" "$(dbus get softcenter_module_bifrost_version)"
-eq fresh-dbus-ver "0.1.0" "$(dbus get bifrost_version)"
+eq fresh-no-bifrost-ver "" "$(dbus get bifrost_version)"
 eq fresh-def-enable 0 "$(dbus get bifrost_enable)"
 eq fresh-def-port 41641 "$(dbus get bifrost_port)"
 eq fresh-def-local 1 "$(dbus get bifrost_local_access)"
@@ -273,14 +185,15 @@ eq fresh-def-mirror "" "$(dbus get bifrost_mirror)"
 eq fresh-def-lang zh-CN "$(dbus get bifrost_ui_lang)"
 eq fresh-def-mode dark "$(dbus get bifrost_ui_mode)"
 
-# Fresh install must NOT start daemon
-eq fresh-calls "core_install_file arm" "$(cat "$MOCK_STATE/install_calls.log")"
+# Fresh install must NOT start daemon and must release lock
+no fresh-not-running test -f "$BIFROST_PIDFILE"
 no fresh-lock-released test -d "$BIFROST_RUN/lock.state"
 
 # =====================================================================
-# 2. Upgrade while running: keeps settings & state, restarts, swaps assets
+# 2. Upgrade while running (REAL daemon_start / daemon_stop / core_install_file)
 # =====================================================================
 dbus set bifrost_enable=1
+dbus set bifrost_version=0.1.0
 dbus set bifrost_port=51234
 dbus set bifrost_snat=on
 dbus set bifrost_ui_lang=en
@@ -288,14 +201,19 @@ dbus remove bifrost_magicdns
 mkdir -p "$BIFROST_STATE"
 printf 'keep-this-state\n' >"$BIFROST_STATE/tailscaled.state"
 
-# Start fake daemon so real daemon_running() returns 0
-mkdir -p "$BIFROST_RUN" "$BIFROST_SOCK_DIR"
-"$BIFROST_CORE" --socket="$BIFROST_SOCK" >/dev/null 2>&1 &
-old_pid=$!
-echo "$old_pid" >"$BIFROST_PIDFILE"
-sleep 1
+# Start real daemon via real daemon_start (registers watchdog cron, fw rules, PID, socket).
+sh -c '
+    . "$BIFROST_LIB/env.sh"
+    . "$BIFROST_LIB/validate.sh"
+    . "$BIFROST_LIB/common.sh"
+    for m in daemon fw dns status; do . "$BIFROST_LIB/$m.sh"; done
+    daemon_start
+'
+eq upg-pre-start-rc 0 "$?"
+old_pid=$(cat "$BIFROST_PIDFILE")
+ok upg-pre-pid-alive kill -0 "$old_pid"
+has upg-pre-watchdog "bifrost_watchdog" "$(cru l)"
 
-: >"$MOCK_STATE/install_calls.log"
 h2=$(make_pkg "$T/pkgs/v2" "0.2.0" 2 arm "console.log('v2');" ":host{color:#222;}")
 out=$(sh "$T/pkgs/v2/install.sh" 2>&1)
 eq upg-run-rc 0 "$?"
@@ -306,56 +224,108 @@ eq upg-run-snat on "$(dbus get bifrost_snat)"
 eq upg-run-enable 1 "$(dbus get bifrost_enable)"
 eq upg-run-lang en "$(dbus get bifrost_ui_lang)"
 eq upg-run-missing-filled 0 "$(dbus get bifrost_magicdns)"
-eq upg-run-ver "0.2.0" "$(dbus get bifrost_version)"
 eq upg-run-scver "0.2.0" "$(dbus get softcenter_module_bifrost_version)"
+eq upg-run-no-bfver "" "$(dbus get bifrost_version)"
 eq upg-run-state "keep-this-state" "$(cat "$BIFROST_STATE/tailscaled.state")"
 eq upg-run-serial 2 "$(jq -r .serial "$BIFROST_MANIFEST")"
 check_assets upg-run "$h2"
-eq upg-run-calls "$(printf 'daemon_stop\ncore_install_file arm\ndaemon_start')" "$(cat "$MOCK_STATE/install_calls.log")"
-
-# Clean up restarted mock daemon before next test
 new_pid=$(cat "$BIFROST_PIDFILE" 2>/dev/null || true)
-[ -n "$new_pid" ] && kill "$new_pid" 2>/dev/null || true
-rm -f "$BIFROST_PIDFILE"
+ok upg-run-restarted-alive test -n "$new_pid"
+ok upg-run-pid-running kill -0 "$new_pid"
+no upg-run-pid-changed test "$new_pid" = "$old_pid"
 
 # =====================================================================
-# 3. Upgrade while stopped: does NOT start daemon
+# 3. Upgrade failure AFTER daemon_stop restores previously running daemon (Item 2)
 # =====================================================================
-: >"$MOCK_STATE/install_calls.log"
-ok upg-stop-rc sh "$T/pkgs/v2/install.sh" >/dev/null 2>&1
-eq upg-stop-calls "$(printf 'daemon_stop\ncore_install_file arm')" "$(cat "$MOCK_STATE/install_calls.log")"
+make_pkg "$T/pkgs/v2fail" "0.2.9" 2 arm "console.log('v2fail');" ":host{color:#229;}" >/dev/null
+mkdir -p "$T/reject-mv"
+cat >"$T/reject-mv/mv" <<EOF
+#!/bin/sh
+for _a in "\$@"; do
+    [ "\$_a" = "$BIFROST_WEBS/Module_bifrost.asp" ] && exit 1
+done
+exec /opt/bb125/busybox mv "\$@"
+EOF
+chmod 755 "$T/reject-mv/mv"
+out=$(PATH="$T/reject-mv:$PATH" sh "$T/pkgs/v2fail/install.sh" 2>&1)
+rc=$?
+no upg-fail-restore-rc test "$rc" -eq 0
+has upg-fail-restore-msg "网页资源安装失败" "$out"
+has upg-fail-restore-notice "恢复原 Bifrost 服务" "$out"
+check_assets upg-fail-keeps-h2 "$h2"
+restored_pid=$(cat "$BIFROST_PIDFILE" 2>/dev/null || true)
+ok upg-fail-daemon-restored test -n "$restored_pid"
+ok upg-fail-daemon-alive kill -0 "$restored_pid"
+
+# Stop daemon cleanly via real daemon_stop before stopped-upgrade test.
+sh -c '
+    . "$BIFROST_LIB/env.sh"
+    . "$BIFROST_LIB/validate.sh"
+    . "$BIFROST_LIB/common.sh"
+    for m in daemon fw dns status; do . "$BIFROST_LIB/$m.sh"; done
+    daemon_stop
+'
+eq stop-before-t3-rc 0 "$?"
+no stop-before-t3-nopid test -f "$BIFROST_PIDFILE"
 
 # =====================================================================
-# 4. JS-only upgrade & CSS-only upgrade
+# 4. Upgrade while stopped: does NOT start daemon
+# =====================================================================
+out=$(sh "$T/pkgs/v2/install.sh" 2>&1)
+eq upg-stop-rc 0 "$?"
+no upg-stop-still-stopped test -f "$BIFROST_PIDFILE"
+
+# =====================================================================
+# 5. JS-only upgrade, CSS-only upgrade & mid-install package mutation immunity (Item 6)
 # =====================================================================
 h_js=$(make_pkg "$T/pkgs/v2js" "0.2.1" 2 arm "console.log('v2-js-changed');" ":host{color:#222;}")
 no js-only-hash-diff test "$h_js" = "$h2"
-ok js-only-rc sh "$T/pkgs/v2js/install.sh" >/dev/null 2>&1
+out=$(sh "$T/pkgs/v2js/install.sh" 2>&1)
+eq js-only-rc 0 "$?"
 check_assets js-only "$h_js"
 
 h_css=$(make_pkg "$T/pkgs/v2css" "0.2.2" 2 arm "console.log('v2-js-changed');" ":host{color:#333;}")
 no css-only-hash-diff test "$h_css" = "$h_js"
-ok css-only-rc sh "$T/pkgs/v2css/install.sh" >/dev/null 2>&1
+out=$(sh "$T/pkgs/v2css/install.sh" 2>&1)
+eq css-only-rc 0 "$?"
 check_assets css-only "$h_css"
 
+# Item 6: simulate concurrent upload wiping/replacing /tmp/bifrost mid-install
+# (injected fault wrapper around real core_install_file).
+h_snap=$(make_pkg "$T/pkgs/vsnap" "0.2.3" 3 arm "console.log('snap-js');" ":host{color:#444;}")
+wrap_real_core_install() {
+    sed 's/^core_install_file()/_inner_cif()/' "$1" >"$1.wrapped" && mv "$1.wrapped" "$1"
+}
+wrap_real_core_install "$T/pkgs/vsnap/lib/update.sh"
+cat >>"$T/pkgs/vsnap/lib/update.sh" <<EOF
+core_install_file() {
+    _inner_cif "\$@" || return 1
+    # Wipe package web files mid-install (simulating software center rm -rf /tmp/bifrost).
+    rm -rf "$T/pkgs/vsnap/webs" "$T/pkgs/vsnap/res"
+    return 0
+}
+EOF
+out=$(sh "$T/pkgs/vsnap/install.sh" 2>&1)
+eq web-stage-immune-rc 0 "$?"
+check_assets web-stage-immune "$h_snap"
+
 # =====================================================================
-# 5. No core downgrade when installed serial > package serial
+# 6. No core downgrade when installed serial > package serial (delegated to P1)
 # =====================================================================
 h5=$(make_pkg "$T/pkgs/v5" "0.5.0" 5 arm "console.log('v5');" ":host{color:#555;}")
-ok serial5-rc sh "$T/pkgs/v5/install.sh" >/dev/null 2>&1
+out=$(sh "$T/pkgs/v5/install.sh" 2>&1)
+eq serial5-rc 0 "$?"
 eq serial5-installed 5 "$(jq -r .serial "$BIFROST_MANIFEST")"
 core_sha_5=$(openssl dgst -sha256 -r "$BIFROST_CORE" | cut -d ' ' -f 1)
 
-: >"$MOCK_STATE/install_calls.log"
 out=$(sh "$T/pkgs/v2/install.sh" 2>&1)
 eq nodowngrade-rc 0 "$?"
-has nodowngrade-msg "不降级" "$out"
 eq nodowngrade-serial 5 "$(jq -r .serial "$BIFROST_MANIFEST")"
 eq nodowngrade-core-unchanged "$core_sha_5" "$(openssl dgst -sha256 -r "$BIFROST_CORE" | cut -d ' ' -f 1)"
-eq nodowngrade-calls "daemon_stop" "$(cat "$MOCK_STATE/install_calls.log")"
 
 # =====================================================================
-# 6. Core verification failure: upgrade keeps old core; fresh install aborts & cleans
+# 7. Core verification failure: upgrade keeps old core; missing old core
+#    aborts without wiping plugin (Item 5); fresh install aborts & cleans
 # =====================================================================
 h_bad=$(make_pkg "$T/pkgs/v6bad" "0.6.0" 6 arm "console.log('v6');" ":host{color:#666;}" bad_hash)
 out=$(sh "$T/pkgs/v6bad/install.sh" 2>&1)
@@ -366,51 +336,70 @@ eq corefail-upg-old-serial 5 "$(jq -r .serial "$BIFROST_MANIFEST")"
 no corefail-upg-no-new test -e "$BIFROST_CORE.new"
 check_assets corefail-upg "$h_bad"
 
+# Item 5: upgrade when old core was deleted + corrupt new core MUST NOT run _in_cleanup_fresh!
+rm -f "$BIFROST_CORE"
+out=$(sh "$T/pkgs/v6bad/install.sh" 2>&1)
+rc=$?
+no corefail-upg-nocore-rc test "$rc" -eq 0
+has corefail-upg-nocore-msg "原核心不可用" "$out"
+ok corefail-upg-nocore-keeps-asp test -s "$BIFROST_WEBS/Module_bifrost.asp"
+ok corefail-upg-nocore-keeps-scripts test -x "$BIFROST_SCRIPTS/bifrost_config.sh"
+eq corefail-upg-nocore-keeps-dbus 1 "$(dbus get softcenter_module_bifrost_install)"
+
 # Fresh install with bad hash & bad version
 inst_setup
 make_pkg "$T/pkgs/badhash" "0.1.0" 1 arm "console.log('a');" ":host{}" bad_hash >/dev/null
-no corefail-fresh-hash sh "$T/pkgs/badhash/install.sh" >/dev/null 2>&1
+out=$(sh "$T/pkgs/badhash/install.sh" 2>&1)
+rc=$?
+no corefail-fresh-hash-rc test "$rc" -eq 0
+has corefail-fresh-hash-msg "hash_mismatch" "$out"
 no corefail-fresh-no-home test -e "$BIFROST_HOME"
 no corefail-fresh-no-asp test -e "$BIFROST_WEBS/Module_bifrost.asp"
 eq corefail-fresh-no-dbus "" "$(dbus get softcenter_module_bifrost_install)"
 
 make_pkg "$T/pkgs/badver" "0.1.0" 1 arm "console.log('a');" ":host{}" bad_version >/dev/null
-no corefail-fresh-ver sh "$T/pkgs/badver/install.sh" >/dev/null 2>&1
+out=$(sh "$T/pkgs/badver/install.sh" 2>&1)
+rc=$?
+no corefail-fresh-ver-rc test "$rc" -eq 0
+has corefail-fresh-ver-msg "core_test_failed" "$out"
 no corefail-fresh-ver-no-home test -e "$BIFROST_HOME"
 
 # =====================================================================
-# 7. Missing web asset & failed atomic publish leave no new assets
+# 8. Missing web asset & daemon_stop failure abort cleanly (Item 4)
 # =====================================================================
 inst_setup
 : >"$BIFROST_RES/unrelated.js"
 : >"$BIFROST_RES/bifrost-app.notes.css"
 ha=$(make_pkg "$T/pkgs/pa" "0.1.0" 1 arm "console.log('A');" ":host{color:#aaa;}")
-ok prep-a sh "$T/pkgs/pa/install.sh" >/dev/null 2>&1
+out=$(sh "$T/pkgs/pa/install.sh" 2>&1)
+eq prep-a-rc 0 "$?"
 check_assets prep-a "$ha"
 
 hb=$(make_pkg "$T/pkgs/pb" "0.2.0" 2 arm "console.log('B');" ":host{color:#bbb;}")
 rm -f "$T/pkgs/pb/res/bifrost-app.$hb.css"
-: >"$MOCK_STATE/install_calls.log"
-no missing-css-fail sh "$T/pkgs/pb/install.sh" >/dev/null 2>&1
-eq missing-css-no-stop "" "$(cat "$MOCK_STATE/install_calls.log")"
+out=$(sh "$T/pkgs/pb/install.sh" 2>&1)
+rc=$?
+no missing-css-fail-rc test "$rc" -eq 0
+has missing-css-fail-msg "缺少网页资源" "$out"
 check_assets missing-css-keeps-a "$ha"
 
-# Failed rename of Module_bifrost.asp keeps old ASP and removes newly copied B assets
-hb=$(make_pkg "$T/pkgs/pb2" "0.2.0" 2 arm "console.log('B2');" ":host{color:#bbb;}")
-mkdir -p "$T/reject-mv"
-cat >"$T/reject-mv/mv" <<EOF
-#!/bin/sh
-for _a in "\$@"; do
-    [ "\$_a" = "$BIFROST_WEBS/Module_bifrost.asp" ] && exit 1
-done
-exec /opt/bb125/busybox mv "\$@"
-EOF
-chmod 755 "$T/reject-mv/mv"
-no fail-publish-rc env PATH="$T/reject-mv:$PATH" sh "$T/pkgs/pb2/install.sh" >/dev/null 2>&1
-check_assets fail-publish-keeps-a "$ha"
+# Item 4: upgrade aborts if daemon_stop fails (fault injection on daemon_stop).
+make_pkg "$T/pkgs/pstopfail" "0.2.0" 2 arm "console.log('SF');" ":host{color:#5f0;}" >/dev/null
+printf '\ndaemon_stop() { return 1; }\n' >>"$T/pkgs/pstopfail/lib/daemon.sh"
+out=$(sh "$T/pkgs/pstopfail/install.sh" 2>&1)
+rc=$?
+no upg-stopfail-rc test "$rc" -eq 0
+has upg-stopfail-msg "停止 Bifrost 服务失败" "$out"
+check_assets upg-stopfail-keeps-a "$ha"
+
+rm "$T/pkgs/pstopfail/lib/daemon.sh"
+out=$(sh "$T/pkgs/pstopfail/install.sh" 2>&1)
+eq upg-missing-stop-rc 1 "$?"
+has upg-missing-stop-msg "缺少 daemon_stop" "$out"
+ok upg-missing-stop-preserves-script test -x "$BIFROST_SCRIPTS/bifrost_config.sh"
 
 # =====================================================================
-# 8. Unmet environment checks (no tun, bad arch, arm64 on armv7l, missing tool)
+# 9. Unmet environment checks — every case verifies error reason (Item 22)
 # =====================================================================
 inst_setup
 make_pkg "$T/pkgs/envok" "0.1.0" 1 arm "console.log('e');" ":host{}" >/dev/null
@@ -418,34 +407,47 @@ make_pkg "$T/pkgs/envok" "0.1.0" 1 arm "console.log('e');" ":host{}" >/dev/null
 # Missing TUN
 rm -f "$BIFROST_TUN_DEV"
 out=$(sh "$T/pkgs/envok/install.sh" 2>&1)
-no env-no-tun-rc test "$?" -eq 0
+rc=$?
+no env-no-tun-rc test "$rc" -eq 0
 has env-no-tun-msg "TUN" "$out"
 : >"$BIFROST_TUN_DEV"
 
 # Unsupported arch x86_64
 echo x86_64 >"$MOCK_STATE/uname_m"
 out=$(sh "$T/pkgs/envok/install.sh" 2>&1)
-no env-bad-arch-rc test "$?" -eq 0
+rc=$?
+no env-bad-arch-rc test "$rc" -eq 0
 has env-bad-arch-msg "架构" "$out"
 
 # arm64 package on armv7l kernel
 echo armv7l >"$MOCK_STATE/uname_m"
 make_pkg "$T/pkgs/arm64pkg" "0.1.0" 1 arm64 "console.log('e');" ":host{}" >/dev/null
 out=$(sh "$T/pkgs/arm64pkg/install.sh" 2>&1)
-no env-arm64-on-v7-rc test "$?" -eq 0
+rc=$?
+no env-arm64-on-v7-rc test "$rc" -eq 0
 has env-arm64-on-v7-msg "arm64" "$out"
 echo aarch64 >"$MOCK_STATE/uname_m"
 
-# Missing curl
-no env-no-curl env PATH="/src/tests/shell/mock/bin:/opt/bb125/bin:/opt/tools/bin" \
-    sh "$T/pkgs/envok/install.sh" >/dev/null 2>&1
+# Missing curl: build a clean mock bin dir without curl (Item 1 fix!)
+mkdir -p "$T/nocurl-bin"
+for _mb in /src/tests/shell/mock/bin/*; do
+    [ "${_mb##*/}" = curl ] && continue
+    ln -sf "$_mb" "$T/nocurl-bin/${_mb##*/}"
+done
+out=$(PATH="$T/nocurl-bin:/opt/bb125/bin:/opt/tools/bin" sh "$T/pkgs/envok/install.sh" 2>&1)
+rc=$?
+no env-no-curl-rc test "$rc" -eq 0
+has env-no-curl-msg "curl" "$out"
 
 # Missing base.sh
 rm -f "$BIFROST_KSROOT/scripts/base.sh"
-no env-no-base sh "$T/pkgs/envok/install.sh" >/dev/null 2>&1
+out=$(sh "$T/pkgs/envok/install.sh" 2>&1)
+rc=$?
+no env-no-base-rc test "$rc" -eq 0
+has env-no-base-msg "base.sh" "$out"
 
 # =====================================================================
-# 9. Lock held: waits then fails
+# 10. Lock held: waits then fails AND leaves lock dir untouched (Item 22)
 # =====================================================================
 inst_setup
 make_pkg "$T/pkgs/locktest" "0.1.0" 1 arm "console.log('l');" ":host{}" >/dev/null
@@ -458,105 +460,162 @@ t0=$(date +%s)
 out=$(BIFROST_INSTALL_LOCK_WAIT=2 sh "$T/pkgs/locktest/install.sh" 2>&1)
 rc=$?
 t1=$(date +%s)
-kill "$holder" 2>/dev/null || true
-wait "$holder" 2>/dev/null || true
 
 no lock-busy-rc test "$rc" -eq 0
 ok lock-busy-waited test "$((t1 - t0))" -ge 2
 has lock-busy-msg "正在进行" "$out"
+ok lock-busy-dir-still-exists test -d "$BIFROST_RUN/lock.state"
+eq lock-busy-pid-preserved "$holder" "$(cat "$BIFROST_RUN/lock.state/pid" 2>/dev/null)"
+
+kill "$holder" 2>/dev/null || true
+wait "$holder" 2>/dev/null || true
+rm -rf "$BIFROST_RUN/lock.state"
 
 # =====================================================================
-# 10. Concurrent installs: only one proceeds (wait=0) & serialized (wait=10)
+# 11. Concurrent installs: deterministic exclusion & serialization (Item 1)
 # =====================================================================
 inst_setup
 : >"$BIFROST_RES/unrelated.js"
 : >"$BIFROST_RES/bifrost-app.notes.css"
 hc1=$(make_pkg "$T/pkgs/c1" "0.1.0" 1 arm "console.log('C1');" ":host{color:#c01;}")
-hc2=$(make_pkg "$T/pkgs/c2" "0.1.0" 1 arm "console.log('C2');" ":host{color:#c02;}")
-echo 2 >"$MOCK_STATE/core_sleep"
+hc2=$(make_pkg "$T/pkgs/c2" "0.2.0" 2 arm "console.log('C2');" ":host{color:#c02;}")
 
-# Part A: with wait=0, two simultaneous installs -> exactly one succeeds, one fails busy
-BIFROST_INSTALL_LOCK_WAIT=0 sh "$T/pkgs/c1/install.sh" >/dev/null 2>&1 &
+# Wrap real core_install_file ONLY to coordinate deterministic overlap timing.
+for _cp in "$T/pkgs/c1" "$T/pkgs/c2"; do
+    wrap_real_core_install "$_cp/lib/update.sh"
+    cat >>"$_cp/lib/update.sh" <<'EOF'
+core_install_file() {
+    echo "ENTER $$" >>"$MOCK_STATE/concurrency.log"
+    : >"$MOCK_STATE/in_critical"
+    if [ -n "${BIFROST_TEST_GATE:-}" ]; then
+        _gate_wait=0
+        while [ ! -f "$BIFROST_TEST_GATE" ]; do
+            [ "$_gate_wait" -lt 300 ] || return 1
+            usleep 100000
+            _gate_wait=$((_gate_wait + 1))
+        done
+    fi
+    _inner_cif "$@"
+    _rc=$?
+    echo "LEAVE $$" >>"$MOCK_STATE/concurrency.log"
+    return "$_rc"
+}
+EOF
+done
+
+# Part A: while c1 holds the lock (in_critical exists), c2 with wait=0 MUST fail busy.
+rm -f "$MOCK_STATE/in_critical"
+BIFROST_TEST_GATE="$T/release1" BIFROST_INSTALL_LOCK_WAIT=0 sh "$T/pkgs/c1/install.sh" >"$T/c1.out" 2>&1 &
 p1=$!
-BIFROST_INSTALL_LOCK_WAIT=0 sh "$T/pkgs/c2/install.sh" >/dev/null 2>&1 &
-p2=$!
+_wi=0
+while [ ! -f "$MOCK_STATE/in_critical" ] && [ "$_wi" -lt 300 ]; do
+    usleep 100000 2>/dev/null || sleep 1
+    _wi=$((_wi + 1))
+done
+ok conc-c1-entered test -f "$MOCK_STATE/in_critical"
+c2_out=$(BIFROST_INSTALL_LOCK_WAIT=0 sh "$T/pkgs/c2/install.sh" 2>&1)
+r2=$?
+: >"$T/release1"
 r1=0; wait "$p1" || r1=$?
-r2=0; wait "$p2" || r2=$?
-ok conc-one-wins test \( "$r1" -eq 0 -a "$r2" -ne 0 \) -o \( "$r1" -ne 0 -a "$r2" -eq 0 \)
-if [ "$r1" -eq 0 ]; then
-    check_assets conc-winner "$hc1"
-else
-    check_assets conc-winner "$hc2"
-fi
+eq conc-c1-wins 0 "$r1"
+no conc-c2-rejected test "$r2" -eq 0
+has conc-c2-busy-msg "正在进行" "$c2_out"
+check_assets conc-winner "$hc1"
 
-# Part B: with wait=10, two simultaneous installs serialize cleanly with zero overlap
+# Part B: with wait=60, c2 waits for c1 and executes serially with zero overlap.
 : >"$MOCK_STATE/concurrency.log"
-echo 1 >"$MOCK_STATE/core_sleep"
-BIFROST_INSTALL_LOCK_WAIT=10 sh "$T/pkgs/c1/install.sh" >/dev/null 2>&1 &
+rm -f "$MOCK_STATE/in_critical"
+BIFROST_TEST_GATE="$T/release2" BIFROST_INSTALL_LOCK_WAIT=60 sh "$T/pkgs/c1/install.sh" >"$T/c1b.out" 2>&1 &
 p1=$!
-BIFROST_INSTALL_LOCK_WAIT=10 sh "$T/pkgs/c2/install.sh" >/dev/null 2>&1 &
+_wi=0
+while [ ! -f "$MOCK_STATE/in_critical" ] && [ "$_wi" -lt 300 ]; do
+    usleep 100000 2>/dev/null || sleep 1
+    _wi=$((_wi + 1))
+done
+BIFROST_INSTALL_LOCK_WAIT=60 sh "$T/pkgs/c2/install.sh" >"$T/c2b.out" 2>&1 &
 p2=$!
+: >"$T/release2"
 r1=0; wait "$p1" || r1=$?
 r2=0; wait "$p2" || r2=$?
 eq conc-ser-r1 0 "$r1"
 eq conc-ser-r2 0 "$r2"
-# Verify ENTER/LEAVE pairs never overlap (line 1 ENTER pA, line 2 LEAVE pA, line 3 ENTER pB, line 4 LEAVE pB)
 eq conc-ser-order "$(printf 'ENTER\nLEAVE\nENTER\nLEAVE')" "$(cut -d ' ' -f 1 "$MOCK_STATE/concurrency.log")"
-if grep -Fq "src=\"/res/bifrost-app.$hc1.js\"" "$BIFROST_WEBS/Module_bifrost.asp"; then
-    check_assets conc-ser-final "$hc1"
-else
-    check_assets conc-ser-final "$hc2"
-fi
-rm -f "$MOCK_STATE/core_sleep"
+check_assets conc-ser-final "$hc2"
 
 # =====================================================================
-# 11. Uninstall: every item in PLAN 15.2 removed; state & unrelated kept
+# 12. Uninstall: failure when daemon_stop fails (Item 4), $0 safety (Item 7),
+#     and complete snapshot-verified removal preserving state (Items 3 & 11)
 # =====================================================================
-mkdir -p "$BIFROST_STATE" "$BIFROST_RUN" "$BIFROST_SOCK_DIR"
+inst_setup
+: >"$BIFROST_RES/unrelated.js"
+: >"$BIFROST_RES/bifrost-app.notes.css"
+: >"$BIFROST_SCRIPTS/bifrost_local.sh"
+dbus set other_plugin_enable=1
+snapshot_sandbox >"$T/uninst_before.snap"
+
+hu=$(make_pkg "$T/pkgs/vu" "0.3.0" 3 arm "console.log('U');" ":host{color:#777;}")
+printf '#!/bin/sh\necho extra\n' >"$T/pkgs/vu/scripts/bifrost_extra.sh"
+out=$(sh "$T/pkgs/vu/install.sh" 2>&1)
+eq uninst-prep-rc 0 "$?"
+check_assets uninst-prep "$hu"
+
+mkdir -p "$BIFROST_STATE"
 printf 'preserve-me\n' >"$BIFROST_STATE/tailscaled.state"
-: >"$BIFROST_RUN/bifrost.log"
-: >"$BIFROST_RUN/bifrostd.log"
-: >"$BIFROST_SOCK"
-: >"$BIFROST_UPLOAD/bifrost_status.json"
+dbus set bifrost_enable=1
+dbus set bifrost_magicdns=1
+
+# Start real daemon so real PID, socket, fw chains, dnsmasq conf, and bifrost_watchdog cron exist!
+sh -c '
+    . "$BIFROST_LIB/env.sh"
+    . "$BIFROST_LIB/validate.sh"
+    . "$BIFROST_LIB/common.sh"
+    for m in daemon fw dns status; do . "$BIFROST_LIB/$m.sh"; done
+    daemon_start
+'
+eq uninst-start-rc 0 "$?"
+has uninst-pre-cru "bifrost_watchdog" "$(cru l)"
+ok uninst-pre-dns test -f "$BIFROST_DNSMASQ_CONF"
 : >"$BIFROST_UPLOAD/bifrost_update.json"
 : >"$BIFROST_UPLOAD/bifrost_logs.txt"
-: >"$BIFROST_DNSMASQ_CONF"
 : >"$BIFROST_RES/.bifrost-app.new"
 : >"$BIFROST_WEBS/.bifrost-app.new"
 : >"$BIFROST_RES/bifrost-app.0123456789abcdef0123.js"
-cru a bifrost "*/2 * * * * sh $BIFROST_SCRIPTS/bifrost_config.sh local watchdog"
-dbus set other_plugin_enable=1
 
-: >"$MOCK_STATE/install_calls.log"
+# Item 4: if daemon_stop fails during uninstall, uninstall MUST abort and keep scripts/core/dbus!
+cp "$BIFROST_LIB/daemon.sh" "$T/daemon.sh.orig"
+printf '\ndaemon_stop() { return 1; }\n' >>"$BIFROST_LIB/daemon.sh"
 out=$(sh "$BIFROST_SCRIPTS/uninstall_bifrost.sh" 2>&1)
+rc=$?
+no uninst-stopfail-rc test "$rc" -eq 0
+has uninst-stopfail-msg "已中止卸载并保留现有脚本" "$out"
+ok uninst-stopfail-keeps-self test -x "$BIFROST_SCRIPTS/uninstall_bifrost.sh"
+ok uninst-stopfail-keeps-core test -x "$BIFROST_CORE"
+ok uninst-stopfail-keeps-cfg test -x "$BIFROST_SCRIPTS/bifrost_config.sh"
+eq uninst-stopfail-keeps-dbus 1 "$(dbus get softcenter_module_bifrost_install)"
+rm "$BIFROST_LIB/daemon.sh"
+out=$(sh "$BIFROST_SCRIPTS/uninstall_bifrost.sh" 2>&1)
+eq uninst-missing-stop-rc 1 "$?"
+has uninst-missing-stop-msg "缺少 daemon_stop" "$out"
+ok uninst-missing-stop-keeps-core test -x "$BIFROST_CORE"
+mv -f "$T/daemon.sh.orig" "$BIFROST_LIB/daemon.sh"
+
+# Item 7: running uninstall.sh from the package dir (under $T/pkgs/vu) must target $BIFROST_KSROOT,
+# NOT $T/pkgs (must NOT delete $T/pkgs/vu/version or anything outside $BIFROST_KSROOT!).
+out=$(sh "$T/pkgs/vu/uninstall.sh" 2>&1)
 eq uninst-rc 0 "$?"
 has uninst-done "卸载完成" "$out"
-has uninst-called-stop "daemon_stop" "$(cat "$MOCK_STATE/install_calls.log")"
+ok uninst-pkgdir-untouched test -f "$T/pkgs/vu/version"
 
-# Every single installed and runtime path removed
-no uninst-home test -e "$BIFROST_HOME"
-no uninst-sock test -e "$BIFROST_SOCK_DIR"
-no uninst-run test -e "$BIFROST_RUN"
+# Item 11: exact before/after sandbox snapshot equality (proves zero leftover files/symlinks/dirs!)
+snapshot_sandbox >"$T/uninst_after.snap"
+eq uninst-snapshot-exact "$(cat "$T/uninst_before.snap")" "$(cat "$T/uninst_after.snap")"
+
+# Verify cron, fw, dns, dbus cleaned and state + unrelated preserved
+eq uninst-cru-empty "" "$(cru l | grep bifrost || true)"
 no uninst-dnsmasq test -e "$BIFROST_DNSMASQ_CONF"
-no uninst-s99 test -e "$BIFROST_INITD/S99bifrost.sh"
-no uninst-n99 test -e "$BIFROST_INITD/N99bifrost.sh"
-no uninst-ksbin test -e "$BIFROST_KSBIN/bifrost"
-no uninst-cfg-sh test -e "$BIFROST_SCRIPTS/bifrost_config.sh"
-no uninst-status-sh test -e "$BIFROST_SCRIPTS/bifrost_status.sh"
-no uninst-self test -e "$BIFROST_SCRIPTS/uninstall_bifrost.sh"
-no uninst-asp test -e "$BIFROST_WEBS/Module_bifrost.asp"
-no uninst-asp-tmp test -e "$BIFROST_WEBS/.bifrost-app.new"
-no uninst-icon test -e "$BIFROST_RES/icon-bifrost.png"
-no uninst-res-tmp test -e "$BIFROST_RES/.bifrost-app.new"
-no uninst-upload ls "$BIFROST_UPLOAD"/bifrost_* >/dev/null 2>&1
-# shellcheck disable=SC2012
-eq uninst-res-unrelated "$(printf 'bifrost-app.notes.css\nunrelated.js')" "$(ls -1A "$BIFROST_RES" | sort)"
-eq uninst-cru "" "$(cru l | grep '#bifrost#' || true)"
 eq uninst-dbus-bifrost "" "$(dbus list bifrost_)"
 eq uninst-dbus-sc "" "$(dbus list softcenter_module_bifrost_)"
 no uninst-no-command-v test -e "$MOCK_STATE/used-command"
-
-# Preserved items untouched
 eq uninst-state-kept "preserve-me" "$(cat "$BIFROST_STATE/tailscaled.state")"
 eq uninst-other-dbus 1 "$(dbus get other_plugin_enable)"
 

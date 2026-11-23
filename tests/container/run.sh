@@ -9,9 +9,10 @@
 #   iptables), headscale v0.29.7 pre-auth key minting, fake software center,
 #   LAN echo server, and official tailscale v1.104.7 peer login.
 # Stage B (runs when core/build.sh and P1-P3 libs exist, or with --full):
-#   builds native test core, packages Bifrost, installs via real install.sh,
-#   and runs tests/container/suite.sh (login, status, 3 SNAT modes, local_access,
-#   fw_clear, watchdog, core update failure & rollback, uninstall).
+#   builds native test core, builds real web/dist, packages Bifrost, installs
+#   via real install.sh, and runs tests/container/suite.sh (login, status,
+#   3 SNAT modes, local_access, fw_clear, watchdog, core update failures &
+#   rollback, uninstall).
 #
 # Usage:
 #   tests/container/run.sh [--smoke-only | --full]
@@ -65,7 +66,7 @@ LAN_CTR="bifrost-it-lan-${RUN_ID}"
 WORK=$(mktemp -d)
 # shellcheck disable=SC2329
 cleanup() {
-    docker rm -f "$PEER_CTR" "$ROUTER_CTR" "$LAN_CTR" "$HS_CTR" >/dev/null 2>&1 || true
+    docker rm -fv "$PEER_CTR" "$ROUTER_CTR" "$LAN_CTR" "$HS_CTR" >/dev/null 2>&1 || true
     docker network rm "$WAN_NET" "$LAN_NET" >/dev/null 2>&1 || true
     rm -rf "$WORK"
 }
@@ -146,7 +147,6 @@ while [ "$i" -lt 30 ]; do
 done
 if [ "$i" -ge 30 ]; then
     echo "error: headscale did not become healthy" >&2
-    docker logs "$HS_CTR" >&2 || true
     exit 1
 fi
 
@@ -206,7 +206,7 @@ while [ "$i" -lt 20 ]; do
 done
 docker exec "$PEER_CTR" tailscale up \
     --login-server="$HS_URL" \
-    --auth-key="$AUTHKEY" \
+    --auth-key="$AUTHKEY" --timeout=45s \
     --hostname=test-peer \
     --accept-dns=false >/dev/null
 peer_ip=$(docker exec "$PEER_CTR" tailscale ip -4 | head -n 1)
@@ -218,7 +218,7 @@ echo "PASS [stage-a] official tailscale v1.104.7 peer joined headscale ($peer_ip
 
 # 9. Decide whether to run Stage B (full real-core + real-scripts integration suite).
 has_real=1
-for req in core/build.sh \
+for req in core/build.sh core/recipe.json web/package.json \
     plugin/bifrost/lib/daemon.sh \
     plugin/bifrost/lib/fw.sh \
     plugin/bifrost/lib/dns.sh \
@@ -235,41 +235,49 @@ if [ "$mode" = smoke ]; then
 fi
 if [ "$has_real" = 0 ]; then
     if [ "$mode" = full ]; then
-        echo "error: --full requested but core/build.sh or P1-P3 plugin libs are not present yet" >&2
+        echo "error: --full requested but required core/web/plugin files are missing" >&2
         exit 1
     fi
-    echo "Container Stage A passed (Stage B skipped: waiting for core/build.sh and P1-P3 libs)."
+    echo "Container Stage A passed (Stage B skipped: waiting for core/web/plugin files)."
     exit 0
 fi
 
-# Build host-native test core and assemble a test package for Stage B.
-echo "==> Building host-native test core for Stage B..."
+# Build from the current recipe, including when a previous run left an ELF in core/out/.
 host_m=$(uname -m)
 case "$host_m" in
     x86_64 | amd64) test_arch=amd64 ;;
     aarch64 | arm64) test_arch=arm64 ;;
     *) echo "error: unsupported host arch for test core: $host_m" >&2; exit 1 ;;
 esac
-"$REPO_ROOT/core/build.sh" --test-arch "$test_arch"
 test_bin="$REPO_ROOT/core/out/test/bifrostd-linux-${test_arch}"
+echo "==> Building host-native test core (linux/$test_arch)..."
+"$REPO_ROOT/core/build.sh" --test-arch "$test_arch"
 [ -x "$test_bin" ] || { echo "error: test core missing: $test_bin" >&2; exit 1; }
 
-# Wrap native test core in a single-arch arm64 manifest (router container mocks uname -m = aarch64).
+# Read version and recipe metadata from core/recipe.json (never execute the
+# Linux ELF test binary on a macOS host; Item 16).
+ts_ver=$(jq -r '.tailscale.version' "$REPO_ROOT/core/recipe.json")
+ts_commit=$(jq -r '.tailscale.commit' "$REPO_ROOT/core/recipe.json")
+go_ver=$(jq -r '.go' "$REPO_ROOT/core/recipe.json")
+omit_json=$(jq -c '.omit' "$REPO_ROOT/core/recipe.json")
+
+# Wrap native Linux test core in a single-arch arm64 manifest (router container mocks uname -m = aarch64).
 core_dir="$WORK/core"
 mkdir -p "$core_dir"
-ts_ver=$("$test_bin" --version 2>/dev/null | head -n 1 || echo "1.104.7")
 gzip -9 -n -c "$test_bin" >"$core_dir/bifrost-core-${ts_ver}-1-linux-arm64.gz"
 raw_sha=$(openssl dgst -sha256 -r "$test_bin" | cut -d ' ' -f 1)
 raw_size=$(wc -c <"$test_bin" | tr -d ' ')
 gz_sha=$(openssl dgst -sha256 -r "$core_dir/bifrost-core-${ts_ver}-1-linux-arm64.gz" | cut -d ' ' -f 1)
 gz_size=$(wc -c <"$core_dir/bifrost-core-${ts_ver}-1-linux-arm64.gz" | tr -d ' ')
 jq -n \
-    --arg ver "$ts_ver" --arg gz_sha "$gz_sha" --argjson gz_size "$gz_size" \
+    --arg ver "$ts_ver" --arg go "$go_ver" --arg commit "$ts_commit" \
+    --argjson omit "$omit_json" \
+    --arg gz_sha "$gz_sha" --argjson gz_size "$gz_size" \
     --arg raw_sha "$raw_sha" --argjson raw_size "$raw_size" \
     '{
       schema: 1, serial: 1, tailscale: $ver, revision: 1,
       tag: ("core-" + $ver + "-1"), min_plugin: "0.1.0",
-      build: { go: "1.27.4", commit: "test", omit: [] },
+      build: { go: $go, commit: $commit, omit: $omit },
       assets: { arm64: {
         file: ("bifrost-core-" + $ver + "-1-linux-arm64.gz"),
         size: $gz_size, sha256: $gz_sha,
@@ -277,29 +285,9 @@ jq -n \
       } }
     }' >"$core_dir/core.json"
 
-# Use real web/dist if web exists, else minimal placeholder web dist for container runtime tests.
-web_opt=""
-if [ ! -f "$REPO_ROOT/web/dist/Module_bifrost.asp" ]; then
-    web_tmp="$WORK/web-dist"
-    mkdir -p "$web_tmp/res"
-    h=$(printf 'it-js\nit-css\n' | openssl dgst -sha256 -r | cut -c1-20)
-    printf 'it-js\n' >"$web_tmp/res/bifrost-app.$h.js"
-    printf 'it-css\n' >"$web_tmp/res/bifrost-app.$h.css"
-    printf 'png\n' >"$web_tmp/res/icon-bifrost.png"
-    cat >"$web_tmp/Module_bifrost.asp" <<EOF
-<!DOCTYPE html>
-<html><body id="app" skin="ASUSWRT" onload="init();">
-<div id="bifrost-app"></div>
-<script defer src="/res/bifrost-app.$h.js"></script>
-</body></html>
-EOF
-    web_opt="$web_tmp"
-else
-    web_opt="$REPO_ROOT/web/dist"
-fi
-
+# With no --web-dist, packaging builds the current checkout's page.
 ver=$(tr -d ' \t\r\n' <"$REPO_ROOT/plugin/bifrost/version")
-"$REPO_ROOT/packaging/build.sh" --core-dir "$core_dir" --arch arm64 --web-dist "$web_opt" --out "$WORK/dist"
+"$REPO_ROOT/packaging/build.sh" --core-dir "$core_dir" --arch arm64 --out "$WORK/dist"
 PKG_TAR="$WORK/dist/bifrost-${ver}-hnd-arm64.tar.gz"
 
 export HS_CTR ROUTER_CTR PEER_CTR LAN_CTR HS_URL AUTHKEY PKG_TAR

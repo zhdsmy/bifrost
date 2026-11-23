@@ -1,57 +1,35 @@
 #!/bin/sh
 # Bifrost uninstaller for KoolCenter / Koolshare software center.
 # Installed as $BIFROST_SCRIPTS/uninstall_bifrost.sh.
-# Follows docs/PLAN.md section 15.2 and docs/dev/contract.md section 2.
+# Follows docs/PLAN.md section 15.2 and docs/dev/contract.md sections 2 & 7.
 # Asset cleanup and dbus removal adapted from po0fw asus-merlin (MIT), commit 0d9532d.
 
 : "${BIFROST_INSTALL_LOCK_WAIT:=60}"
 
-# Derive Koolshare root from installed script path ($BIFROST_KSROOT/scripts/uninstall_bifrost.sh)
-# unless overridden by the environment (tests).
-_un_self_ks=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)
-if [ -z "${BIFROST_KSROOT:-}" ]; then
-    BIFROST_KSROOT=$_un_self_ks
-fi
-_un_lib=${BIFROST_LIB:-$BIFROST_KSROOT/bifrost/lib}
+# Always resolve the installed library location via env.sh defaults (or test
+# environment overrides), never from $0 (running from /tmp/bifrost/ must not
+# target /tmp as root).
+_un_ks=${BIFROST_KSROOT:-/koolshare}
+_un_lib=${BIFROST_LIB:-$_un_ks/bifrost/lib}
 
-if [ -f "$_un_lib/env.sh" ]; then
-    # shellcheck disable=SC1091
-    . "$_un_lib/env.sh"
-fi
-if [ -f "${BIFROST_SCRIPTS:-$BIFROST_KSROOT/scripts}/base.sh" ]; then
-    # shellcheck disable=SC1091
-    . "${BIFROST_SCRIPTS:-$BIFROST_KSROOT/scripts}/base.sh"
-fi
-if [ -f "$_un_lib/validate.sh" ]; then
-    # shellcheck disable=SC1091
-    . "$_un_lib/validate.sh"
-fi
-if [ -f "$_un_lib/common.sh" ]; then
-    # shellcheck disable=SC1091
-    . "$_un_lib/common.sh"
+if [ ! -f "$_un_lib/env.sh" ] || [ ! -f "$_un_lib/validate.sh" ] || [ ! -f "$_un_lib/common.sh" ]; then
+    echo "未找到已安装的 Bifrost 脚本库（$_un_lib），无法安全卸载"
+    exit 1
 fi
 
-# Fallbacks in case libraries were partially removed before uninstall ran.
-: "${BIFROST_HOME:=$BIFROST_KSROOT/bifrost}"
-: "${BIFROST_SCRIPTS:=$BIFROST_KSROOT/scripts}"
-: "${BIFROST_WEBS:=$BIFROST_KSROOT/webs}"
-: "${BIFROST_RES:=$BIFROST_KSROOT/res}"
-: "${BIFROST_INITD:=$BIFROST_KSROOT/init.d}"
-: "${BIFROST_KSBIN:=$BIFROST_KSROOT/bin}"
-: "${BIFROST_STATE:=$BIFROST_KSROOT/configs/bifrost}"
-: "${BIFROST_RUN:=/tmp/bifrost-run}"
-: "${BIFROST_SOCK_DIR:=/var/run/bifrost}"
-: "${BIFROST_UPLOAD:=/tmp/upload}"
-: "${BIFROST_DNSMASQ_CONF:=/jffs/configs/dnsmasq.d/bifrost.conf}"
-
-if ! type has_cmd >/dev/null 2>&1; then
-    has_cmd() { type "$1" >/dev/null 2>&1; }
+# shellcheck disable=SC1091
+. "$_un_lib/env.sh"
+if [ -f "$BIFROST_SCRIPTS/base.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$BIFROST_SCRIPTS/base.sh"
 fi
+# shellcheck disable=SC1091
+. "$_un_lib/validate.sh"
+# shellcheck disable=SC1091
+. "$_un_lib/common.sh"
+
 if ! has_cmd echo_date; then
     echo_date() { echo "$@"; }
-fi
-if ! has_cmd log; then
-    log() { :; }
 fi
 
 for _un_m in daemon fw dns status login settings migrate update diag; do
@@ -63,12 +41,12 @@ _un_lock_held=0
 _un_done=0
 # shellcheck disable=SC2329
 _un_on_exit() {
-    if [ "$_un_lock_held" = 1 ] && has_cmd lock_release; then
+    if [ "$_un_lock_held" = 1 ]; then
         lock_release state
         _un_lock_held=0
     fi
     if [ "$_un_done" = 1 ]; then
-        rm -rf "$BIFROST_RUN"
+        rmdir "$BIFROST_RUN" 2>/dev/null || true
     fi
 }
 trap '_un_on_exit' EXIT
@@ -76,43 +54,46 @@ trap '_un_on_exit; exit 130' INT
 trap '_un_on_exit; exit 143' TERM
 
 # Hold the state lock for the entire uninstall (contract section 2).
-if has_cmd lock_acquire; then
-    if ! lock_acquire state "$BIFROST_INSTALL_LOCK_WAIT"; then
-        echo_date "另一个 Bifrost 操作正在进行，等待超时，退出卸载"
-        log uninstall "failed to acquire state lock"
-        exit 1
-    fi
-    _un_lock_held=1
+if ! lock_acquire state "$BIFROST_INSTALL_LOCK_WAIT"; then
+    echo_date "另一个 Bifrost 操作正在进行，等待超时，退出卸载"
+    log uninstall "failed to acquire state lock"
+    exit 1
 fi
+_un_lock_held=1
 
 echo_date "正在卸载 Bifrost..."
 log uninstall "starting uninstall"
 
-# Step 1 & 2: stop daemon, remove watchdog cron, firewall chains, dnsmasq config (PLAN 15.2 steps 1-2).
-if has_cmd daemon_stop; then
-    daemon_stop || log uninstall "daemon_stop returned non-zero during uninstall"
+# Steps 1 & 2: require daemon_stop (removes watchdog cron, firewall chains,
+# dnsmasq config, stops daemon and runs --cleanup; PLAN 6.3 & 15.2).
+# If the service cannot be stopped, abort and keep scripts so the user can retry.
+if ! has_cmd daemon_stop; then
+    echo_date "缺少 daemon_stop 函数，无法安全停止 Bifrost 服务，已中止卸载并保留现有脚本"
+    log uninstall "daemon_stop unavailable; aborting uninstall"
+    exit 1
 fi
-if has_cmd cru; then
-    cru d bifrost >/dev/null 2>&1 || true
-fi
-if has_cmd fw_clear; then
-    fw_clear >/dev/null 2>&1 || true
-fi
-if has_cmd dns_clear; then
-    dns_clear >/dev/null 2>&1 || true
-elif [ -f "$BIFROST_DNSMASQ_CONF" ]; then
-    rm -f "$BIFROST_DNSMASQ_CONF"
-    if has_cmd service; then
-        service restart_dnsmasq >/dev/null 2>&1 || true
-    fi
+if ! daemon_stop || daemon_running; then
+    echo_date "无法停止 Bifrost 服务，已中止卸载并保留现有脚本，请稍后重试"
+    log uninstall "daemon_stop failed or daemon still running; aborting uninstall"
+    exit 1
 fi
 
-# Step 3: remove all installed files and runtime files (PLAN 15.2 step 3).
+# Step 3: remove every file installed by install.sh and all runtime files (PLAN 15.2 step 3).
 # Step 5: preserve $BIFROST_STATE (/koolshare/configs/bifrost/).
+if [ -f "$BIFROST_HOME/installed.scripts" ]; then
+    while IFS= read -r _un_name; do
+        case "$_un_name" in
+            */*) continue ;;
+            bifrost_*.sh) rm -f "$BIFROST_SCRIPTS/$_un_name" || exit 1 ;;
+        esac
+    done <"$BIFROST_HOME/installed.scripts"
+fi
+
 rm -rf "$BIFROST_HOME" "$BIFROST_SOCK_DIR"
 rm -f "$BIFROST_INITD/S99bifrost.sh" "$BIFROST_INITD/N99bifrost.sh"
 rm -f "$BIFROST_KSBIN/bifrost"
-rm -f "$BIFROST_SCRIPTS/bifrost_config.sh" "$BIFROST_SCRIPTS/bifrost_status.sh"
+# Older packages installed these two scripts before recording ownership.
+rm -f "$BIFROST_SCRIPTS/bifrost_config.sh" "$BIFROST_SCRIPTS/bifrost_status.sh" "$BIFROST_SCRIPTS/uninstall_bifrost.sh"
 rm -f "$BIFROST_WEBS/Module_bifrost.asp" \
     "$BIFROST_WEBS"/.bifrost-app.new "$BIFROST_WEBS"/.bifrost-app.new.*
 rm -f "$BIFROST_RES/icon-bifrost.png" \
@@ -138,8 +119,10 @@ if has_cmd dbus; then
     done
 fi
 
-rm -f "$BIFROST_SCRIPTS/uninstall_bifrost.sh"
-
 echo_date "Bifrost 卸载完成（登录状态目录 $BIFROST_STATE 已保留）"
+# Release the state lock last. A waiting installer can acquire it immediately.
+for _un_file in "$BIFROST_RUN"/* "$BIFROST_RUN"/.[!.]* "$BIFROST_RUN"/..?*; do
+    [ "$_un_file" = "$BIFROST_RUN/lock.state" ] || rm -rf "$_un_file" || exit 1
+done
 _un_done=1
 exit 0

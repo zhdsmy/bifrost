@@ -1,6 +1,6 @@
 #!/bin/sh
 # Bifrost installer and upgrader for KoolCenter / Koolshare software center.
-# Follows docs/PLAN.md section 15.1 and docs/dev/contract.md section 2 & 7.
+# Follows docs/PLAN.md section 15.1 and docs/dev/contract.md sections 2, 7 & 8.
 # Page asset atomic swap and dbus registration adapted from po0fw asus-merlin (MIT), commit 0d9532d.
 
 : "${BIFROST_INSTALL_LOCK_WAIT:=60}"
@@ -36,8 +36,25 @@ for _in_m in daemon fw dns status login settings migrate update diag; do
 done
 
 _in_lock_held=0
+_in_need_restart=0
+_in_web_stage=""
 # shellcheck disable=SC2329
 _in_on_exit() {
+    if [ -n "$_in_web_stage" ] && [ -d "$_in_web_stage" ]; then
+        rm -rf "$_in_web_stage"
+    fi
+    # Restore a previously running daemon if an upgrade aborted after daemon_stop (PLAN 15.1 step 8).
+    if [ "$_in_need_restart" = 1 ]; then
+        _in_need_restart=0
+        if ! daemon_running && [ -x "$BIFROST_CORE" ] && has_cmd daemon_start; then
+            echo_date "升级中止，正在尝试恢复原 Bifrost 服务..."
+            log install "restoring previously running daemon after aborted upgrade"
+            if ! daemon_start; then
+                echo_date "恢复原 Bifrost 服务失败（${BIFROST_ERR:-unknown}），请到插件页面查看状态"
+                log install "failed to restore daemon after aborted upgrade: ${BIFROST_ERR:-unknown}"
+            fi
+        fi
+    fi
     if [ "$_in_lock_held" = 1 ]; then
         lock_release state
         _in_lock_held=0
@@ -111,10 +128,9 @@ if [ ! -s "$_in_dir/bin/bifrostd.gz" ] || [ ! -s "$_in_dir/bin/core.json" ]; the
 fi
 
 _in_pkg_arch=$(jq -r '.assets | keys[0] // empty' "$_in_dir/bin/core.json" 2>/dev/null)
-_in_pkg_serial=$(jq -r '.serial // empty' "$_in_dir/bin/core.json" 2>/dev/null)
-if ! valid_arch "$_in_pkg_arch" || ! valid_uint "$_in_pkg_serial"; then
+if ! valid_arch "$_in_pkg_arch"; then
     echo_date "安装包核心清单格式无效，退出安装"
-    log install "invalid package core manifest"
+    log install "invalid package core manifest arch"
     exit 1
 fi
 if [ "$_in_pkg_arch" = arm64 ] && [ "$_in_karch" != aarch64 ]; then
@@ -128,22 +144,8 @@ if [ ! -s "$_in_dir/webs/Module_bifrost.asp" ]; then
     log install "package missing Module_bifrost.asp"
     exit 1
 fi
-_in_js=$(sed -n 's@.*src="/res/\(bifrost-app\.[0-9a-f]\{20\}\.js\)".*@\1@p' "$_in_dir/webs/Module_bifrost.asp" 2>/dev/null | head -n 1)
-if [ -z "$_in_js" ]; then
-    echo_date "安装页缺少有效的资源文件名，退出安装"
-    log install "asp missing hashed asset filename"
-    exit 1
-fi
-_in_css=${_in_js%.js}.css
-for _in_asset in "$_in_js" "$_in_css"; do
-    if [ ! -s "$_in_dir/res/$_in_asset" ]; then
-        echo_date "安装包缺少网页资源 $_in_asset，退出安装"
-        log install "package missing web asset: $_in_asset"
-        exit 1
-    fi
-done
 
-for _in_req in scripts/bifrost_config.sh scripts/bifrost_status.sh uninstall.sh; do
+for _in_req in scripts/bifrost_config.sh scripts/bifrost_status.sh uninstall.sh bin/bifrost; do
     if [ ! -s "$_in_dir/$_in_req" ]; then
         echo_date "安装包缺少 $_in_req，退出安装"
         log install "package missing $_in_req"
@@ -151,8 +153,45 @@ for _in_req in scripts/bifrost_config.sh scripts/bifrost_status.sh uninstall.sh;
     fi
 done
 
-# Cleanup helper for a failed fresh install (never touches $BIFROST_STATE).
+# Snapshot ASP and hashed JS/CSS pair into $BIFROST_RUN now so a concurrent
+# software-center upload clearing /tmp/bifrost cannot desynchronize them.
+_in_web_stage="$BIFROST_RUN/install-web.$$"
+mkdir -p "$_in_web_stage" || {
+    echo_date "创建临时暂存目录失败，退出安装"
+    log install "failed to create web stage dir"
+    exit 1
+}
+chmod 700 "$_in_web_stage" 2>/dev/null || true
+if ! cp -f "$_in_dir/webs/Module_bifrost.asp" "$_in_web_stage/Module_bifrost.asp"; then
+    echo_date "暂存网页外壳文件失败，退出安装"
+    log install "failed to stage Module_bifrost.asp"
+    exit 1
+fi
+_in_js=$(sed -n 's@.*src="/res/\(bifrost-app\.[0-9a-f]\{20\}\.js\)".*@\1@p' "$_in_web_stage/Module_bifrost.asp" 2>/dev/null | head -n 1)
+if [ -z "$_in_js" ]; then
+    echo_date "安装页缺少有效的资源文件名，退出安装"
+    log install "asp missing hashed asset filename"
+    exit 1
+fi
+_in_css=${_in_js%.js}.css
+for _in_asset in "$_in_js" "$_in_css"; do
+    if [ ! -s "$_in_dir/res/$_in_asset" ] || ! cp -f "$_in_dir/res/$_in_asset" "$_in_web_stage/$_in_asset" || [ ! -s "$_in_web_stage/$_in_asset" ]; then
+        echo_date "安装包缺少网页资源 $_in_asset，退出安装"
+        log install "package missing or failed to stage web asset: $_in_asset"
+        exit 1
+    fi
+done
+
+# Cleanup helper for a failed fresh install ONLY (never touches $BIFROST_STATE).
 _in_cleanup_fresh() {
+    if [ -f "$BIFROST_HOME/installed.scripts" ]; then
+        while IFS= read -r _cf_name; do
+            case "$_cf_name" in
+                */*) continue ;;
+                bifrost_*.sh) rm -f "$BIFROST_SCRIPTS/$_cf_name" ;;
+            esac
+        done <"$BIFROST_HOME/installed.scripts"
+    fi
     rm -rf "$BIFROST_HOME"
     rm -f "$BIFROST_SCRIPTS/bifrost_config.sh" "$BIFROST_SCRIPTS/bifrost_status.sh" \
         "$BIFROST_SCRIPTS/uninstall_bifrost.sh"
@@ -170,26 +209,31 @@ if [ "$(dbus get softcenter_module_bifrost_install 2>/dev/null)" = 1 ]; then
     _in_upgrade=1
 fi
 
-# Step 3: on upgrade, remember running state and stop the daemon (PLAN 15.1 step 3).
+# Step 3: on upgrade, remember running state and require daemon_stop to succeed (PLAN 15.1 step 3).
 _in_was_running=0
 if [ "$_in_upgrade" = 1 ]; then
     if daemon_running; then
         _in_was_running=1
     fi
+    if ! has_cmd daemon_stop; then
+        echo_date "缺少 daemon_stop 函数，无法安全停止旧服务，退出升级"
+        log install "daemon_stop function unavailable; aborting upgrade"
+        exit 1
+    fi
     if [ "$_in_was_running" = 1 ]; then
         echo_date "正在停止运行中的 Bifrost 服务..."
         log install "stopping running daemon for upgrade"
     fi
-    if has_cmd daemon_stop; then
-        if ! daemon_stop; then
-            echo_date "停止 Bifrost 服务失败，退出安装"
-            log install "daemon_stop failed"
-            exit 1
-        fi
+    _in_need_restart=$_in_was_running
+    if ! daemon_stop || daemon_running; then
+        echo_date "停止 Bifrost 服务失败，已中止升级，请稍后重试"
+        log install "daemon_stop failed or daemon still running; aborting upgrade"
+        exit 1
     fi
 fi
 
-# Step 4: install core (PLAN 15.1 step 4).
+# Step 4: install core via P1 core_install_file (handles serial check, raw_sha256,
+# --version probe, symlink and manifest write with top-level arch; PLAN 15.1 step 4).
 mkdir -p "$BIFROST_BIN" "$BIFROST_LIB" "$BIFROST_KEYS" \
     "$BIFROST_SCRIPTS" "$BIFROST_WEBS" "$BIFROST_RES" "$BIFROST_INITD" "$BIFROST_KSBIN" || {
     echo_date "创建安装目录失败，退出安装"
@@ -198,51 +242,36 @@ mkdir -p "$BIFROST_BIN" "$BIFROST_LIB" "$BIFROST_KEYS" \
     exit 1
 }
 
-_in_skip_core=0
-if [ "$_in_upgrade" = 1 ] && [ -x "$BIFROST_CORE" ] && [ -f "$BIFROST_MANIFEST" ]; then
-    _in_cur_serial=$(jq -r '.serial // empty' "$BIFROST_MANIFEST" 2>/dev/null)
-    if valid_uint "$_in_cur_serial" && [ "$_in_cur_serial" -gt "$_in_pkg_serial" ]; then
-        _in_skip_core=1
-        echo_date "已安装的核心更新（serial $_in_cur_serial > $_in_pkg_serial），保留现有核心，不降级"
-        log install "keeping newer installed core serial=$_in_cur_serial over package serial=$_in_pkg_serial"
-        ln -sf bifrostd "$BIFROST_CLI"
+BIFROST_ERR=""
+_in_core_ok=0
+if has_cmd core_install_file; then
+    echo_date "正在安装并校验 Bifrost 核心（$_in_pkg_arch）..."
+    if core_install_file "$_in_dir/bin/bifrostd.gz" "$_in_dir/bin/core.json" "$_in_pkg_arch"; then
+        _in_core_ok=1
     fi
+else
+    BIFROST_ERR=not_implemented
 fi
 
-if [ "$_in_skip_core" = 0 ]; then
-    BIFROST_ERR=""
-    _in_core_ok=0
-    if has_cmd core_install_file; then
-        echo_date "正在安装并校验 Bifrost 核心（$_in_pkg_arch）..."
-        if core_install_file "$_in_dir/bin/bifrostd.gz" "$_in_dir/bin/core.json" "$_in_pkg_arch"; then
-            _in_core_ok=1
-        fi
-    else
-        BIFROST_ERR=not_implemented
-    fi
-
-    if [ "$_in_core_ok" = 1 ]; then
-        ln -sf bifrostd "$BIFROST_CLI"
-        if [ "$(jq -r '.serial // empty' "$BIFROST_MANIFEST" 2>/dev/null)" != "$_in_pkg_serial" ]; then
-            atomic_write "$BIFROST_MANIFEST" 644 <"$_in_dir/bin/core.json" || {
-                echo_date "写入核心清单失败，退出安装"
-                log install "failed to write installed core manifest"
-                [ "$_in_upgrade" = 0 ] && _in_cleanup_fresh
-                exit 1
-            }
-        fi
-    else
-        rm -f "$BIFROST_CORE.new"
-        if [ "$_in_upgrade" = 1 ] && [ -x "$BIFROST_CORE" ]; then
+if [ "$_in_core_ok" = 1 ]; then
+    ln -sf bifrostd "$BIFROST_CLI"
+else
+    rm -f "$BIFROST_CORE.new"
+    if [ "$_in_upgrade" = 1 ]; then
+        if [ -x "$BIFROST_CORE" ]; then
             echo_date "新核心安装或校验失败（${BIFROST_ERR:-unknown}），保留原有核心继续使用"
             log install "core_install_file failed (${BIFROST_ERR:-unknown}) on upgrade; keeping old core"
             ln -sf bifrostd "$BIFROST_CLI"
         else
-            echo_date "核心安装或校验失败（${BIFROST_ERR:-unknown}），停止安装并清理"
-            log install "core_install_file failed (${BIFROST_ERR:-unknown}) on fresh install; cleaning up"
-            _in_cleanup_fresh
+            echo_date "新核心校验失败（${BIFROST_ERR:-unknown}）且原核心不可用，中止升级（保留现有设置）"
+            log install "core_install_file failed (${BIFROST_ERR:-unknown}) on upgrade with no usable old core"
             exit 1
         fi
+    else
+        echo_date "核心安装或校验失败（${BIFROST_ERR:-unknown}），停止安装并清理"
+        log install "core_install_file failed (${BIFROST_ERR:-unknown}) on fresh install; cleaning up"
+        _in_cleanup_fresh
+        exit 1
     fi
 fi
 
@@ -250,8 +279,14 @@ fi
 _in_copy_files() {
     for _ic_f in "$_in_dir"/scripts/bifrost_*.sh; do
         [ -f "$_ic_f" ] || continue
-        cp -f "$_ic_f" "$BIFROST_SCRIPTS/${_ic_f##*/}" || return 1
-        chmod 755 "$BIFROST_SCRIPTS/${_ic_f##*/}" || return 1
+        _ic_dst="$BIFROST_SCRIPTS/${_ic_f##*/}"
+        # Keep ownership across upgrades, even if a later package drops a script.
+        _ic_name=${_ic_f##*/}
+        if ! grep -Fxq "$_ic_name" "$BIFROST_HOME/installed.scripts" 2>/dev/null; then
+            printf '%s\n' "$_ic_name" >>"$BIFROST_HOME/installed.scripts" || return 1
+        fi
+        cp -f "$_ic_f" "$_ic_dst" || return 1
+        chmod 755 "$_ic_dst" || return 1
     done
     cp -f "$_in_dir/uninstall.sh" "$BIFROST_SCRIPTS/uninstall_bifrost.sh" || return 1
     chmod 755 "$BIFROST_SCRIPTS/uninstall_bifrost.sh" || return 1
@@ -285,7 +320,7 @@ _in_copy_files() {
         done
     fi
 
-    for _ic_doc in LICENSE LICENSE.tailscale NOTICE.md; do
+    for _ic_doc in LICENSE LICENSE.tailscale NOTICE.md THIRD_PARTY_NOTICES.core.md; do
         if [ -f "$_in_dir/$_ic_doc" ]; then
             cp -f "$_in_dir/$_ic_doc" "$BIFROST_HOME/$_ic_doc" || return 1
             chmod 644 "$BIFROST_HOME/$_ic_doc" || return 1
@@ -295,20 +330,9 @@ _in_copy_files() {
     ln -sf "$BIFROST_SCRIPTS/bifrost_config.sh" "$BIFROST_INITD/S99bifrost.sh" || return 1
     ln -sf "$BIFROST_SCRIPTS/bifrost_config.sh" "$BIFROST_INITD/N99bifrost.sh" || return 1
 
-    if [ -f "$_in_dir/bin/bifrost" ]; then
-        cp -f "$_in_dir/bin/bifrost" "$BIFROST_KSBIN/bifrost" || return 1
-        chmod 755 "$BIFROST_KSBIN/bifrost" || return 1
-    else
-        cat >"$BIFROST_KSBIN/bifrost" <<'EOF' || return 1
-#!/bin/sh
-# Fallback CLI wrapper when packaged before bin/bifrost exists.
-_bf_ks=$(cd "$(dirname "$0")/.." && pwd)
-# shellcheck disable=SC1091
-. "${BIFROST_LIB:-$_bf_ks/bifrost/lib}/env.sh"
-exec "$BIFROST_CLI" --socket="$BIFROST_SOCK" "$@"
-EOF
-        chmod 755 "$BIFROST_KSBIN/bifrost" || return 1
-    fi
+    cp -f "$_in_dir/bin/bifrost" "$BIFROST_KSBIN/bifrost" || return 1
+    chmod 755 "$BIFROST_KSBIN/bifrost" || return 1
+
 }
 
 if ! _in_copy_files; then
@@ -318,7 +342,7 @@ if ! _in_copy_files; then
     exit 1
 fi
 
-# Step 6: atomic web asset and ASP replacement (PLAN 15.1 step 6).
+# Step 6: atomic web asset and ASP replacement from staged snapshot (PLAN 15.1 step 6).
 _in_publish() {
     _ip_tmp="${2%/*}/.bifrost-app.new.$$"
     if cp -f "$1" "$_ip_tmp" && mv -f "$_ip_tmp" "$2"; then
@@ -329,9 +353,9 @@ _in_publish() {
 }
 
 _in_page="$BIFROST_WEBS/Module_bifrost.asp"
-if ! _in_publish "$_in_dir/res/$_in_js" "$BIFROST_RES/$_in_js" ||
-   ! _in_publish "$_in_dir/res/$_in_css" "$BIFROST_RES/$_in_css" ||
-   ! _in_publish "$_in_dir/webs/Module_bifrost.asp" "$_in_page"; then
+if ! _in_publish "$_in_web_stage/$_in_js" "$BIFROST_RES/$_in_js" ||
+   ! _in_publish "$_in_web_stage/$_in_css" "$BIFROST_RES/$_in_css" ||
+   ! _in_publish "$_in_web_stage/Module_bifrost.asp" "$_in_page"; then
     if ! grep -Fq "src=\"/res/$_in_js\"" "$_in_page" 2>/dev/null; then
         rm -f "$BIFROST_RES/$_in_js" "$BIFROST_RES/$_in_css"
     fi
@@ -356,7 +380,7 @@ for _in_old in "$BIFROST_RES"/bifrost-app.*.js "$BIFROST_RES"/bifrost-app.*.css;
     fi
 done
 
-# Step 7: register software center and plugin dbus keys (PLAN 15.1 step 7).
+# Step 7: register software center and plugin dbus keys (PLAN 4.2 & 15.1 step 7).
 for _in_k in $BIFROST_KEYS_ALL; do
     _in_def=$(bifrost_default "$_in_k")
     if [ "$_in_upgrade" = 0 ]; then
@@ -372,7 +396,7 @@ for _in_k in $BIFROST_KEYS_ALL; do
     fi
 done
 
-dbus set bifrost_version="$_in_ver" >/dev/null 2>&1
+[ "$_in_upgrade" = 0 ] || dbus remove bifrost_version >/dev/null 2>&1
 dbus set softcenter_module_bifrost_install=1 >/dev/null 2>&1
 dbus set softcenter_module_bifrost_name=bifrost >/dev/null 2>&1
 dbus set softcenter_module_bifrost_title="Bifrost" >/dev/null 2>&1
@@ -383,13 +407,13 @@ dbus set softcenter_module_bifrost_version="$_in_ver" >/dev/null 2>&1
 # Step 10: $BIFROST_STATE is never modified during install or upgrade.
 if [ "$_in_upgrade" = 1 ]; then
     if [ "$_in_was_running" = 1 ]; then
+        _in_need_restart=0
         echo_date "正在重新启动 Bifrost 服务..."
         log install "restarting daemon after upgrade"
-        if has_cmd daemon_start; then
-            if ! daemon_start; then
-                echo_date "Bifrost 重启失败（${BIFROST_ERR:-unknown}），请到插件页面查看状态"
-                log install "daemon_start failed after upgrade: ${BIFROST_ERR:-unknown}"
-            fi
+        if ! has_cmd daemon_start || ! daemon_start; then
+            echo_date "Bifrost 重启失败（${BIFROST_ERR:-unknown}），请到插件页面查看状态"
+            log install "daemon_start failed after upgrade: ${BIFROST_ERR:-unknown}"
+            exit 1
         fi
     fi
     echo_date "Bifrost $_in_ver 升级完成"
