@@ -191,7 +191,8 @@ All in `$BIFROST_UPLOAD` (`/tmp/upload`), written with `json_write` or
   "core": {
     "tailscale": "1.104.7", "revision": 1, "serial": 7, "arch": "arm",
     "kernel_arch": "aarch64", "size": 25100448, "installed": 1795000000,
-    "prev": true, "update": null
+    "prev": true, "update": null,
+    "build": { "go": "1.27.4", "commit": "cbc74fe4...", "omit": ["aws", "..."] }
   },
   "daemon": { "running": true, "pid": 1234, "restarts": 0 },
   "conflict": { "original_installed": true, "original_running": false },
@@ -238,8 +239,10 @@ All in `$BIFROST_UPLOAD` (`/tmp/upload`), written with `json_write` or
 - `control` is `""` for Tailscale's own server; `official` is true then.
 - `core.update` is `null` or `{"tailscale","revision","serial","tag"}` from
   `$BIFROST_RUN/core_latest.json` (P1 writes it) when its serial is larger.
-- `core.installed` and `core.size` come from the installed core file
-  (`date -r`, `file_size`). `core.prev`: `bifrostd.prev.gz` exists.
+- `core.installed` comes from the installed core file (`date -r`).
+  `core.size` is the installed manifest's `.assets[.arch].raw_size` and
+  `core.build` its `build` object (`null` when missing), so a refresh never
+  reads the 25 MB core. `core.prev`: `bifrostd.prev.gz` exists.
 - `daemon.restarts`: watchdog restarts in the last 30 minutes
   (`$BIFROST_RUN/watchdog.restarts`, one Unix time per line, P2 writes).
 - `routes[].approved`: the CIDR is in `Self.PrimaryRoutes` (or `AllowedIPs`)
