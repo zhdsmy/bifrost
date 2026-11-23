@@ -1,5 +1,5 @@
 #!/bin/sh
-# Tests for plugin/bifrost/lib/status.sh (contract 6.1).
+# Tests for plugin/bifrost/lib/status.sh (contract 6.1 and 8).
 # shellcheck disable=SC1091
 . tests/shell/lib.sh
 
@@ -28,7 +28,7 @@ stop_fake_daemon() {
 
 seed_manifest() {
     cat >"$BIFROST_MANIFEST" <<'EOF'
-{"schema":1,"serial":7,"tailscale":"1.104.7","revision":1,"tag":"core-1.104.7-1","min_plugin":"0.1.0","assets":{"arm":{"file":"bifrost-core-1.104.7-1-linux-arm.gz","size":9590179,"sha256":"aa","raw_size":25100448,"raw_sha256":"bb"}}}
+{"schema":1,"serial":7,"tailscale":"1.104.7","revision":1,"tag":"core-1.104.7-1","min_plugin":"0.1.0","arch":"arm","build":{"go":"1.27.4","commit":"cbc74fe48ef1b1649f69a4d9a602319427e25102","omit":["aws","bird"]},"assets":{"arm":{"file":"bifrost-core-1.104.7-1-linux-arm.gz","size":9590179,"sha256":"aa","raw_size":25100448,"raw_sha256":"bb"}}}
 EOF
 }
 
@@ -48,7 +48,7 @@ dbus_seed bifrost_enable=0
 ok refresh-core-missing status_refresh
 eq state-core-missing "core_missing null null null 0" \
     "$(jq -r '"\(.state) \(.error) \(.self) \(.prefs) \(.peers | length)"' "$ST_OUT")"
-eq core-missing-size-inst "0 null" "$(jq -r '"\(.core.size) \(.core.installed)"' "$ST_OUT")"
+eq core-missing-manifest-size "25100448 null" "$(jq -r '"\(.core.size) \(.core.installed)"' "$ST_OUT")"
 mv "$T/bifrostd.bak" "$BIFROST_CORE"
 
 # --- 2. disabled (precedes conflict, 0 CLI calls) ---
@@ -81,6 +81,14 @@ ok refresh-not-running status_refresh
 eq state-start-failed "error start_failed false null" \
     "$(jq -r '"\(.state) \(.error) \(.daemon.running) \(.daemon.pid)"' "$ST_OUT")"
 
+# A stopped daemon leaves no usable DNS endpoint even if the option is on.
+dbus_seed bifrost_magicdns=1
+printf 'server=/example.ts.net/100.100.100.100\n' >"$BIFROST_DNSMASQ_CONF"
+ok refresh-offline-dns status_refresh
+eq offline-stale-dns '["dns_stale"]' "$(jq -c '.checks' "$ST_OUT")"
+rm -f "$BIFROST_DNSMASQ_CONF"
+dbus_seed bifrost_magicdns=0
+
 # Start fake daemon for all live-daemon states
 start_fake_daemon
 
@@ -112,7 +120,12 @@ ok refresh-stopped status_refresh
 eq state-stopped "stopped null " \
     "$(jq -r '"\(.state) \(.error) \(.auth_url)"' "$ST_OUT")"
 
-# --- 10. running: full schema, fields, routes, peers, core, restarts, update ---
+# --- 9b. Unknown BackendState maps to error / internal (item 17) ---
+ts_out status '{"BackendState":"WeirdFutureState","Self":{"HostName":"router"}}'
+ok refresh-unknown-backend status_refresh
+eq state-unknown-backend "error internal" "$(jq -r '"\(.state) \(.error)"' "$ST_OUT")"
+
+# --- 10. running: full schema, fields, routes, peers, core.size=raw_size, core.build ---
 ts_out_file status "$FIXDIR/status_running.json"
 ts_out_file debug-prefs "$FIXDIR/prefs_default.json"
 ok setup-fw-for-running fw_apply
@@ -131,18 +144,29 @@ eq cli-at-most-2 2 "$(wc -l <"$MOCK_STATE/ts.log" | tr -d ' ')"
 # Exact top-level keys match contract 6.1
 eq top-keys '["auth_url","checks","conflict","core","daemon","dns","error","exit_node","health","lan","peers","plugin","prefs","routes","schema","self","settings","state","time"]' \
     "$(jq -c 'keys' "$ST_OUT")"
+eq core-keys '["arch","build","installed","kernel_arch","prev","revision","serial","size","tailscale","update"]' \
+    "$(jq -c '.core | keys' "$ST_OUT")"
 
 eq run-basic "1 running null 0.1.0 true" \
     "$(jq -r '"\(.schema) \(.state) \(.error) \(.plugin.version) \(.plugin.enabled)"' "$ST_OUT")"
-eq run-core "1.104.7 1 7 arm aarch64 true 8 1.105.0" \
-    "$(jq -r '"\(.core.tailscale) \(.core.revision) \(.core.serial) \(.core.arch) \(.core.kernel_arch) \(.core.prev) \(.core.update.serial) \(.core.update.tailscale)"' "$ST_OUT")"
+# core.size comes from manifest .assets[.arch].raw_size (25100448), NOT wc -c on the small mock binary
+eq run-core "1.104.7 1 7 arm aarch64 25100448 true 8 1.105.0" \
+    "$(jq -r '"\(.core.tailscale) \(.core.revision) \(.core.serial) \(.core.arch) \(.core.kernel_arch) \(.core.size) \(.core.prev) \(.core.update.serial) \(.core.update.tailscale)"' "$ST_OUT")"
+eq run-core-build '{"commit":"cbc74fe48ef1b1649f69a4d9a602319427e25102","go":"1.27.4","omit":["aws","bird"]}' \
+    "$(jq -Sc '.core.build' "$ST_OUT")"
 eq run-core-update-keys '["revision","serial","tag","tailscale"]' \
     "$(jq -c '.core.update | keys' "$ST_OUT")"
-ok run-core-size-pos [ "$(jq -r '.core.size' "$ST_OUT")" -gt 0 ]
 ok run-core-inst-pos [ "$(jq -r '.core.installed' "$ST_OUT")" -gt 0 ]
 
 eq run-daemon "true $FAKE_DPID 2" \
     "$(jq -r '"\(.daemon.running) \(.daemon.pid) \(.daemon.restarts)"' "$ST_OUT")"
+
+# BIFROST_WATCHDOG_WINDOW owned by daemon.sh is respected directly (item 12)
+_saved_wd_win=$BIFROST_WATCHDOG_WINDOW
+BIFROST_WATCHDOG_WINDOW=300
+ok refresh-wd-window status_refresh
+eq wd-window-respected 1 "$(jq -r '.daemon.restarts' "$ST_OUT")"
+BIFROST_WATCHDOG_WINDOW=$_saved_wd_win
 
 eq run-self "router router.example.ts.net example.ts.net example.ts.net  true 2027-05-01T00:00:00Z tok true" \
     "$(jq -r '"\(.self.hostname) \(.self.dns_name) \(.self.tailnet) \(.self.magicdns_suffix) \(.self.control) \(.self.official) \(.self.key_expiry) \(.self.relay) \(.self.online)"' "$ST_OUT")"
@@ -178,14 +202,25 @@ eq run-peer-beta-routes '["172.16.0.0/24"]' "$(jq -c '.peers[2].routes' "$ST_OUT
 for secret in PrivateKey PrivateNodeKey NodeKey PublicKey privkey: nodekey: alice@example.org; do
     no "no-secret-$secret" grep -Fq "$secret" "$ST_OUT"
 done
-# Verify core_latest.json with equal/smaller serial yields update=null
+
+# --- 10b. Installed manifest with arch=arm64 & missing build -> null (items 11, 17, 20) ---
+cat >"$BIFROST_MANIFEST" <<'EOF'
+{"schema":1,"serial":9,"tailscale":"1.104.7","revision":2,"tag":"core-1.104.7-2","min_plugin":"0.1.0","arch":"arm64","assets":{"arm64":{"file":"bifrost-core-1.104.7-2-linux-arm64.gz","size":9200000,"sha256":"cc","raw_size":24576160,"raw_sha256":"dd"}}}
+EOF
+ok refresh-arm64-manifest status_refresh
+eq arm64-core "arm64 24576160 null null" \
+    "$(jq -r '"\(.core.arch) \(.core.size) \(.core.build) \(.core.update)"' "$ST_OUT")"
+eq core-arch-helper arm64 "$(jq -r "$(status_core_arch_jq)" "$BIFROST_MANIFEST")"
+seed_manifest
+
+# core_latest.json with equal/smaller serial yields update=null
 cat >"$BIFROST_RUN/core_latest.json" <<'EOF'
 {"schema":1,"serial":7,"tailscale":"1.104.7","revision":1,"tag":"core-1.104.7-1"}
 EOF
 ok refresh-no-update status_refresh
 eq update-same-serial null "$(jq -r '.core.update' "$ST_OUT")"
 
-# --- 11. Headscale control server + advertised/approved exit node + AP snat ---
+# --- 11. Headscale control server + prefs-only failure preserves control/official (item 13 & 17) ---
 ts_out_file debug-prefs "$FIXDIR/prefs_headscale_exit.json"
 jq '.Self.ExitNodeOption = true | .Self.AllowedIPs += ["0.0.0.0/0", "::/0"]' "$FIXDIR/status_running.json" >"$MOCK_STATE/ts/status.out"
 nvram_seed sw_mode=3
@@ -197,7 +232,23 @@ eq hs-exit '{"advertised":true,"approved":true,"pref":true}' \
     "$(jq -c '{advertised:.exit_node.advertised, approved:.exit_node.approved, pref:.prefs.advertise_exit_node}' "$ST_OUT")"
 eq hs-hostname "gw-home" "$(jq -r '.prefs.hostname' "$ST_OUT")"
 
-# --- 12. All remaining checks: fw_incomplete, prefs_drift, dns_stale, clock_unsynced ---
+# Now ONLY debug prefs fails while status --json still succeeds: must NOT falsely flip to official
+printf 'https://older.example.org\n' >"$BIFROST_STATE/control_url"
+ts_rc debug-prefs 1
+ok refresh-prefs-only-fail status_refresh
+eq prefs-fail-keeps-hs "running null false https://hs.example.org true" \
+    "$(jq -r '"\(.state) \(.prefs) \(.self.official) \(.self.control) \(.settings.no_logs_forced)"' "$ST_OUT")"
+
+# Even without a previous bifrost_status.json, falls back to $BIFROST_STATE/control_url
+rm -f "$ST_OUT" "$BIFROST_RUN/status.control"
+printf 'https://hs2.example.org\n' >"$BIFROST_STATE/control_url"
+ok refresh-prefs-fail-state-url status_refresh
+eq prefs-fail-state-url "false https://hs2.example.org true" \
+    "$(jq -r '"\(.self.official) \(.self.control) \(.settings.no_logs_forced)"' "$ST_OUT")"
+rm -f "$BIFROST_STATE/control_url"
+ts_rc debug-prefs 0
+
+# --- 12. All checks + refined dns_stale semantics (item 15) ---
 ts_out_file status "$FIXDIR/status_running.json"
 ts_out_file debug-prefs "$FIXDIR/prefs_drift.json"
 fw_clear
@@ -209,10 +260,43 @@ eq checks-four '["fw_incomplete","prefs_drift","dns_stale","clock_unsynced"]' \
 # login.tailscale.com is also official
 eq login-ts-official "true  false" \
     "$(jq -r '"\(.self.official) \(.self.control) \(.settings.no_logs_forced)"' "$ST_OUT")"
-nvram_seed ntp_ready=1
-dbus_seed bifrost_magicdns=0
 
-# --- 13. Daemon does not answer: cli_failed, timeout, missing socket ---
+# conf_dir missing -> dns_stale is NOT reported (unfixable by dns_apply; dns.conf_dir=false)
+nvram_seed ntp_ready=1
+ok setup-fw-for-dns-checks fw_apply
+ts_out_file debug-prefs "$FIXDIR/prefs_default.json"
+rm -f "$BIFROST_DNSMASQ_MAIN"
+ok refresh-no-conf-dir status_refresh
+eq no-conf-dir-no-stale "false []" "$(jq -rc '"\(.dns.conf_dir) \(.checks)"' "$ST_OUT")"
+printf 'conf-dir=%s\n' "$BIFROST_DNSMASQ_DIR" >"$BIFROST_DNSMASQ_MAIN"
+
+printf 'server=/example.ts.net/100.100.100.100\njunk' >"$BIFROST_DNSMASQ_CONF"
+ok refresh-truncated-conf status_refresh
+eq truncated-conf-stale '["dns_stale"]' "$(jq -c '.checks' "$ST_OUT")"
+ok fix-dns-content dns_apply
+ok refresh-repaired-conf status_refresh
+eq repaired-conf-clean '[]' "$(jq -c '.checks' "$ST_OUT")"
+ts_rc status 124
+ok refresh-dns-cli-unavailable status_refresh
+eq timeout-dns-unknown '[]' "$(jq -c '.checks' "$ST_OUT")"
+ts_rc status 0
+
+# magicdns=1, needs_login, leftover bifrost.conf -> dns_stale MUST be reported (item 15)
+printf 'server=/example.ts.net/100.100.100.100\n' >"$BIFROST_DNSMASQ_CONF"
+ts_out_file status "$FIXDIR/status_needs_login.json"
+ok refresh-login-stale-dns status_refresh
+eq login-leftover-dns-stale '["dns_stale"]' "$(jq -c '.checks' "$ST_OUT")"
+
+# magicdns=1, daemon stopped (disabled), leftover bifrost.conf -> dns_stale MUST be reported
+dbus_seed bifrost_enable=0
+ok refresh-disabled-stale-dns status_refresh
+eq disabled-leftover-dns-stale '["dns_stale"]' "$(jq -c '.checks' "$ST_OUT")"
+rm -f "$BIFROST_DNSMASQ_CONF"
+ok refresh-disabled-clean-dns status_refresh
+eq disabled-clean-dns '[]' "$(jq -c '.checks' "$ST_OUT")"
+dbus_seed bifrost_enable=1 bifrost_magicdns=0
+
+# --- 13. Daemon does not answer: cli_failed, timeout, missing socket, corrupt JSON ---
 ts_rc status 1
 ok refresh-cli-fail status_refresh
 eq cli-fail-state "error cli_failed null null 0" \
@@ -228,8 +312,25 @@ eq no-sock-starting "starting null null null" \
     "$(jq -r '"\(.state) \(.error) \(.self) \(.prefs)"' "$ST_OUT")"
 sock_up
 ts_rc status 0
+ts_out status '{corrupt'
+ok refresh-corrupt-status status_refresh
+eq corrupt-status-err "error cli_failed null null" \
+    "$(jq -r '"\(.state) \(.error) \(.self) \(.prefs)"' "$ST_OUT")"
 
-# --- 14. Peers 500-entry cap with online-first priority ---
+# --- 13b. Generation failure leaves previous bifrost_status.json intact (item 17) ---
+ts_out_file status "$FIXDIR/status_running.json"
+ts_out_file debug-prefs "$FIXDIR/prefs_default.json"
+ok refresh-before-gen-fail status_refresh
+cp "$ST_OUT" "$T/prev_status.json"
+fail_render() (
+    # shellcheck disable=SC2329 # injected renderer failure inside status_refresh
+    _status_render_jq() { return 1; }
+    ! status_refresh && [ "$BIFROST_ERR" = internal ]
+)
+ok gen-fail-returns-internal fail_render
+ok prev-status-intact diff -u "$T/prev_status.json" "$ST_OUT"
+
+# --- 14. Peers 500-entry cap + refresh time budget (item 17) ---
 jq -n '
 {
   BackendState: "Running",
@@ -248,7 +349,12 @@ jq -n '
   )
 }' >"$MOCK_STATE/ts/status.out"
 ts_out_file debug-prefs "$FIXDIR/prefs_default.json"
+_t0=$(now)
 ok refresh-520-peers status_refresh
+_elapsed=$(($(now) - _t0))
+# Even under amd64 emulation in Docker, single-pass jq over 520 peers must stay <= 15s.
+printf 'refresh of 520 peers: %ss (limit 15s)\n' "$_elapsed"
+ok refresh-520-fast [ "$_elapsed" -le 15 ]
 eq peers-capped-500 500 "$(jq '.peers | length' "$ST_OUT")"
 eq peers-online-first-220 220 "$(jq '[.peers[] | select(.online)] | length' "$ST_OUT")"
 eq peers-first-is-online true "$(jq -r '.peers[0].online' "$ST_OUT")"

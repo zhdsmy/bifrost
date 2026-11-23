@@ -1,11 +1,16 @@
 # shellcheck shell=sh
 # Status file generator ($BIFROST_UPLOAD/bifrost_status.json).
-# Contract file: see docs/dev/contract.md, section 6.1.
+# Contract file: see docs/dev/contract.md, sections 6.1 and 8.
 # No "local" in POSIX sh: function variables use a _<abbr>_ prefix.
+# BIFROST_WATCHDOG_WINDOW is owned by daemon.sh (sourced before status.sh).
 
 : "${BIFROST_STATUS_MAX_PEERS:=500}"
-: "${BIFROST_WATCHDOG_WINDOW:=1800}"
 : "${BIFROST_MIN_EPOCH:=1700000000}"
+
+# Filter shared by the page and the diagnostics fallback (contract section 8).
+status_core_arch_jq() {
+    printf '%s' 'if .arch == "arm" or .arch == "arm64" then .arch else "" end'
+}
 
 # status_time_synced: print "true", "false", or "null" (could not check).
 # Shared with diag.sh (single source of truth for clock sync check).
@@ -39,187 +44,43 @@ _status_restarts() {
     printf '%s\n' "$_srw_n"
 }
 
-# _status_valid_json_obj <file>: 0 when file exists and contains a JSON object.
-_status_valid_json_obj() {
-    [ -s "$1" ] && jq -e 'type == "object"' "$1" >/dev/null 2>&1
+# Store only names needed to redact this boot's logs, outside the upload
+# directory. Concurrent refreshes can append the same name harmlessly.
+_status_remember_names() (
+    umask 077
+    while IFS= read -r _srn_name; do
+        [ -n "$_srn_name" ] || continue
+        grep -Fqx -- "$_srn_name" "$BIFROST_RUN/redact_hints" 2>/dev/null ||
+            printf '%s\n' "$_srn_name" >>"$BIFROST_RUN/redact_hints" || exit 1
+    done
+)
+
+# Recover the last known server if prefs are unavailable. P2 records the
+# selected server; an empty value is its official-server default.
+_status_last_control() {
+    if [ -f "$BIFROST_RUN/status.control" ]; then
+        head -n 1 "$BIFROST_RUN/status.control"
+    elif [ -s "$BIFROST_UPLOAD/bifrost_status.json" ] &&
+        _slc_old=$(jq -er '.self.control | strings' "$BIFROST_UPLOAD/bifrost_status.json" 2>/dev/null); then
+        printf '%s\n' "$_slc_old"
+    else
+        daemon_control_server
+    fi
 }
 
-# status_refresh: write $BIFROST_UPLOAD/bifrost_status.json (contract 6.1).
-# Calls at most 2 CLI commands (status --json, debug prefs) and builds the JSON
-# in one jq invocation. Never executes the core binary.
-status_refresh() {
-    _sr_now=$(now)
-    [ -d "$BIFROST_RUN" ] || mkdir -p "$BIFROST_RUN"
-    [ -d "$BIFROST_UPLOAD" ] || mkdir -p "$BIFROST_UPLOAD"
-
-    # Plugin info & settings
-    _sr_pver=""
-    if [ -r "$BIFROST_VERSION_FILE" ]; then
-        _sr_pver=$(head -n 1 "$BIFROST_VERSION_FILE" | tr -d '\r\n')
-    fi
-    _sr_enabled=$(cfg bifrost_enable)
-    _sr_port=$(cfg bifrost_port)
-    _sr_la=$(cfg bifrost_local_access)
-    _sr_masq=$(cfg bifrost_lan_masq)
-    _sr_snat=$(cfg bifrost_snat)
-    if fw_snat_effective; then _sr_snat_eff=true; else _sr_snat_eff=false; fi
-    _sr_magicdns=$(cfg bifrost_magicdns)
-    _sr_nologs=$(cfg bifrost_no_logs)
-    _sr_mirror=$(cfg bifrost_mirror)
-
-    # Core file metadata (read manifest only; never invoke core --version)
-    _sr_core_ok=0
-    _sr_core_size=0
-    _sr_core_inst=null
-    if [ -f "$BIFROST_CORE" ] && [ -x "$BIFROST_CORE" ]; then
-        _sr_core_ok=1
-    fi
-    if [ -f "$BIFROST_CORE" ]; then
-        _sr_sz=$(file_size "$BIFROST_CORE" 2>/dev/null)
-        valid_uint "$_sr_sz" && _sr_core_size=$_sr_sz
-        _sr_mt=$(date -r "$BIFROST_CORE" +%s 2>/dev/null)
-        valid_uint "$_sr_mt" && _sr_core_inst=$_sr_mt
-    fi
-    _sr_karch=$(uname -m 2>/dev/null || echo "")
-    if [ -f "$BIFROST_BIN/bifrostd.prev.gz" ]; then _sr_prev=true; else _sr_prev=false; fi
-
-    # Daemon & conflict probes
-    _sr_dpid=$(daemon_pid 2>/dev/null) || _sr_dpid=""
-    if [ -n "$_sr_dpid" ]; then
-        _sr_drun=true
-        _sr_dpid_json=$_sr_dpid
-    else
-        _sr_drun=false
-        _sr_dpid_json=null
-    fi
-    _sr_restarts=$(_status_restarts "$_sr_now")
-    if orig_installed; then _sr_orig_inst=true; else _sr_orig_inst=false; fi
-    if orig_running; then _sr_orig_run=true; else _sr_orig_run=false; fi
-
-    # Daemon error file (written by P2 on failure)
-    _sr_derr=""
-    if [ -r "$BIFROST_DAEMON_ERR" ]; then
-        _sr_raw_err=$(head -n 1 "$BIFROST_DAEMON_ERR" | tr -d ' \t\r\n')
-        valid_name "$_sr_raw_err" && _sr_derr=$_sr_raw_err
-    fi
-
-    # Temp files avoid ARG_MAX on large tailnets (up to 500+ peers).
-    _sr_st_tmp="$BIFROST_RUN/status_st.$$.json"
-    _sr_pr_tmp="$BIFROST_RUN/status_pr.$$.json"
-    _sr_st_file=/dev/null
-    _sr_pr_file=/dev/null
-    _sr_st_rc=0
-
-    # Determine state & error in exact contract 6.1 precedence order.
-    _sr_state=""
-    _sr_error=""
-    if [ "$_sr_core_ok" -eq 0 ]; then
-        _sr_state=core_missing
-    elif [ "$_sr_enabled" != 1 ]; then
-        _sr_state=disabled
-    elif [ "$_sr_orig_run" = true ]; then
-        _sr_state=conflict
-    elif [ -n "$_sr_derr" ]; then
-        _sr_state=error
-        _sr_error=$_sr_derr
-    elif [ "$_sr_drun" = false ]; then
-        _sr_state=error
-        _sr_error=start_failed
-    fi
-
-    # Query daemon only when it is running (at most 2 CLI calls total).
-    if [ "$_sr_drun" = true ]; then
-        ts_cli status --json >"$_sr_st_tmp" 2>/dev/null
-        _sr_st_rc=$?
-        if [ "$_sr_st_rc" -eq 0 ] && _status_valid_json_obj "$_sr_st_tmp"; then
-            _sr_st_file=$_sr_st_tmp
-            if ts_cli debug prefs >"$_sr_pr_tmp" 2>/dev/null && _status_valid_json_obj "$_sr_pr_tmp"; then
-                _sr_pr_file=$_sr_pr_tmp
-            fi
-        fi
-    fi
-
-    # Derive state from BackendState when not already fixed by steps 1-5.
-    if [ -z "$_sr_state" ]; then
-        if [ "$_sr_st_file" = /dev/null ]; then
-            if [ "$_sr_st_rc" -eq 124 ]; then
-                _sr_state=error
-                _sr_error=timeout
-            elif [ ! -e "$BIFROST_SOCK" ]; then
-                _sr_state=starting
-            else
-                _sr_state=error
-                _sr_error=cli_failed
-            fi
-        else
-            _sr_bstate=$(jq -r '.BackendState // ""' "$_sr_st_file" 2>/dev/null)
-            case "$_sr_bstate" in
-                NoState | Starting) _sr_state=starting ;;
-                NeedsLogin) _sr_state=needs_login ;;
-                NeedsMachineAuth) _sr_state=needs_approval ;;
-                Stopped) _sr_state=stopped ;;
-                Running) _sr_state=running ;;
-                *)
-                    _sr_state=error
-                    _sr_error=internal
-                    ;;
-            esac
-        fi
-    fi
-
-    # LAN & DNS info
-    _sr_lan_ip=$(nvram get lan_ipaddr 2>/dev/null)
-    valid_ipv4 "$_sr_lan_ip" || _sr_lan_ip=""
-    _sr_lan_cidr=$(lan_cidr 2>/dev/null) || _sr_lan_cidr=""
-    _sr_sw=$(nvram get sw_mode 2>/dev/null)
-    if valid_uint "$_sr_sw"; then _sr_sw_json=$_sr_sw; else _sr_sw_json=null; fi
-
-    if dns_has_conf_dir; then _sr_conf_dir=true; else _sr_conf_dir=false; fi
-    if [ "$_sr_conf_dir" = true ] && [ -s "$BIFROST_DNSMASQ_CONF" ]; then
-        _sr_dns_active=true
-    else
-        _sr_dns_active=false
-    fi
-
-    # Checks (only codes listed in contract 6.1)
-    _sr_chk_fw=false
-    if [ "$_sr_drun" = true ] && ! fw_check; then
-        _sr_chk_fw=true
-    fi
-    _sr_chk_dns=false
-    if [ "$_sr_magicdns" != 1 ] && [ -e "$BIFROST_DNSMASQ_CONF" ]; then
-        _sr_chk_dns=true
-    elif [ "$_sr_drun" = true ] && [ "$_sr_state" = running ] && [ "$_sr_magicdns" = 1 ]; then
-        _sr_suf=$(jq -r 'if (.MagicDNSSuffix // "") != "" then .MagicDNSSuffix elif (.CurrentTailnet.MagicDNSSuffix // "") != "" then .CurrentTailnet.MagicDNSSuffix else "" end' "$_sr_st_file" 2>/dev/null)
-        if [ -n "$_sr_suf" ] && valid_dns_name "$_sr_suf"; then
-            dns_check "{\"MagicDNSSuffix\":\"$_sr_suf\"}" || _sr_chk_dns=true
-        else
-            _sr_chk_dns=true
-        fi
-    fi
-    _sr_chk_wd=false
-    [ "$_sr_error" = watchdog_gave_up ] && _sr_chk_wd=true
-    _sr_chk_clk=false
-    [ "$(status_time_synced)" = false ] && _sr_chk_clk=true
-
-    # Manifest & cached latest manifest
-    _sr_man_file=/dev/null
-    _status_valid_json_obj "$BIFROST_MANIFEST" && _sr_man_file=$BIFROST_MANIFEST
-    _sr_lat_file=/dev/null
-    _status_valid_json_obj "$BIFROST_RUN/core_latest.json" && _sr_lat_file="$BIFROST_RUN/core_latest.json"
-
-    jq -n \
-        --slurpfile st_a "$_sr_st_file" \
-        --slurpfile pr_a "$_sr_pr_file" \
-        --slurpfile man_a "$_sr_man_file" \
-        --slurpfile lat_a "$_sr_lat_file" \
+# Emit the known control URL and redaction terms, then the compact page JSON.
+_status_render_jq() {
+    jq -nr \
+        --rawfile st_text "$_sr_st_file" \
+        --rawfile pr_text "$_sr_pr_file" \
+        --rawfile man_text "$_sr_man_file" \
+        --rawfile lat_text "$_sr_lat_file" \
         --argjson now "$_sr_now" \
-        --arg state "$_sr_state" \
-        --arg err "$_sr_error" \
+        --arg fstate "$_sr_fstate" \
+        --arg ferr "$_sr_ferr" \
         --arg pver "$_sr_pver" \
-        --argjson enabled "$([ "$_sr_enabled" = 1 ] && echo true || echo false)" \
+        --argjson enabled "$_sr_enabled_j" \
         --arg karch "$_sr_karch" \
-        --argjson csize "$_sr_core_size" \
         --argjson cinst "$_sr_core_inst" \
         --argjson cprev "$_sr_prev" \
         --argjson drun "$_sr_drun" \
@@ -228,22 +89,24 @@ status_refresh() {
         --argjson oinst "$_sr_orig_inst" \
         --argjson orun "$_sr_orig_run" \
         --argjson port "$_sr_port" \
-        --argjson la "$([ "$_sr_la" = 1 ] && echo true || echo false)" \
-        --argjson masq "$([ "$_sr_masq" = 1 ] && echo true || echo false)" \
+        --argjson la "$_sr_la_j" \
+        --argjson masq "$_sr_masq_j" \
         --arg snat "$_sr_snat" \
         --argjson snat_eff "$_sr_snat_eff" \
-        --argjson mdns "$([ "$_sr_magicdns" = 1 ] && echo true || echo false)" \
-        --argjson nologs "$([ "$_sr_nologs" = 1 ] && echo true || echo false)" \
+        --argjson mdns "$_sr_mdns_j" \
+        --argjson nologs "$_sr_nologs_j" \
         --arg mirror "$_sr_mirror" \
         --arg lan_ip "$_sr_lan_ip" \
         --arg lan_cidr "$_sr_lan_cidr" \
         --argjson sw_mode "$_sr_sw_json" \
         --argjson conf_dir "$_sr_conf_dir" \
         --argjson dns_active "$_sr_dns_active" \
+        --rawfile dns_contents "$_sr_dns_file" \
+        --argjson dns_legacy "$_sr_dns_legacy" \
+        --argjson dns_conf_exists "$_sr_dns_conf_exists" \
         --argjson chk_fw "$_sr_chk_fw" \
-        --argjson chk_dns "$_sr_chk_dns" \
-        --argjson chk_wd "$_sr_chk_wd" \
         --argjson chk_clk "$_sr_chk_clk" \
+        --arg last_control "$(_status_last_control)" \
         --argjson max_peers "$BIFROST_STATUS_MAX_PEERS" \
         '
         def strip_dot: (. // "") | sub("\\.$"; "");
@@ -263,17 +126,40 @@ status_refresh() {
             end;
         def clean_expiry:
             if type != "string" or . == "" or startswith("0001-01-01") then "" else . end;
+        def is_valid_dns:
+            type == "string" and length > 0 and length <= 253
+            and test("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")
+            and (contains("..") | not)
+            and (contains(".-") | not)
+            and (contains("-.") | not);
 
-        ($st_a[0] // null) as $st |
-        ($pr_a[0] // null) as $pr |
-        ($man_a[0] // null) as $man |
-        ($lat_a[0] // null) as $lat |
+        def object_or_null: try (fromjson | if type == "object" then . else null end) catch null;
+        def exit_routes: '"$(fw_exit_routes_jq)"';
+        def installed_arch: '"$(status_core_arch_jq)"';
+        def suffix: '"$(dns_suffix_jq)"';
 
-        (($man.serial // 0)) as $man_serial |
-        (if $man == null then ""
-         elif ($man.arch // "") != "" then $man.arch
-         elif (($man.assets // {}) | keys | length) == 1 then (($man.assets | keys)[0])
-         else "" end) as $core_arch |
+        ($st_text | object_or_null) as $st |
+        (if $st != null then ($pr_text | object_or_null) else null end) as $pr |
+        ($man_text | object_or_null) as $man |
+        ($lat_text | object_or_null) as $lat |
+
+        (if $fstate != "" then {s: $fstate, e: $ferr}
+         elif $st == null then {s: "error", e: "cli_failed"}
+         else
+            (($st.BackendState // "") as $bs |
+             if $bs == "NoState" or $bs == "Starting" then {s: "starting", e: ""}
+             elif $bs == "NeedsLogin" then {s: "needs_login", e: ""}
+             elif $bs == "NeedsMachineAuth" then {s: "needs_approval", e: ""}
+             elif $bs == "Stopped" then {s: "stopped", e: ""}
+             elif $bs == "Running" then {s: "running", e: ""}
+             else {s: "error", e: "internal"} end)
+         end) as $se |
+        $se.s as $state |
+        $se.e as $err |
+
+        ($man.serial // 0) as $man_serial |
+        ($man | installed_arch) as $core_arch |
+        ($man.assets[$core_arch].raw_size // 0) as $core_size |
         (if $lat != null and (($lat.serial | type) == "number") and ($lat.serial > $man_serial) then
             {
                 tailscale: ($lat.tailscale // ""),
@@ -283,8 +169,10 @@ status_refresh() {
             }
          else null end) as $core_update |
 
-        ((($pr.ControlURL // "") | sub("/+$"; ""))) as $ctrl_raw |
-        ($ctrl_raw == "" or $ctrl_raw == "https://controlplane.tailscale.com" or $ctrl_raw == "https://login.tailscale.com") as $official |
+        ((if $pr != null then ($pr.ControlURL // "") else $last_control end) | sub("/+$"; "")) as $url |
+        ($url == "" or $url == "https://controlplane.tailscale.com" or $url == "https://login.tailscale.com") as $official |
+        (if $official then "" else $url end) as $control |
+        ($st | suffix) as $msuf |
 
         (if $st == null then null else
             {
@@ -292,8 +180,8 @@ status_refresh() {
                 dns_name: ($st.Self.DNSName | strip_dot),
                 ips: ($st.TailscaleIPs // $st.Self.TailscaleIPs // []),
                 tailnet: ($st.CurrentTailnet.Name // ""),
-                magicdns_suffix: (if ($st.CurrentTailnet.MagicDNSSuffix // "") != "" then $st.CurrentTailnet.MagicDNSSuffix else ($st.MagicDNSSuffix // "") end),
-                control: (if $official then "" else $ctrl_raw end),
+                magicdns_suffix: $msuf,
+                control: $control,
                 official: $official,
                 key_expiry: ($st.Self.KeyExpiry | clean_expiry),
                 relay: ($st.Self.Relay // ""),
@@ -304,7 +192,7 @@ status_refresh() {
         (if $pr == null then null else
             ($pr.AdvertiseRoutes // []) as $adv_all |
             ($adv_all | map(select(. != "0.0.0.0/0" and . != "::/0"))) as $adv_sub |
-            (($adv_all | index("0.0.0.0/0") != null) and ($adv_all | index("::/0") != null)) as $adv_exit |
+            ($adv_all | exit_routes) as $adv_exit |
             {
                 advertise_routes: $adv_sub,
                 advertise_exit_node: $adv_exit,
@@ -324,14 +212,20 @@ status_refresh() {
         {
             advertised: (if $prefs_obj != null then $prefs_obj.advertise_exit_node else false end),
             approved: (if $st != null then
-                (($st.Self.ExitNodeOption == true) or
-                 ((($st.Self.AllowedIPs // []) | index("0.0.0.0/0") != null) and
-                  (($st.Self.AllowedIPs // []) | index("::/0") != null)))
+                (($st.Self.ExitNodeOption == true) or (($st.Self.AllowedIPs // []) | exit_routes))
                 else false end)
         } as $exit_obj |
 
         (if $pr != null and ((($pr.CorpDNS // false) != false) or (($pr.NetfilterMode // 0) != 0 and ($pr.NetfilterMode // 0) != "off") or (($pr.ShieldsUp // false) != false))
          then true else false end) as $chk_prefs |
+
+        (if $mdns and ($conf_dir | not) then false
+         elif $mdns and $drun and $st == null and ($err == "cli_failed" or $err == "timeout") then false
+         elif $mdns and $state == "running" and ($msuf | is_valid_dns) then
+            ($dns_contents != ("server=/" + $msuf + "/100.100.100.100\n") or $dns_legacy)
+         else $dns_conf_exists or $dns_legacy end) as $chk_dns |
+
+        ($err == "watchdog_gave_up") as $chk_wd |
 
         (if $st == null then [] else
             (($st.Peer // {}) | to_entries | map(.value) | map(select(.ShareeNode != true)) | map(
@@ -378,10 +272,11 @@ status_refresh() {
                 serial: $man_serial,
                 arch: $core_arch,
                 kernel_arch: $karch,
-                size: $csize,
+                size: $core_size,
                 installed: $cinst,
                 prev: $cprev,
-                update: $core_update
+                update: $core_update,
+                build: (if ($man.build | type) == "object" then $man.build else null end)
             },
             daemon: { running: $drun, pid: $dpid, restarts: $restarts },
             conflict: { original_installed: $oinst, original_running: $orun },
@@ -412,9 +307,169 @@ status_refresh() {
                 (if $chk_clk then ["clock_unsynced"] else [] end)
             ),
             peers: $peers_arr
-        }
-        ' | json_write "$BIFROST_UPLOAD/bifrost_status.json"
-    _sr_rc=$?
-    rm -f "$_sr_st_tmp" "$_sr_pr_tmp"
-    return "$_sr_rc"
+        } as $doc |
+        (if $pr == null then "-" else $control end),
+        (($self_obj.magicdns_suffix, $self_obj.tailnet, ($control | select(length > 0) | sub("^https?://"; "") | split("/")[0] | split(":")[0]))
+            | strings | select(length > 0) | gsub("[\\r\\n]"; "")),
+        ($doc | tojson)
+        '
+}
+
+# status_refresh: write $BIFROST_UPLOAD/bifrost_status.json (contract 6.1).
+# Calls at most 2 CLI commands (status --json, debug prefs), parses status once
+# in jq, and never reads or executes the core binary.
+status_refresh() {
+    _sr_now=$(now)
+    [ -d "$BIFROST_RUN" ] || mkdir -p "$BIFROST_RUN"
+    [ -d "$BIFROST_UPLOAD" ] || mkdir -p "$BIFROST_UPLOAD"
+
+    # Plugin info & settings
+    _sr_pver=""
+    if [ -r "$BIFROST_VERSION_FILE" ]; then
+        _sr_pver=$(head -n 1 "$BIFROST_VERSION_FILE" | tr -d '\r\n')
+    fi
+    _sr_enabled=$(cfg bifrost_enable)
+    _sr_port=$(cfg bifrost_port)
+    _sr_la=$(cfg bifrost_local_access)
+    _sr_masq=$(cfg bifrost_lan_masq)
+    _sr_snat=$(cfg bifrost_snat)
+    if fw_snat_effective; then _sr_snat_eff=true; else _sr_snat_eff=false; fi
+    _sr_magicdns=$(cfg bifrost_magicdns)
+    _sr_nologs=$(cfg bifrost_no_logs)
+    _sr_mirror=$(cfg bifrost_mirror)
+
+    if [ "$_sr_enabled" = 1 ]; then _sr_enabled_j=true; else _sr_enabled_j=false; fi
+    if [ "$_sr_la" = 1 ]; then _sr_la_j=true; else _sr_la_j=false; fi
+    if [ "$_sr_masq" = 1 ]; then _sr_masq_j=true; else _sr_masq_j=false; fi
+    if [ "$_sr_magicdns" = 1 ]; then _sr_mdns_j=true; else _sr_mdns_j=false; fi
+    if [ "$_sr_nologs" = 1 ]; then _sr_nologs_j=true; else _sr_nologs_j=false; fi
+
+    # Core metadata: never read or execute the 25 MB core binary; size/build come from manifest.
+    _sr_core_ok=0
+    _sr_core_inst=null
+    if [ -f "$BIFROST_CORE" ]; then
+        [ -x "$BIFROST_CORE" ] && _sr_core_ok=1
+        _sr_mt=$(date -r "$BIFROST_CORE" +%s 2>/dev/null)
+        valid_uint "$_sr_mt" && _sr_core_inst=$_sr_mt
+    fi
+    _sr_karch=$(uname -m 2>/dev/null || echo "")
+    if [ -f "$BIFROST_BIN/bifrostd.prev.gz" ]; then _sr_prev=true; else _sr_prev=false; fi
+
+    # Daemon & conflict probes
+    _sr_dpid=$(daemon_pid 2>/dev/null) || _sr_dpid=""
+    if [ -n "$_sr_dpid" ]; then
+        _sr_drun=true
+        _sr_dpid_json=$_sr_dpid
+    else
+        _sr_drun=false
+        _sr_dpid_json=null
+    fi
+    _sr_restarts=$(_status_restarts "$_sr_now")
+    if orig_installed; then _sr_orig_inst=true; else _sr_orig_inst=false; fi
+    if orig_running; then _sr_orig_run=true; else _sr_orig_run=false; fi
+
+    # Daemon error file (written by P2 on failure)
+    _sr_derr=""
+    if [ -r "$BIFROST_DAEMON_ERR" ]; then
+        _sr_raw_err=$(head -n 1 "$BIFROST_DAEMON_ERR" | tr -d ' \t\r\n')
+        valid_name "$_sr_raw_err" && _sr_derr=$_sr_raw_err
+    fi
+
+    # Determine fixed state & error in contract 6.1 steps 1-5 order.
+    _sr_fstate=""
+    _sr_ferr=""
+    if [ "$_sr_core_ok" -eq 0 ]; then
+        _sr_fstate=core_missing
+    elif [ "$_sr_enabled" != 1 ]; then
+        _sr_fstate=disabled
+    elif [ "$_sr_orig_run" = true ]; then
+        _sr_fstate=conflict
+    elif [ -n "$_sr_derr" ]; then
+        _sr_fstate=error
+        _sr_ferr=$_sr_derr
+    elif [ "$_sr_drun" = false ]; then
+        _sr_fstate=error
+        _sr_ferr=start_failed
+    fi
+
+    # Temp files avoid ARG_MAX on large tailnets.
+    _sr_st_tmp="$BIFROST_RUN/status_st.$$.json"
+    _sr_pr_tmp="$BIFROST_RUN/status_pr.$$.json"
+    _sr_out_tmp="$BIFROST_RUN/status_out.$$.tmp"
+    _sr_st_file=/dev/null
+    _sr_pr_file=/dev/null
+    _sr_st_rc=0
+
+    # Query daemon only when it is running (at most 2 CLI calls total).
+    if [ "$_sr_drun" = true ]; then
+        (umask 077; ts_cli status --json >"$_sr_st_tmp") 2>/dev/null
+        _sr_st_rc=$?
+        if [ "$_sr_st_rc" -eq 0 ] && [ -s "$_sr_st_tmp" ]; then
+            _sr_st_file=$_sr_st_tmp
+            if (umask 077; ts_cli debug prefs >"$_sr_pr_tmp") 2>/dev/null && [ -s "$_sr_pr_tmp" ]; then
+                _sr_pr_file=$_sr_pr_tmp
+            fi
+        elif [ -z "$_sr_fstate" ]; then
+            if [ "$_sr_st_rc" -eq 124 ]; then
+                _sr_fstate=error
+                _sr_ferr=timeout
+            elif [ ! -e "$BIFROST_SOCK" ]; then
+                _sr_fstate=starting
+            else
+                _sr_fstate=error
+                _sr_ferr=cli_failed
+            fi
+        fi
+    fi
+
+    # LAN & DNS info (read tiny dnsmasq conf directly without calling jq)
+    _sr_lan_ip=$(nvram get lan_ipaddr 2>/dev/null)
+    valid_ipv4 "$_sr_lan_ip" || _sr_lan_ip=""
+    _sr_lan_cidr=$(lan_cidr 2>/dev/null) || _sr_lan_cidr=""
+    _sr_sw=$(nvram get sw_mode 2>/dev/null)
+    if valid_uint "$_sr_sw"; then _sr_sw_json=$_sr_sw; else _sr_sw_json=null; fi
+
+    if dns_has_conf_dir; then _sr_conf_dir=true; else _sr_conf_dir=false; fi
+    _sr_dns_conf_exists=false
+    _sr_dns_file=/dev/null
+    if [ -e "$BIFROST_DNSMASQ_CONF" ]; then
+        _sr_dns_conf_exists=true
+        [ -f "$BIFROST_DNSMASQ_CONF" ] && _sr_dns_file=$BIFROST_DNSMASQ_CONF
+    fi
+    _sr_dns_legacy=false
+    for _sr_leftover in "$BIFROST_DNSMASQ_CONF".tmp.*; do
+        if [ -e "$_sr_leftover" ]; then _sr_dns_legacy=true; break; fi
+    done
+    if [ "$_sr_conf_dir" = true ] && [ -s "$BIFROST_DNSMASQ_CONF" ]; then
+        _sr_dns_active=true
+    else
+        _sr_dns_active=false
+    fi
+
+    _sr_chk_fw=false
+    if [ "$_sr_drun" = true ] && ! fw_check; then
+        _sr_chk_fw=true
+    fi
+    _sr_chk_clk=false
+    [ "$(status_time_synced)" = false ] && _sr_chk_clk=true
+
+    _sr_man_file=/dev/null
+    _sr_lat_file=/dev/null
+    [ -f "$BIFROST_MANIFEST" ] && _sr_man_file=$BIFROST_MANIFEST
+    [ -f "$BIFROST_RUN/core_latest.json" ] && _sr_lat_file="$BIFROST_RUN/core_latest.json"
+
+    _sr_rc=1
+    if (umask 077; _status_render_jq >"$_sr_out_tmp") 2>/dev/null && [ -s "$_sr_out_tmp" ]; then
+        IFS= read -r _sr_control <"$_sr_out_tmp"
+        if [ "$_sr_control" != "-" ] &&
+            ! printf '%s\n' "$_sr_control" | cmp -s - "$BIFROST_RUN/status.control"; then
+            printf '%s\n' "$_sr_control" | atomic_write "$BIFROST_RUN/status.control" 600
+        fi
+        if sed '1d;$d' "$_sr_out_tmp" | _status_remember_names &&
+            tail -n 1 "$_sr_out_tmp" | json_write "$BIFROST_UPLOAD/bifrost_status.json"; then
+            _sr_rc=0
+        fi
+    fi
+    rm -f "$_sr_st_tmp" "$_sr_pr_tmp" "$_sr_out_tmp"
+    [ "$_sr_rc" = 0 ] || fail internal
 }

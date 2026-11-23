@@ -15,11 +15,15 @@ printf 'conf-dir=%s\n' "$BIFROST_DNSMASQ_DIR" >"$BIFROST_DNSMASQ_MAIN"
 # 1. redact: >= 2 positive AND >= 2 negative cases for EVERY ONE of 7 classes
 # =========================================================================
 
-# Class 1: Public IPv4 -> <ipv4> (keep private, 100.64.0.0/10, loopback, 0.0.0.0, version)
+# Class 1: Public IPv4 -> <ipv4> (incl. trailing period & end-of-line; keep private/tailnet/5-octet)
 eq redact-ipv4-pos1 "peer <ipv4>:41641 -> <ipv4>" \
     "$(printf 'peer 203.0.113.42:41641 -> 198.51.100.7\n' | redact)"
 eq redact-ipv4-pos2 "wan <ipv4> dns <ipv4>" \
     "$(printf 'wan 192.0.2.10 dns 8.8.8.8\n' | redact)"
+eq redact-ipv4-pos3-period "connected to <ipv4>. next <ipv4>" \
+    "$(printf 'connected to 203.0.113.5. next 198.51.100.9\n' | redact)"
+eq redact-ipv4-pos4-eol "<ipv4>" \
+    "$(printf '203.0.113.5\n' | redact)"
 eq redact-ipv4-neg1 "lan 192.168.1.1 10.0.5.2 172.16.0.1 172.31.255.254" \
     "$(printf 'lan 192.168.1.1 10.0.5.2 172.16.0.1 172.31.255.254\n' | redact)"
 eq redact-ipv4-neg2 "ts 100.64.0.1 100.100.100.100 100.127.255.254 lo 127.0.0.1 route 0.0.0.0/0 ver 1.104.7" \
@@ -93,7 +97,7 @@ eq redact-mac-neg2 "v6 <ipv6>" \
     "$(printf 'v6 2001:db8:aa:bb:cc:dd:ee:ff\n' | redact)"
 
 # =========================================================================
-# 2. act_ping: direct, derp, peer-relay, unknown_peer, timeout, not_running
+# 2. act_ping: direct, derp, peer-relay, unknown_peer, cli_failed, timeout, not_running
 # =========================================================================
 
 # Stopped (no socket, no daemon) -> not_running for valid tailnet IP
@@ -129,7 +133,7 @@ ok ping-direct act_ping 100.64.0.2
 eq ping-direct-res '{"latency_ms":12,"path":"direct","relay":""}' "$BIFROST_RESULT"
 has ping-flags "ping -c 1 --until-direct=false --timeout=5s 100.64.0.2" "$(ts_log)"
 
-# DERP path (via DERP(tok), sub-second and >1s duration)
+# DERP path (via DERP(hkg))
 ts_out ping 'pong from beta (100.64.0.3, 49152) via DERP(hkg) in 35ms'
 BIFROST_RESULT=""
 ok ping-derp act_ping 100.64.0.3
@@ -140,6 +144,13 @@ ts_out ping 'pong from alpha (fd7a:115c:a1e0::2) via peer-relay(198.51.100.5:416
 BIFROST_RESULT=""
 ok ping-peer-relay act_ping fd7a:115c:a1e0::2
 eq ping-peer-relay-res '{"latency_ms":1250,"path":"peer-relay","relay":""}' "$BIFROST_RESULT"
+
+# Ping non-zero exit with non-timeout error output -> cli_failed (item 18)
+ts_out ping 'cannot ping peer: backend not ready'
+ts_rc ping 1
+BIFROST_ERR=""
+no ping-cli-failed act_ping 100.64.0.2
+eq ping-cli-failed-code cli_failed "$BIFROST_ERR"
 
 # Ping timeout output -> timeout error
 ts_out ping 'ping "100.64.0.2" timed out'
@@ -163,17 +174,20 @@ ts_out ping 'pong from alpha (100.64.0.2) via 203.0.113.10:41641 in 18ms'
 eq ping-page '{"ok":true,"latency_ms":18,"path":"direct","relay":""}' "$(t_page ping 100.64.0.2)"
 
 # =========================================================================
-# 3. act_netcheck -> job_netcheck: success, fallback derp code, timeout, error
+# 3. act_netcheck -> job_netcheck: success, outside state lock, fallback, timeout, error
 # =========================================================================
 
 ts_out_file netcheck "$FIXDIR/netcheck_ok.json"
 ts_out_file debug-derp-map "$FIXDIR/derpmap.json"
 ts_rc netcheck 0
 
+# Verify job_netcheck runs cleanly even while state lock is held (item 1)
+ok netcheck-hold-state-lock lock_acquire state 0
 BIFROST_RESULT=""
 ok netcheck-start act_netcheck
 eq netcheck-start-res '{"job":"netcheck"}' "$BIFROST_RESULT"
-bg_drain
+ok netcheck-drain-while-locked bg_drain
+lock_release state
 NF=$(job_file netcheck)
 eq netcheck-done "false true done 100" "$(jq -r '"\(.running) \(.ok) \(.phase) \(.progress)"' "$NF")"
 eq netcheck-fields "true true false false UPnP tok" \
@@ -223,7 +237,7 @@ eq netcheck-not-running-code not_running "$BIFROST_ERR"
 sock_up
 
 # =========================================================================
-# 4. act_logs: bifrost_diag.json & bifrost_logs.txt (200-line tail & redacted)
+# 4. act_logs: bifrost_diag.json & bifrost_logs.txt (200-line tail, offline redaction)
 # =========================================================================
 
 # Start fake daemon so fw_complete is checked
@@ -247,7 +261,7 @@ while [ "$_i" -le 250 ]; do
     printf 'script-line-%03d\n' "$_i" >>"$BIFROST_LOG"
     _i=$((_i + 1))
 done
-printf 'script-secret email=alice@example.org key=%s wan=203.0.113.99\n' "$_k1" >>"$BIFROST_LOG"
+printf 'script-secret email=alice@example.org key=%s wan=203.0.113.99.\n' "$_k1" >>"$BIFROST_LOG"
 
 _i=1
 while [ "$_i" -le 260 ]; do
@@ -285,14 +299,44 @@ ok logs-kept-daemon-late grep -Fq "daemon-line-260" "$LF"
 for bad in alice@example.org "$_k1" 203.0.113.99 "$_fake_tn" example.ts.net deadbeef1234 aa:bb:cc:dd:ee:ff 2001:db8::99; do
     no "logs-no-$bad" grep -Fq "$bad" "$LF"
 done
-for good in "<email>" "<key>" "<ipv4>" "router.<tailnet>" "<auth-url>" "<mac>" "<ipv6>" "100.64.0.1"; do
+for good in "<email>" "<key>" "<ipv4>." "router.<tailnet>" "<auth-url>" "<mac>" "<ipv6>" "100.64.0.1"; do
     ok "logs-has-$good" grep -Fq "$good" "$LF"
 done
 
-# When daemon is stopped, fw_complete is null; non-CGNAT WAN -> wan_cgnat=false; missing tun -> tun=false
+# --- 4b. Offline redaction when daemon is STOPPED and suffix is non-ts.net (item 2 & 18) ---
+# First observe a self-hosted headscale run so status_refresh persists redact_hints
+jq '.MagicDNSSuffix = "mesh.private.arpa" | .CurrentTailnet.Name = "corp-mesh" | .CurrentTailnet.MagicDNSSuffix = "mesh.private.arpa"' \
+    "$FIXDIR/status_running.json" >"$MOCK_STATE/ts/status.out"
+ts_out_file debug-prefs "$FIXDIR/prefs_headscale_exit.json"
+ok offline-prime-status status_refresh
+
+# Now stop daemon completely and remove bifrost_status.json
 kill "$FAKE_DPID" 2>/dev/null
 wait "$FAKE_DPID" 2>/dev/null
-rm -f "$BIFROST_PIDFILE" "$BIFROST_TUN_DEV"
+rm -f "$BIFROST_PIDFILE" "$BIFROST_SOCK" "$BIFROST_UPLOAD/bifrost_status.json"
+printf 'failed to reach https://hs.example.org/noise for router.mesh.private.arpa in corp-mesh\n' >"$BIFROST_DLOG"
+ok offline-act-logs-hints act_logs
+for bad in mesh.private.arpa corp-mesh hs.example.org; do
+    no "offline-hints-no-$bad" grep -Fq "$bad" "$LF"
+done
+ok offline-hints-keeps-device grep -Fq "router.<tailnet>" "$LF"
+
+# Even with NO redact_hints and NO prior status, recover custom domains from control_url + dnsmasq + tailscaled.state
+rm -f "$BIFROST_STATE/redact_hints" "$BIFROST_RUN/redact_hints" "$BIFROST_UPLOAD/bifrost_status.json"
+printf 'https://hs-alt.example.org:8443\n' >"$BIFROST_STATE/control_url"
+printf 'server=/dns.private.arpa/100.100.100.100\n' >"$BIFROST_DNSMASQ_CONF"
+_prof_b64=$(printf '%s' '{"p1":{"NetworkProfile":{"MagicDNSName":"state.private.arpa","DomainName":"state-tn"},"ControlURL":"https://hs-state.example.org"}}' | base64 | tr -d '\n')
+printf '{"_profiles":"%s"}\n' "$_prof_b64" >"$BIFROST_STATE/tailscaled.state"
+printf 'ctrl=hs-alt.example.org dns=nas.dns.private.arpa st=box.state.private.arpa tn=state-tn srv=hs-state.example.org\n' >"$BIFROST_DLOG"
+ok offline-act-logs-state act_logs
+for bad in hs-alt.example.org dns.private.arpa state.private.arpa state-tn hs-state.example.org; do
+    no "offline-state-no-$bad" grep -Fq "$bad" "$LF"
+done
+ok offline-state-keeps-hosts grep -Fq "dns=nas.<tailnet> st=box.<tailnet>" "$LF"
+rm -f "$BIFROST_STATE/control_url" "$BIFROST_DNSMASQ_CONF" "$BIFROST_STATE/tailscaled.state"
+
+# When daemon is stopped, fw_complete is null; non-CGNAT WAN -> wan_cgnat=false; missing tun -> tun=false
+rm -f "$BIFROST_TUN_DEV"
 nvram_seed wan0_ipaddr=203.0.113.5 ntp_ready=0
 ok act-logs-stopped act_logs
 eq diag-stopped "false null false false false" \
