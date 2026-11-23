@@ -1,0 +1,53 @@
+# Router simulation container for Bifrost integration tests (PLAN section 17.2).
+# Combines BusyBox, real iptables/ip6tables/iproute2, /dev/net/tun, jq, openssl,
+# curl, and the mock Koolshare software center (dbus, nvram, cru, logger, service).
+FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+
+RUN apk add --no-cache \
+    iptables \
+    ip6tables \
+    iproute2 \
+    jq \
+    openssl \
+    curl \
+    ca-certificates \
+    socat \
+    busybox-extras
+
+RUN mkdir -p \
+    /koolshare/scripts \
+    /koolshare/webs \
+    /koolshare/res \
+    /koolshare/init.d \
+    /koolshare/bin \
+    /koolshare/configs \
+    /tmp/upload \
+    /jffs/configs/dnsmasq.d \
+    /var/run/bifrost \
+    /var/lib/bifrost-mock \
+    /opt/bifrost-mock/bin
+
+# Copy mock software center helpers (built from staging context prepared by run.sh).
+# Real Linux ip and pidof are kept so tailscaled and networking work normally.
+COPY mock/base.sh /koolshare/scripts/base.sh
+COPY mock/bin/dbus mock/bin/nvram mock/bin/cru mock/bin/logger mock/bin/service /opt/bifrost-mock/bin/
+COPY router-uname /opt/bifrost-mock/bin/uname
+RUN chmod 755 /opt/bifrost-mock/bin/*
+
+# Seed firmware-like defaults (RFC 5737 LAN 192.0.2.1/24, router mode sw_mode=1).
+RUN printf '%s\n' \
+    'lan_ipaddr=192.0.2.1' \
+    'lan_netmask=255.255.255.0' \
+    'sw_mode=1' \
+    'http_lanport=80' \
+    'https_lanport=8443' \
+    'sc_skin=ASUSWRT' \
+    >/var/lib/bifrost-mock/nvram.env \
+ && : >/var/lib/bifrost-mock/dbus.env \
+ && printf 'aarch64\n' >/var/lib/bifrost-mock/uname_m \
+ && printf 'conf-dir=/jffs/configs/dnsmasq.d\n' >/etc/dnsmasq.conf
+
+ENV MOCK_STATE=/var/lib/bifrost-mock
+ENV PATH=/opt/bifrost-mock/bin:/koolshare/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+CMD ["sh", "-c", "trap 'exit 0' TERM INT; while :; do sleep 60; done"]
