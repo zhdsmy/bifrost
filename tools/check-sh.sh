@@ -18,7 +18,7 @@ is_sh() {
 router=""
 other=""
 for f in $(find plugin core packaging tools tests web/test -type f 2>/dev/null |
-    grep -v -e node_modules -e '/dist/' | sort); do
+    grep -v -e node_modules -e '/dist/' -e '^core/out/' | sort); do
     is_sh "$f" || continue
     case "$f" in
         plugin/bifrost/*) router="$router $f" ;;
