@@ -295,7 +295,8 @@ All in `$BIFROST_UPLOAD` (`/tmp/upload`), written with `json_write` or
 | Function | Owner | Used by | Contract |
 |---|---|---|---|
 | `daemon_start` | P2 | P1, P2, P5 | Full start sequence (PLAN 6.2) including `fw_apply`, `dns_apply`, watchdog. Writes a code to `$BIFROST_DAEMON_ERR` on failure, removes it on success |
-| `daemon_stop` | P2 | P1, P2, P5 | Stop sequence (PLAN 6.3) including `fw_clear`, `dns_clear`. Succeeds when nothing runs |
+| `daemon_stop` | P2 | P1, P2, P5 | Stop sequence (PLAN 6.3) including `fw_clear`, `dns_clear`; does not touch the watchdog cron (`daemon_watchdog_remove` does). Returns 0 only when no Bifrost daemon runs and `fw_clear` and `dns_clear` succeeded (also 0 when nothing ran). If the daemon survives `KILL` it re-applies `fw_apply` and `dns_apply` so the running daemon keeps working, and returns 1 with `internal`. If the daemon stopped but a clear failed it finishes the sequence and returns 1 with that code. Callers that stop in order to replace files (install upgrade, core update) abort on 1 and call `daemon_start` to bring a previously running daemon back; uninstall aborts and keeps its scripts |
+| `daemon_watchdog_remove` | P2 | P2, P5 | Removes the `$BIFROST_WATCHDOG_NAME` cron job (name defined at the top of `daemon.sh`) |
 | `daemon_restart` | P2 | P1, P2 | stop + start |
 | `daemon_wait_ready <secs>` | P2 | P1 | 0 when `status --json` answers within the time |
 | `prefs_json` | P2 | P3 | Prints `debug prefs` output (JSON) or fails `not_running` |
