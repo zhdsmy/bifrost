@@ -1,0 +1,22 @@
+{
+  "Now": "2026-11-23T12:00:00Z",
+  "UDP": true,
+  "IPv6": false,
+  "IPv4": true,
+  "IPv6CanSend": false,
+  "IPv4CanSend": true,
+  "OSHasIPv6": true,
+  "ICMPv4": true,
+  "MappingVariesByDestIP": false,
+  "UPnP": true,
+  "PMP": false,
+  "PCP": null,
+  "PreferredDERP": 8,
+  "RegionLatency": {
+    "20": 55400000,
+    "8": 29600000,
+    "901": 12400000
+  },
+  "GlobalV4": "203.0.113.42:41641",
+  "CaptivePortal": false
+}

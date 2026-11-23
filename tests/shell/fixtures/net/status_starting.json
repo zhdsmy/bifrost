@@ -1,0 +1,18 @@
+{
+  "Version": "1.104.7-tcbc74fe48",
+  "TUN": true,
+  "BackendState": "Starting",
+  "AuthURL": "",
+  "TailscaleIPs": null,
+  "Self": {
+    "HostName": "router",
+    "DNSName": "",
+    "OS": "linux",
+    "TailscaleIPs": null,
+    "Online": false
+  },
+  "Health": ["Tailscale is starting. Please wait."],
+  "MagicDNSSuffix": "",
+  "CurrentTailnet": null,
+  "Peer": null
+}

@@ -1,0 +1,17 @@
+{
+  "ControlURL": "https://controlplane.tailscale.com",
+  "RouteAll": false,
+  "CorpDNS": false,
+  "WantRunning": true,
+  "LoggedOut": false,
+  "ShieldsUp": false,
+  "Hostname": "",
+  "AdvertiseRoutes": ["192.168.1.0/24", "10.99.0.0/24"],
+  "NoSNAT": false,
+  "NetfilterMode": 0,
+  "Config": {
+    "PrivateNodeKey": "privkey:0000000000000000000000000000000000000000000000000000000000000000",
+    "OldPrivateNodeKey": "privkey:0000000000000000000000000000000000000000000000000000000000000001",
+    "NodeID": "nSelf0001"
+  }
+}

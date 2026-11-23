@@ -1,0 +1,296 @@
+#!/bin/sh
+# Stateful mock of iptables (v1.4.15 subset) for Bifrost shell tests.
+# Rules live under $MOCK_STATE/<fam>/<table>/chain.<CHAIN> (one rule per line).
+# Built-in chains always exist; user chains exist iff their file exists.
+# Every invocation is logged to $MOCK_STATE/<fam>.log.
+#
+# Failure injection:
+#   $MOCK_STATE/<fam>.fail_count  decremented on matching call; fails while > 0
+#   $MOCK_STATE/<fam>.fail_match  optional substring filter for fail_count
+#   $MOCK_STATE/<fam>.drop_add    optional substring; -A succeeds without storing
+
+fam=${BIFROST_MOCK_IPT_FAM:-iptables}
+state_dir="$MOCK_STATE/$fam"
+[ -d "$state_dir" ] || mkdir -p "$state_dir"
+printf '%s\n' "$*" >>"$MOCK_STATE/$fam.log"
+
+# Reject -w just like router iptables v1.4.15.
+for _a in "$@"; do
+    case "$_a" in
+        -w | --wait)
+            echo "mock $fam: -w is not supported on iptables v1.4.15" >&2
+            exit 2
+            ;;
+    esac
+done
+
+# Optional failure injection.
+if [ -f "$MOCK_STATE/$fam.fail_count" ]; then
+    _fc=$(cat "$MOCK_STATE/$fam.fail_count" 2>/dev/null)
+    case "$_fc" in
+        '' | *[!0-9]*) _fc=0 ;;
+    esac
+    if [ "$_fc" -gt 0 ]; then
+        _match=1
+        if [ -f "$MOCK_STATE/$fam.fail_match" ]; then
+            _pat=$(cat "$MOCK_STATE/$fam.fail_match")
+            case "$*" in
+                *"$_pat"*) _match=1 ;;
+                *) _match=0 ;;
+            esac
+        fi
+        if [ "$_match" -eq 1 ]; then
+            echo $((_fc - 1)) >"$MOCK_STATE/$fam.fail_count"
+            echo "mock $fam: injected failure ($*)" >&2
+            exit 1
+        fi
+    fi
+fi
+
+is_builtin() {
+    case "$1:$2" in
+        filter:INPUT | filter:FORWARD | filter:OUTPUT) return 0 ;;
+        nat:PREROUTING | nat:INPUT | nat:OUTPUT | nat:POSTROUTING) return 0 ;;
+        mangle:PREROUTING | mangle:INPUT | mangle:FORWARD | mangle:OUTPUT | mangle:POSTROUTING) return 0 ;;
+    esac
+    return 1
+}
+
+builtins_for_table() {
+    case "$1" in
+        filter) echo "INPUT FORWARD OUTPUT" ;;
+        nat) echo "PREROUTING INPUT OUTPUT POSTROUTING" ;;
+        mangle) echo "PREROUTING INPUT FORWARD OUTPUT POSTROUTING" ;;
+        *) return 1 ;;
+    esac
+}
+
+table=filter
+if [ "${1:-}" = -t ]; then
+    [ $# -ge 2 ] || { echo "mock $fam: missing table" >&2; exit 2; }
+    table=$2
+    shift 2
+fi
+
+case "$table" in
+    filter | nat | mangle) ;;
+    *) echo "mock $fam: unknown table $table" >&2; exit 2 ;;
+esac
+
+tdir="$state_dir/$table"
+[ -d "$tdir" ] || mkdir -p "$tdir"
+
+chain_exists() {
+    is_builtin "$table" "$1" && return 0
+    [ -f "$tdir/chain.$1" ]
+}
+
+ensure_builtin_file() {
+    if is_builtin "$table" "$1" && [ ! -f "$tdir/chain.$1" ]; then
+        : >"$tdir/chain.$1"
+    fi
+}
+
+print_chain_s() {
+    _pc=$1
+    if is_builtin "$table" "$_pc"; then
+        printf -- '-P %s ACCEPT\n' "$_pc"
+    else
+        printf -- '-N %s\n' "$_pc"
+    fi
+    if [ -f "$tdir/chain.$_pc" ]; then
+        while IFS= read -r _line; do
+            [ -n "$_line" ] || continue
+            printf -- '-A %s %s\n' "$_pc" "$_line"
+        done <"$tdir/chain.$_pc"
+    fi
+}
+
+op=${1:-}
+[ -n "$op" ] || { echo "mock $fam: missing operation" >&2; exit 2; }
+shift
+
+case "$op" in
+    -N)
+        ch=${1:-}
+        [ -n "$ch" ] || { echo "mock $fam: -N needs chain" >&2; exit 2; }
+        if chain_exists "$ch"; then
+            echo "mock $fam: Chain already exists: $ch" >&2
+            exit 1
+        fi
+        : >"$tdir/chain.$ch"
+        ;;
+    -F)
+        ch=${1:-}
+        if [ -n "$ch" ]; then
+            chain_exists "$ch" || { echo "mock $fam: No chain/target/match: $ch" >&2; exit 1; }
+            : >"$tdir/chain.$ch"
+        else
+            for _f in "$tdir"/chain.*; do
+                [ -f "$_f" ] && : >"$_f"
+            done
+        fi
+        ;;
+    -X)
+        ch=${1:-}
+        if [ -n "$ch" ]; then
+            if is_builtin "$table" "$ch"; then
+                echo "mock $fam: cannot delete built-in chain $ch" >&2
+                exit 1
+            fi
+            [ -f "$tdir/chain.$ch" ] || { echo "mock $fam: No chain: $ch" >&2; exit 1; }
+            if [ -s "$tdir/chain.$ch" ]; then
+                echo "mock $fam: Directory not empty (chain $ch)" >&2
+                exit 1
+            fi
+            for _f in "$tdir"/chain.*; do
+                [ -f "$_f" ] || continue
+                if grep -Eq -- "(^| )-j $ch($| )" "$_f"; then
+                    echo "mock $fam: Too many links (chain $ch referenced)" >&2
+                    exit 1
+                fi
+            done
+            rm -f "$tdir/chain.$ch"
+        else
+            for _f in "$tdir"/chain.*; do
+                [ -f "$_f" ] || continue
+                _bn=${_f##*/chain.}
+                is_builtin "$table" "$_bn" && continue
+                [ ! -s "$_f" ] && rm -f "$_f"
+            done
+        fi
+        ;;
+    -A)
+        ch=${1:-}
+        [ -n "$ch" ] || { echo "mock $fam: -A needs chain" >&2; exit 2; }
+        shift
+        chain_exists "$ch" || { echo "mock $fam: No chain: $ch" >&2; exit 1; }
+        ensure_builtin_file "$ch"
+        rule=$*
+        if [ -f "$MOCK_STATE/$fam.drop_add" ]; then
+            _dp=$(cat "$MOCK_STATE/$fam.drop_add")
+            case "$ch $rule" in
+                *"$_dp"*) exit 0 ;;
+            esac
+        fi
+        printf '%s\n' "$rule" >>"$tdir/chain.$ch"
+        ;;
+    -I)
+        ch=${1:-}
+        [ -n "$ch" ] || { echo "mock $fam: -I needs chain" >&2; exit 2; }
+        shift
+        chain_exists "$ch" || { echo "mock $fam: No chain: $ch" >&2; exit 1; }
+        ensure_builtin_file "$ch"
+        pos=1
+        case "${1:-}" in
+            '' | *[!0-9]* | 0*) ;;
+            *)
+                pos=$1
+                shift
+                ;;
+        esac
+        rule=$*
+        _f="$tdir/chain.$ch"
+        _tmp="$_f.tmp.$$"
+        : >"$_tmp"
+        _i=1
+        _ins=0
+        while IFS= read -r _line; do
+            if [ "$_i" -eq "$pos" ]; then
+                printf '%s\n' "$rule" >>"$_tmp"
+                _ins=1
+            fi
+            printf '%s\n' "$_line" >>"$_tmp"
+            _i=$((_i + 1))
+        done <"$_f"
+        if [ "$_ins" -eq 0 ]; then
+            if [ "$pos" -gt "$_i" ]; then
+                rm -f "$_tmp"
+                echo "mock $fam: Index of insertion too big" >&2
+                exit 1
+            fi
+            printf '%s\n' "$rule" >>"$_tmp"
+        fi
+        mv -f "$_tmp" "$_f"
+        ;;
+    -C)
+        ch=${1:-}
+        [ -n "$ch" ] || { echo "mock $fam: -C needs chain" >&2; exit 2; }
+        shift
+        chain_exists "$ch" || exit 1
+        ensure_builtin_file "$ch"
+        rule=$*
+        grep -Fqx -- "$rule" "$tdir/chain.$ch"
+        exit $?
+        ;;
+    -D)
+        ch=${1:-}
+        [ -n "$ch" ] || { echo "mock $fam: -D needs chain" >&2; exit 2; }
+        shift
+        chain_exists "$ch" || { echo "mock $fam: No chain: $ch" >&2; exit 1; }
+        ensure_builtin_file "$ch"
+        rule=$*
+        _f="$tdir/chain.$ch"
+        _tmp="$_f.tmp.$$"
+        : >"$_tmp"
+        _del=0
+        while IFS= read -r _line; do
+            if [ "$_del" -eq 0 ] && [ "$_line" = "$rule" ]; then
+                _del=1
+                continue
+            fi
+            printf '%s\n' "$_line" >>"$_tmp"
+        done <"$_f"
+        if [ "$_del" -eq 0 ]; then
+            rm -f "$_tmp"
+            echo "mock $fam: Bad rule (does a matching rule exist?)" >&2
+            exit 1
+        fi
+        mv -f "$_tmp" "$_f"
+        ;;
+    -S)
+        ch=${1:-}
+        if [ -n "$ch" ]; then
+            chain_exists "$ch" || { echo "mock $fam: No chain: $ch" >&2; exit 1; }
+            print_chain_s "$ch"
+        else
+            for _b in $(builtins_for_table "$table"); do
+                print_chain_s "$_b"
+            done
+            for _f in "$tdir"/chain.*; do
+                [ -f "$_f" ] || continue
+                _bn=${_f##*/chain.}
+                is_builtin "$table" "$_bn" && continue
+                print_chain_s "$_bn"
+            done
+        fi
+        ;;
+    -L)
+        ch=""
+        for _a in "$@"; do
+            case "$_a" in
+                -*) ;;
+                *) [ -z "$ch" ] && ch=$_a ;;
+            esac
+        done
+        if [ -n "$ch" ]; then
+            chain_exists "$ch" || { echo "mock $fam: No chain: $ch" >&2; exit 1; }
+            print_chain_s "$ch"
+        else
+            for _b in $(builtins_for_table "$table"); do
+                print_chain_s "$_b"
+            done
+            for _f in "$tdir"/chain.*; do
+                [ -f "$_f" ] || continue
+                _bn=${_f##*/chain.}
+                is_builtin "$table" "$_bn" && continue
+                print_chain_s "$_bn"
+            done
+        fi
+        ;;
+    *)
+        echo "mock $fam: unsupported operation: $op $*" >&2
+        exit 2
+        ;;
+esac
+exit 0

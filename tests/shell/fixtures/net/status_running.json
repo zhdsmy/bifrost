@@ -1,0 +1,106 @@
+{
+  "Version": "1.104.7-tcbc74fe48",
+  "TUN": true,
+  "BackendState": "Running",
+  "HaveNodeKey": true,
+  "AuthURL": "https://login.example.org/should-be-cleared-when-running",
+  "TailscaleIPs": ["100.64.0.1", "fd7a:115c:a1e0::1"],
+  "Self": {
+    "ID": "nSelf0001",
+    "PublicKey": "nodekey:0000000000000000000000000000000000000000000000000000000000000001",
+    "HostName": "router",
+    "DNSName": "router.example.ts.net.",
+    "OS": "linux",
+    "UserID": 1001,
+    "TailscaleIPs": ["100.64.0.1", "fd7a:115c:a1e0::1"],
+    "AllowedIPs": ["100.64.0.1/32", "fd7a:115c:a1e0::1/128", "192.168.1.0/24"],
+    "PrimaryRoutes": ["192.168.1.0/24"],
+    "CurAddr": "",
+    "Relay": "tok",
+    "PeerRelay": "",
+    "Online": true,
+    "ExitNode": false,
+    "ExitNodeOption": false,
+    "Active": true,
+    "PeerAPIURL": ["http://100.64.0.1:49152", "http://[fd7a:115c:a1e0::1]:49153"],
+    "KeyExpiry": "2027-05-01T00:00:00Z"
+  },
+  "Health": ["some upstream health warning"],
+  "MagicDNSSuffix": "example.ts.net",
+  "CurrentTailnet": {
+    "Name": "example.ts.net",
+    "MagicDNSSuffix": "example.ts.net",
+    "MagicDNSEnabled": true
+  },
+  "User": {
+    "1001": {
+      "ID": 1001,
+      "LoginName": "alice@example.org",
+      "DisplayName": "Alice"
+    }
+  },
+  "Peer": {
+    "nodekey:aaaa": {
+      "ID": "nPeer1",
+      "PublicKey": "nodekey:aaaa",
+      "HostName": "zulu",
+      "DNSName": "zulu.example.ts.net.",
+      "OS": "linux",
+      "TailscaleIPs": ["100.64.0.10"],
+      "AllowedIPs": ["100.64.0.10/32", "10.10.0.0/24", "0.0.0.0/0", "::/0"],
+      "PrimaryRoutes": ["10.10.0.0/24"],
+      "CurAddr": "",
+      "Relay": "sin",
+      "PeerRelay": "198.51.100.5:41641:vni:1",
+      "RxBytes": 500,
+      "TxBytes": 600,
+      "LastHandshake": "2026-11-23T20:00:00.123456789+08:00",
+      "Online": true,
+      "ExitNodeOption": true
+    },
+    "nodekey:bbbb": {
+      "ID": "nPeer2",
+      "PublicKey": "nodekey:bbbb",
+      "HostName": "alpha",
+      "DNSName": "alpha.example.ts.net.",
+      "OS": "macOS",
+      "TailscaleIPs": ["100.64.0.2", "fd7a:115c:a1e0::2"],
+      "AllowedIPs": ["100.64.0.2/32", "fd7a:115c:a1e0::2/128"],
+      "CurAddr": "203.0.113.10:41641",
+      "Relay": "tok",
+      "PeerRelay": "",
+      "RxBytes": 1024,
+      "TxBytes": 2048,
+      "LastHandshake": "2026-11-23T12:00:00Z",
+      "Online": true,
+      "ExitNodeOption": false
+    },
+    "nodekey:cccc": {
+      "ID": "nPeer3",
+      "PublicKey": "nodekey:cccc",
+      "HostName": "beta",
+      "DNSName": "beta.example.ts.net.",
+      "OS": "iOS",
+      "TailscaleIPs": ["100.64.0.3"],
+      "AllowedIPs": ["100.64.0.3/32", "172.16.0.0/24"],
+      "CurAddr": "",
+      "Relay": "hkg",
+      "PeerRelay": "",
+      "RxBytes": 10,
+      "TxBytes": 20,
+      "LastHandshake": "0001-01-01T00:00:00Z",
+      "Online": false,
+      "ExitNodeOption": false
+    },
+    "nodekey:dddd": {
+      "ID": "nPeer4",
+      "PublicKey": "nodekey:dddd",
+      "HostName": "shared-hidden",
+      "DNSName": "shared-hidden.example.ts.net.",
+      "OS": "linux",
+      "TailscaleIPs": ["100.64.0.99"],
+      "Online": true,
+      "ShareeNode": true
+    }
+  }
+}

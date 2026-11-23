@@ -1,0 +1,12 @@
+{
+  "ControlURL": "https://login.tailscale.com",
+  "RouteAll": false,
+  "CorpDNS": true,
+  "WantRunning": true,
+  "LoggedOut": false,
+  "ShieldsUp": true,
+  "Hostname": "",
+  "AdvertiseRoutes": [],
+  "NoSNAT": false,
+  "NetfilterMode": 2
+}
