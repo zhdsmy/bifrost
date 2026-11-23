@@ -229,7 +229,13 @@ job_run() {
         job_end "$_jn_job" fail not_implemented
         return 1
     fi
-    if with_lock state 60 "job_$_jn_job" "$@"; then
+    # These jobs wait for a user, the original plugin or the network. They
+    # take the state lock themselves, only around the steps that change state.
+    case "$_jn_job" in
+        login | migrate | netcheck) set -- "job_$_jn_job" "$@" ;;
+        *) set -- with_lock state 60 "job_$_jn_job" "$@" ;;
+    esac
+    if "$@"; then
         job_end "$_jn_job" ok
     else
         job_end "$_jn_job" fail "${BIFROST_ERR:-internal}"

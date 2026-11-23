@@ -104,6 +104,15 @@ ok job-running-live job_running demo
 no job-start-busy job_start demo good
 eq job-busy-code busy "$BIFROST_ERR"
 
+# job_run holds the state lock, except for the jobs that lock themselves
+# shellcheck disable=SC2329 # called by job_run
+job_lockprobe() { [ -d "$BIFROST_RUN/lock.state" ]; }
+# shellcheck disable=SC2329 # called by job_run
+job_netcheck() { [ ! -d "$BIFROST_RUN/lock.state" ]; }
+ok job-run-locks job_run lockprobe
+ok job-run-selflock job_run netcheck
+unset -f job_lockprobe job_netcheck
+
 # process probes
 no daemon-none daemon_running
 "$BIFROST_CORE" --statedir="$BIFROST_STATE" --socket="$BIFROST_SOCK" &

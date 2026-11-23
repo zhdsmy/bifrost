@@ -42,6 +42,12 @@ These add to PLAN section 14 and `AGENTS.md`.
   that change state without a job. Lib functions (`daemon_start`, `fw_apply`,
   ...) never lock. `install.sh` and `uninstall.sh` take the `state` lock with
   `lock_acquire state 60` for their whole run.
+- `job_run` holds the `state` lock for the whole job, except for `login`,
+  `migrate` and `netcheck`. Those jobs wait for a user, the original plugin or
+  the network, so they take `with_lock state 60 ...` themselves around the
+  steps that change Bifrost state, never while waiting. While a `login` job
+  waits, other actions work; a `disable` stops the daemon and the waiting
+  `up` fails.
 - Responses: an `act_*` function never calls `respond`. It returns 0 or 1. On
   success it may set `BIFROST_RESULT` to a compact JSON object whose fields are
   added to `{"ok":true}`. Response text must not contain `& + % =` (see PLAN 2.4
@@ -260,7 +266,7 @@ All in `$BIFROST_UPLOAD` (`/tmp/upload`), written with `json_write` or
 | `daemon` | `queued start precheck starting waiting prefs firewall dns stopping cleanup purge done` | `{"action":"start"\|"stop"\|"restart"\|"purge"}` |
 | `login` | `queued start running done` | `{"action":"login"\|"relogin","official":bool}` |
 | `migrate` | `queued start precheck record backup stop_original wait_original copy starting verify rollback done` | `{"manual_stop":bool,"rolled_back":bool}` |
-| `update` | `queued start manifest verify_manifest space download verify unpack test snapshot swap verify_running finalize rollback done` | `{"action":"check"\|"update"\|"rollback"\|"arch","latest":{tailscale,revision,serial,tag}\|null,"kept_prev":bool}` |
+| `update` | `queued start manifest verify_manifest space download verify unpack test snapshot swap verify_running finalize rollback done` | `{"action":"check"\|"update"\|"rollback"\|"arch","latest":{tailscale,revision,serial,tag}\|null,"up_to_date":bool,"kept_prev":bool}`. `check` ends `ok` both with and without an update; `up_to_date:true` means the channel serial equals the installed one (the page then shows the `up_to_date` text). A lower channel serial fails with `old_serial` |
 | `netcheck` | `queued start running done` | `{"report":{...}}` (below) |
 
 `netcheck` report: `{"udp":bool,"ipv4":bool,"ipv6":bool,"mapping_varies":bool|null,"portmap":"<string>","preferred_derp":"<code>","derp":[{"code":"tok","latency_ms":30}]}`.
@@ -321,7 +327,9 @@ PLAN 12.2 plus a `build` object (for the core page):
 }
 ```
 
-- Installed copy: `$BIFROST_MANIFEST`. The package copy: `bin/core.json`
+- Installed copy: `$BIFROST_MANIFEST`. It adds a top-level `"arch":"arm"|"arm64"`
+  (the installed core's architecture) and keeps only that entry in `assets`.
+  Readers use `.assets[.arch]`. The package copy: `bin/core.json`
   next to `bin/bifrostd.gz` (unsigned in the package; it is checked against
   the file hashes only).
 - Public keys: `$BIFROST_KEYS/*.pub.pem` (ECDSA P-256, PEM). The repository
