@@ -8,13 +8,15 @@ on:
 permissions:
   contents: read
 
+# Fixed global group so two core-* tags pushed concurrently cannot read the
+# same channel-stable serial and emit duplicate serials.
 concurrency:
-  group: core-release-${{ github.ref }}
+  group: core-release
   cancel-in-progress: false
 
 jobs:
   validate:
-    name: Validate recipe and tag
+    name: Validate recipe, tag and serial
     runs-on: ubuntu-latest
     outputs:
       go_version: ${{ steps.meta.outputs.go_version }}
@@ -24,15 +26,29 @@ jobs:
       tailscale_commit: ${{ steps.meta.outputs.tailscale_commit }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Verify tag matches core/recipe.json and compute serial
+      - name: Verify tag is on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+
+      - name: Exercise release interruption and recovery offline
+        run: core/tests/release.sh
+
+      - name: Verify signing public key exists, tag matches recipe, and compute serial
         id: meta
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REF_TAG: ${{ github.ref_name }}
         run: |
           set -eu
+
+          # Require at least one bundled production public key before releasing.
+          set -- plugin/bifrost/keys/*.pub.pem
+          [ -s "$1" ] || { echo 'Missing bundled signing key' >&2; exit 1; }
+
           ts_ver=$(jq -r '.tailscale.version' core/recipe.json)
           ts_commit=$(jq -r '.tailscale.commit' core/recipe.json)
           go_ver=$(jq -r '.go' core/recipe.json)
@@ -44,22 +60,7 @@ jobs:
             exit 1
           fi
 
-          if gh release view "$want_tag" >/dev/null 2>&1; then
-            echo "Release '$want_tag' already exists; refusing to overwrite" >&2
-            exit 1
-          fi
-
-          prev_serial=0
-          if gh release download channel-stable -p core.json -O /tmp/prev-core.json 2>/dev/null; then
-            prev_serial=$(jq -r '.serial' /tmp/prev-core.json)
-            case "$prev_serial" in
-              '' | *[!0-9]*)
-                echo "Invalid serial in channel-stable/core.json: $prev_serial" >&2
-                exit 1
-                ;;
-            esac
-          fi
-          next_serial=$((prev_serial + 1))
+          next_serial=$(core/release.sh serial "$want_tag")
 
           {
             echo "go_version=$go_ver"
@@ -70,7 +71,7 @@ jobs:
           } >>"$GITHUB_OUTPUT"
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ steps.meta.outputs.go_version }}
           cache: false
@@ -84,10 +85,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ needs.validate.outputs.go_version }}
           cache: false
@@ -102,7 +105,7 @@ jobs:
           )
 
       - name: Upload build A artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: core-build-a
           if-no-files-found: error
@@ -118,10 +121,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ needs.validate.outputs.go_version }}
           cache: false
@@ -136,7 +141,7 @@ jobs:
           )
 
       - name: Upload build B artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: core-build-b
           if-no-files-found: error
@@ -152,10 +157,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ needs.validate.outputs.go_version }}
           cache: false
@@ -240,16 +247,18 @@ jobs:
       attestations: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Download build A
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: core-build-a
           path: dist/a
 
       - name: Download build B
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: core-build-b
           path: dist/b
@@ -268,7 +277,7 @@ jobs:
           mkdir -p dist/release
           cp dist/a/bifrost-core-*.gz dist/a/core.json dist/a/LICENSE.tailscale dist/a/SHA256SUMS dist/release/
 
-      - name: Sign core.json and SHA256SUMS
+      - name: Sign core.json and SHA256SUMS and verify against bundled keys
         env:
           BIFROST_SIGNING_KEY: ${{ secrets.BIFROST_SIGNING_KEY }}
         run: |
@@ -285,25 +294,10 @@ jobs:
           )
           tools/sign.sh "$key_tmp" dist/release/core.json dist/release/SHA256SUMS
 
-          # Verify against bundled public keys when present in plugin/bifrost/keys/.
-          found_pub=0
-          verified=0
-          for pub in plugin/bifrost/keys/*.pub.pem; do
-            [ -r "$pub" ] || continue
-            found_pub=1
-            if openssl dgst -sha256 -verify "$pub" -signature dist/release/core.json.sig dist/release/core.json >/dev/null 2>&1 &&
-               openssl dgst -sha256 -verify "$pub" -signature dist/release/SHA256SUMS.sig dist/release/SHA256SUMS >/dev/null 2>&1; then
-              verified=1
-              break
-            fi
-          done
-          if [ "$found_pub" = 1 ] && [ "$verified" != 1 ]; then
-            echo "Signature failed verification against plugin/bifrost/keys/*.pub.pem" >&2
-            exit 1
-          fi
+          core/release.sh verify dist/release/core.json dist/release/SHA256SUMS
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             dist/release/bifrost-core-*.gz
@@ -312,39 +306,8 @@ jobs:
             dist/release/SHA256SUMS
             dist/release/SHA256SUMS.sig
 
-      - name: Publish tag release and update channel-stable
+      - name: Publish tag release (idempotent on matching re-run) and verify channel-stable
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.validate.outputs.tag }}
-          SERIAL: ${{ needs.validate.outputs.serial }}
-          TS_VER: ${{ needs.validate.outputs.tailscale_version }}
-          TS_COMMIT: ${{ needs.validate.outputs.tailscale_commit }}
-          GO_VER: ${{ needs.validate.outputs.go_version }}
-        run: |
-          set -eu
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release '$TAG' already exists; refusing to overwrite" >&2
-            exit 1
-          fi
-
-          gh release create "$TAG" \
-            dist/release/bifrost-core-*.gz \
-            dist/release/core.json \
-            dist/release/core.json.sig \
-            dist/release/SHA256SUMS \
-            dist/release/SHA256SUMS.sig \
-            dist/release/LICENSE.tailscale \
-            --title "Bifrost Core ${TAG}" \
-            --notes "Tailscale ${TS_VER} (\`${TS_COMMIT}\`), Go ${GO_VER}, manifest serial ${SERIAL}."
-
-          if ! gh release view channel-stable >/dev/null 2>&1; then
-            gh release create channel-stable \
-              --target "$GITHUB_SHA" \
-              --title "Stable Core Channel" \
-              --notes "Latest verified stable Bifrost core manifest."
-          fi
-
-          gh release upload channel-stable \
-            dist/release/core.json \
-            dist/release/core.json.sig \
-            --clobber
+        run: core/release.sh publish "$TAG" dist/release
