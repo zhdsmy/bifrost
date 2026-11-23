@@ -29,5 +29,6 @@ AGENTS.local.md
 web/dist/
 web/test-results/
 plugin/bifrost/res/bifrost-app.*
-plugin/bifrost/bin/
+plugin/bifrost/bin/*
+!plugin/bifrost/bin/bifrost
 core/out/
