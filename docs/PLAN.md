@@ -624,7 +624,7 @@ tailscaled 的防火墙模式固定为 `off`，所有规则由 Bifrost 自己的
 - **标记值**和上游相同（`0x40000/0xff0000`）。上游保留了这一段掩码，不会和它自己绕过路由用的标记冲突。
 - **MSS 钳制**：固件自己的钳制规则排在后面，被 `ACCEPT` 提前截断后不会执行，所以 Bifrost 自己加。`tailscale0` 的 MTU 是 1280。
 - **出口节点上网**不需要额外的 nat 规则。固件 WAN 口的 MASQUERADE 已经覆盖【已核实】。
-- **后台的 DNAT**：httpd 不监听 tailnet IP，所以用 tailnet IP 打开后台要靠这条规则。原版把所有端口都转过去，连 PeerAPI 端口也转走了；Bifrost 只转后台端口。固件的 httpd 是否接受这样进来的请求【待实测】。不接受就删掉这条规则，改成在页面上提示用局域网 IP 访问。
+- **后台的 DNAT**：httpd 不监听 tailnet IP，所以用 tailnet IP 打开后台要靠这条规则。原版把所有端口都转过去，连 PeerAPI 端口也转走了；Bifrost 只转后台端口。固件的 httpd 接受这样进来的请求【已核实】：2026-11-24 在开发机上，用蜂窝网络下的 iPhone 经 tailnet IP 打开了后台。
 - **不允许访问本机时**，从 tailnet 仍然可以访问局域网里的其他设备，也可以 ping 路由器。
 
 ### 9.3 应用和恢复
@@ -668,7 +668,7 @@ tailscaled 的防火墙模式固定为 `off`，所有规则由 Bifrost 自己的
 1. **预检查**：原版的 state 文件存在；Bifrost 的核心可用；Bifrost 的 daemon 没在运行。
 2. **记录**：用原版的命令行读它的设备 ID、公钥和 `BackendState`，存到 `/tmp/bifrost-run/migrate/`。
 3. **备份**：Bifrost 的 state 目录里已经有文件时，先改名为带时间的备份。
-4. **停止原版**：通过原版自己的脚本停止，并关掉它的开机启动。具体调用方式【待实测】：原版脚本是编译过的，候选做法是把 `tailscale_enable` 设成 `0`，再执行它页面上的提交动作。M2 第一步在维护窗口里确认。确认不了就不做自动切换，改成提示用户先在原版页面里关闭，Bifrost 检测到它停了再继续。
+4. **停止原版**：通过原版自己的脚本停止，并关掉它的开机启动。具体调用方式【已核实】（2026-11-24，原版 2.0.8）：把 `tailscale_enable` 设成 `0`，再执行 `tailscale_config stop`，约 3 秒后 tailscaled 和 `tailscale0` 都没有了；`tailscale_enable=1` 加 `tailscale_config start` 约 11 秒恢复到 Running。页面的提交动作是 `tailscale_config <请求号> web_submit`，不带请求号时什么也不做。原版停止后会留下 nat 表里的 DNAT 和 MASQUERADE 规则（注释 `tailscale_rule`），下次重建防火墙时才消失。
 5. **复制**：把原版的 `tailscaled.state` 和 `derpmap.cached.json` 复制到 Bifrost 的 state 目录，权限 600。不复制 `files/`（Taildrop 已去掉）。原版的文件一个都不改。
 6. **启动 Bifrost**：`bifrost_enable=1`，执行启动顺序。第 6 步会把防火墙模式改成 `off`。
 7. **验证**：60 秒内 `BackendState` 回到记录的状态，设备 ID 和公钥与记录的相同。
