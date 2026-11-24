@@ -29,9 +29,9 @@ English | [简体中文](README.md)
 |---|---|
 | ![Core](docs/images/core-en.png) | ![Diagnostics](docs/images/diagnostics-en.png) |
 
-| English UI | Narrow Viewport (420 px) |
+| Chinese UI | Narrow Viewport (420 px) |
 |---|---|
-| ![English UI](docs/images/overview-en.png) | ![Narrow Viewport](docs/images/narrow-en.png) |
+| ![Chinese UI](docs/images/overview.png) | ![Narrow Viewport](docs/images/narrow-en.png) |
 
 > [!NOTE]
 > Developed for the `ASUSWRT` firmware skin. The `ROG`, `TUF`, and `TS` skins have not been tested on physical hardware. Because the UI renders inside a Shadow DOM, its styling does not depend on firmware skins.
@@ -101,18 +101,18 @@ Bifrost supports connecting as a client to self-hosted control servers (containe
 
 | Setting | Default | Behavior |
 |---|---|---|
-| Enable Bifrost | Off | Starts/stops the daemon and controls boot auto-start (`S99bifrost.sh`). |
-| Advertise routes | Empty | Advertises IPv4 CIDRs behind the router (up to 16; `0.0.0.0/0` forbidden) and shows per-route approval status. |
-| Advertise exit node | Off | Lets tailnet devices route internet traffic through this router (requires control-server approval). |
-| Accept routes | Off (preserved on migration) | Accepts subnet routes advertised by other devices; warns before enabling if a remote route overlaps the router's LAN. |
-| Hostname | Empty (system hostname) | Custom tailnet device name (1–63 ASCII letters, digits, hyphens). |
-| Listen port | `41641` | Fixed WireGuard UDP port (1024–65535) for firewall rules and upstream port forwarding; changing it restarts the daemon. |
-| Allow tailnet access to router | On | When off, drops incoming connections to the router itself on `tailscale0` (keeping ICMP and established flows) while still forwarding to LAN devices behind it; warns before locking out a tailnet admin session. |
-| LAN access to tailnet | On | Masquerades outbound `tailscale0` traffic so LAN devices without Tailscale installed can reach the tailnet; disable for site-to-site setups requiring original source IPs. |
-| SNAT for inbound tailnet traffic | Auto | `Auto`: off in router mode, on in AP mode; `On`: always masquerade to the router LAN IP; `Off`: preserve tailnet source IPs. |
-| MagicDNS for LAN clients | Off | Writes `/jffs/configs/dnsmasq.d/bifrost.conf` forwarding the MagicDNS suffix to `100.100.100.100` and restarts dnsmasq; removed on stop or uninstall. |
-| Disable log uploads | On | Enables `--no-logs-no-support`; locked On when using a custom control server. |
-| Download mirror | Empty | Optional `https://.../` prefix for core updates; manifest signatures and file hashes are always verified before installation. |
+| Enable / Disable (**Overview** tab) | Off | Starts/stops the daemon and controls boot auto-start (`S99bifrost.sh`). |
+| Subnet Router (Advertise Routes) | Empty | Advertises IPv4 CIDRs behind the router (up to 16; `0.0.0.0/0` forbidden) and shows per-route approval status. |
+| Advertise as Exit Node | Off | Lets tailnet devices route internet traffic through this router (requires control-server approval). |
+| Accept Routes | Off (preserved on migration) | Accepts subnet routes advertised by other devices; warns before enabling if a remote route overlaps the router's LAN. |
+| Device Name | Empty (system hostname) | Custom tailnet device name (1–63 ASCII letters, digits, hyphens). |
+| Listen Port | `41641` | Fixed WireGuard UDP port (1024–65535) for firewall rules and upstream port forwarding; changing it restarts the daemon. |
+| Allow Tailnet Access to Router | On | When off, drops incoming connections to the router itself on `tailscale0` (keeping ICMP and established flows) while still forwarding to LAN devices behind it; warns before locking out a tailnet admin session. |
+| LAN Access to Tailnet | On | Masquerades outbound `tailscale0` traffic so LAN devices without Tailscale installed can reach the tailnet; disable for site-to-site setups requiring original source IPs. |
+| SNAT into LAN | Auto | `Auto`: off in router mode, on in AP mode; `On`: always masquerade to the router LAN IP; `Off`: preserve tailnet source IPs. |
+| Resolve Tailnet Hostnames on LAN | Off | Writes `/jffs/configs/dnsmasq.d/bifrost.conf` forwarding the MagicDNS suffix to `100.100.100.100` and restarts dnsmasq; removed on stop or uninstall. |
+| Disable Tailscale Log Uploads | On | Enables `--no-logs-no-support`; locked On when using a custom control server. |
+| Download Mirror Prefix | Empty | Optional `https://.../` prefix for core updates; manifest signatures and file hashes are always verified before installation. |
 
 ### Coexistence with Transparent Proxy Plugins
 
@@ -129,7 +129,7 @@ Bifrost supports connecting as a client to self-hosted control servers (containe
 - Core binaries are released separately under `core-<tailscale-version>-<revision>` tags and update `core.json` and `core.json.sig` in the `channel-stable` release.
 - **Signing algorithm**: ECDSA P-256 with SHA-256 (verified by the router's OpenSSL 1.1.1w). Public keys live in `/koolshare/bifrost/keys/*.pub.pem` with multi-key rotation support.
 - **Anti-downgrade & rollback**: Monotonic `serial` numbers block replay and downgrade attacks; the router rejects cores whose `serial` is not greater than the current one. Updates verify the manifest signature, check `.gz` and unpacked `raw_sha256`, test `--version`, then swap and verify that the service recovers within 60 s. On failure, Bifrost automatically restores the previous core and state snapshot. When JFFS space permits, `bifrostd.prev.gz` is kept for manual rollback.
-- **Verifying offline release tarballs**: Verify the `SHA256SUMS` signature first, then check the tarball hash (works even if you downloaded only one architecture tarball):
+- **Verifying offline release tarballs**: Verify the `SHA256SUMS` signature first, then check the tarball hash (works even if you downloaded only one architecture tarball). Take the public key from `plugin/bifrost/keys/` in this repository at the release tag:
 
 ```sh
 # 1. Verify the SHA256SUMS signature
@@ -150,7 +150,7 @@ Uninstall from the **Software Center** (runs `/koolshare/scripts/uninstall_bifro
 
 - **Stop & clean up**: Stops the daemon (aborting and keeping scripts if the daemon cannot be stopped so you can retry). Removes the `bifrost_watchdog` cron job, `BIFROST_*` firewall chains, dnsmasq config, installed binaries, scripts, web assets, `/tmp/bifrost-run/`, `/tmp/upload/bifrost_*`, and all `bifrost_*` and `softcenter_module_bifrost_*` dbus keys.
 - **State directory is preserved**: `/koolshare/configs/bifrost/` is kept so reinstalling does not require logging in again.
-- **Full cleanup**: Before uninstalling, open the **Diagnostics** tab and click **Clear login state** (or delete `/koolshare/configs/bifrost/` over SSH after uninstalling).
+- **Full cleanup**: Before uninstalling, open the **Diagnostics** tab and click **Clear Login State** (or delete `/koolshare/configs/bifrost/` over SSH after uninstalling).
 - **Does not log out**: Uninstalling does not send `logout`. The router appears offline in your control plane until you remove it there.
 
 ## Limitations (Out of Scope in v1)

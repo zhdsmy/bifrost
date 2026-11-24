@@ -116,7 +116,7 @@ openssl ec -in bifrost-release.key.pem -pubout \
 
 1. 更新 `core/recipe.json` 中的 Tailscale 版本、提交哈希、Go 版本或 `revision`，并运行 `packaging/gen-core-notices.py` 更新 `packaging/THIRD_PARTY_NOTICES.core.md`。
 2. 合并到 `main` 后打 tag 并推送：`git tag core-<Tailscale版本>-<revision> && git push origin core-<Tailscale版本>-<revision>`。
-3. `core.yml` 在两个独立 job 中分别编译并比对哈希，运行容器冒烟测试，签名 `core.json` 和 `SHA256SUMS`，生成构建来源证明并发布，最后更新 `channel-stable`。
+3. `core.yml` 在两个独立 job 中分别编译并比对哈希，在 runner 上以 `--tun=userspace-networking` 运行冒烟测试，签名 `core.json` 和 `SHA256SUMS`，生成构建来源证明并发布，最后更新 `channel-stable`。
 
 ### 2. 发布插件（`release.yml`）
 
