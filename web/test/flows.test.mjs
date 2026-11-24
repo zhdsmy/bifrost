@@ -935,6 +935,8 @@ test("a setting saved during a status read is followed by a fresh status snapsho
   // Pause the old GET after the preview server has already generated its body.
   const oldRead = Promise.withResolvers();
   const release = Promise.withResolvers();
+  // On failure, unblock the paused route so cleanup can close the browser.
+  t.after(() => release.resolve());
   await page.route("**/_temp/bifrost_status.json", async (route) => {
     const response = await route.fetch();
     oldRead.resolve();
@@ -949,7 +951,8 @@ test("a setting saved during a status read is followed by a fresh status snapsho
     }
   });
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-  await oldRead.promise;
+  const unseen = setTimeout(() => oldRead.reject(new Error("no status read reached the paused route")), 8000);
+  await oldRead.promise.finally(() => clearTimeout(unseen));
   const setting = page.getByRole("switch", { name: "局域网设备访问 tailnet" });
   const saved = page.waitForResponse((r) =>
     r.request().method() === "POST" && r.request().postData()?.includes('"lan_masq"'),

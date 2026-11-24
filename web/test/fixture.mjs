@@ -20,10 +20,15 @@ export async function openPreview(t, options = {}) {
   await once(server, "listening");
   const host = insecureHttp ? "bifrost.test" : "127.0.0.1";
   const origin = `http://${host}:${server.address().port}`;
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  // Hooks run in registration order and are not covered by the test timeout.
+  // Bound each one, and do not let server.close wait for the browser's sockets.
+  t.after(() => new Promise((resolve) => {
+    server.close(() => resolve());
+    server.closeAllConnections();
+  }), { timeout: 10000 });
 
   const browser = await chromium.launch();
-  t.after(() => browser.close());
+  t.after(() => browser.close(), { timeout: 10000 });
 
   const context = await browser.newContext({
     viewport,
