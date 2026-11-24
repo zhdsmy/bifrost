@@ -254,7 +254,9 @@ All in `$BIFROST_UPLOAD` (`/tmp/upload`), written with `json_write` or
 - `core.variant`: the installed manifest's `variant`, `normal` when missing.
 - `core.check`: from `core-check.json`; `{"checked":0,"status":"unknown","error":null}`
   when the file is missing. The page starts a silent `core-check` when
-  `checked` is more than 86,400 s old and no locking job runs.
+  `checked` is more than 86,400 s old and no locking job runs. Without a
+  finished check job in the page, `status:"ok"` and `core.update:null` mean
+  the core is up to date.
 - `plugin.update`: `core-check.json`'s `plugin.update` (`{"version","tag","url"}`)
   only while its version is newer than the installed plugin, else `null`.
 - `core.installed` comes from the installed core file (`date -r`).

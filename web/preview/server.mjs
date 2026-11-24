@@ -538,7 +538,9 @@ export function createPreviewServer({
             { phase: "verify_manifest", progress: 80 },
           ],
           (st) => {
+            status.core.check = { checked: Math.floor(Date.now() / 1000), status: "ok", error: null };
             if (status.core.serial > SAMPLE_LATEST_CORE.serial) {
+              status.core.check = { ...status.core.check, status: "error", error: "old_serial" };
               status.core.update = null;
               st.data.latest = null;
               st.data.up_to_date = false;
@@ -602,6 +604,8 @@ export function createPreviewServer({
             status.core.revision = 1;
             status.core.serial = 7;
             status.core.prev = false;
+            // Like status.sh: a kept check that saw a newer core offers it again.
+            if (status.core.check?.status === "ok") status.core.update = { ...SAMPLE_LATEST_CORE };
             return { ok: true };
           },
         );
@@ -624,6 +628,25 @@ export function createPreviewServer({
           () => {
             status.core.arch = nextArch;
             status.core.size = nextArch === "arm64" ? 24_576_160 : 25_100_448;
+            return { ok: true };
+          },
+        );
+        return ok ? { ok: true, job: "update" } : { ok: false, code: "busy" };
+      }
+
+      case "core-type": {
+        if (args.length !== 1 || !["normal", "upx"].includes(args[0])) return { ok: false, code: "invalid_param" };
+        const nextVariant = args[0];
+        const ok = scheduleJob(
+          "update",
+          { action: "type", latest: null, up_to_date: false, kept_prev: true, variant: nextVariant },
+          [
+            { phase: "download", progress: 40 },
+            { phase: "swap", progress: 80 },
+          ],
+          () => {
+            status.core.variant = nextVariant;
+            status.core.size = nextVariant === "upx" ? 7_720_204 : 25_100_448;
             return { ok: true };
           },
         );

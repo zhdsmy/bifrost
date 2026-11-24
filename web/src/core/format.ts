@@ -104,8 +104,12 @@ export function describeState(status: StatusData): StatePresentation {
 }
 
 export function isCoreUpToDate(status: StatusData, check?: JobProgressState<UpdateJobData>): boolean {
-  return !status.core.update && check?.ok === true && !check.running &&
-    check.data.action === "check" && check.data.up_to_date === true;
+  if (status.core.update) return false;
+  if (check?.data.action === "check" && !check.running) {
+    return check.ok === true && check.data.up_to_date === true;
+  }
+  // Otherwise use the last check the router kept, from this or an earlier visit.
+  return status.core.check?.status === "ok" && status.core.check.checked > 0;
 }
 
 export interface KeyExpiryInfo {

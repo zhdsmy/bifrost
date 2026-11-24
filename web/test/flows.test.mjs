@@ -788,6 +788,60 @@ test("core page: core.build display, null build fallback, update flow, up_to_dat
   }
 });
 
+test("core page: silent daily check, plugin notice, kept check, and core type switch", async (t) => {
+  const pluginUrl = "https://github.com/zhdsmy/bifrost/releases/tag/v0.3.0";
+  const { page, url } = await openPreview(t, {
+    initialState: "running",
+    fastJobPoll: true,
+    jobStepMs: 20,
+    mutateStatus: (s) => {
+      s.core.check = { checked: 0, status: "unknown", error: null };
+      s.plugin.update = { version: "0.3.0", tag: "v0.3.0", url: pluginUrl };
+    },
+  });
+  const posts = [];
+  page.on("request", (req) => {
+    if (req.method() === "POST") posts.push(JSON.parse(req.postData()).params?.[0]);
+  });
+  await page.goto(url);
+  await ready(page);
+
+  // Never checked: the page checks once on its own and shows the result.
+  await page.getByText(/有新核心可用：1\.106\.0/).waitFor();
+  assert.equal(posts.filter((p) => p === "core-check").length, 1);
+
+  // The core tab is marked while an update is available.
+  await clickTab(page, "核心 •");
+  await page.getByText("发现新插件版本：0.3.0", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("link", { name: "查看插件发布页" }).getAttribute("href"), pluginUrl);
+
+  await page.getByRole("button", { name: "切换到 UPX 核心", exact: true }).click();
+  const dialog = page.getByRole("alertdialog");
+  await dialog.getByText("确认切换核心类型为 UPX？", { exact: true }).waitFor();
+  await dialog.getByRole("button", { name: "确认", exact: true }).click();
+  await page.getByRole("button", { name: "切换到不压缩核心", exact: true }).waitFor();
+  assert.equal(posts.filter((p) => p === "core-type").length, 1);
+  assert.equal(posts.filter((p) => p === "core-check").length, 1);
+
+  // Checked within the last day: no new check, and the kept result counts.
+  const fresh = await openPreview(t, {
+    initialState: "running",
+    mutateStatus: (s) => {
+      s.core.check = { checked: Math.floor(Date.now() / 1000) - 60, status: "ok", error: null };
+    },
+  });
+  const freshPosts = [];
+  fresh.page.on("request", (req) => {
+    if (req.method() === "POST") freshPosts.push(JSON.parse(req.postData()).params?.[0]);
+  });
+  await fresh.page.goto(fresh.url);
+  await ready(fresh.page);
+  await fresh.page.getByText("当前已是最新核心", { exact: true }).waitFor();
+  await clickTab(fresh.page, "核心");
+  await fresh.page.getByText("当前已是最新稳定版核心。", { exact: true }).waitFor();
+  assert.equal(freshPosts.filter((p) => p === "core-check").length, 0);
+});
+
 test("HTTP clipboard fallback (navigator.clipboard undefined) copies real text across all copy surfaces", async (t) => {
   const { page, url } = await openPreview(t, {
     initialState: "running",
