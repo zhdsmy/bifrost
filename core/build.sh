@@ -230,9 +230,16 @@ check_go_host() {
     [ "$_cg_ver" = "$RECIPE_GO" ] || die "Go version mismatch: host has $_cg_ver, recipe requires $RECIPE_GO"
 }
 
+upx_version() {
+    "$1" --version 2>/dev/null | awk 'NR == 1 { print $2; exit }'
+}
+
+# CORE_UPX_BIN must be the pinned version. Another upx on PATH (CI runner
+# images ship one) is skipped in favour of the pinned, hash-checked download.
 ensure_upx() {
     _eu_candidate=$UPX_BIN
-    if [ -z "$_eu_candidate" ] && type upx >/dev/null 2>&1; then
+    if [ -z "$_eu_candidate" ] && type upx >/dev/null 2>&1 &&
+        [ "$(upx_version "$(command -v upx)")" = "$UPX_VERSION" ]; then
         _eu_candidate=$(command -v upx)
     fi
     if [ -z "$_eu_candidate" ]; then
@@ -249,7 +256,7 @@ ensure_upx() {
         done
     fi
     [ -x "$_eu_candidate" ] || die "UPX executable not found"
-    _eu_got=$("$_eu_candidate" --version 2>/dev/null | awk 'NR == 1 { print $2; exit }')
+    _eu_got=$(upx_version "$_eu_candidate")
     [ "$_eu_got" = "$UPX_VERSION" ] || die "UPX version mismatch: got $_eu_got, want $UPX_VERSION"
     UPX_BIN=$_eu_candidate
 }
