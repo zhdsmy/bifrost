@@ -91,10 +91,15 @@ test("mount: shadow DOM, asset budgets, select popup, and dialog backdrop/focus/
   await page.emulateMedia({ colorScheme: "dark" });
   assert.deepEqual(await popupStyle(), lightSystem);
 
-  // Quick reopen + Escape leaves no stale overlay.
+  // Quick reopen + Escape leaves no stale overlay: the logout click below
+  // fails if a backdrop is left over the page. Wait for the list before
+  // Escape. On a slow runner an Escape sent right after the click can arrive
+  // before the popup handles keys; the list then stays open, which is not
+  // the regression this checks.
   await page.keyboard.press("Escape");
   await list.waitFor({ state: "hidden" });
   await modePicker.click();
+  await list.waitFor();
   await page.keyboard.press("Escape");
   await list.waitFor({ state: "hidden" });
 
