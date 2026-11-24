@@ -188,13 +188,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add core/recipe.json packaging/core-tag packaging/THIRD_PARTY_NOTICES.core.md
           git commit -q -m "Follow Tailscale ${UPSTREAM}"
-          old_main=$(git rev-parse HEAD^)
           remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push -q "$remote" HEAD:refs/heads/main
-          # Move dev too when it has nothing of its own.
-          if [ "$(git ls-remote "$remote" refs/heads/dev | cut -f1)" = "$old_main" ]; then
-            git push -q "$remote" HEAD:refs/heads/dev
-          fi
           git tag -a "$tag" -m "Bifrost core: Tailscale ${UPSTREAM}, revision 1"
           git push -q "$remote" "refs/tags/$tag"
           # Tags pushed with GITHUB_TOKEN do not start push workflows.

@@ -137,7 +137,7 @@ openssl ec -in bifrost-release.key.pem -pubout \
 1. 更新 `core/recipe.json`（版本、提交、Go 版本取上游 `go.mod`、完整 featuretags 集合，`revision` 归 1）和 `packaging/core-tag`。
 2. 检查配方，编译一次，在 qemu-user 下运行四个核心的 `--version`，重新生成核心第三方声明。
 3. 运行容器集成测试，覆盖插件脚本用到的命令行参数和 JSON 字段。
-4. 检查通过后提交到 `main`。`dev` 与旧 `main` 相同时一并快进。
+4. 检查通过后提交到 `main`。
 5. 推送 `core-<版本>-1` tag，再手动触发 `core.yml` 完成双编译、签名和发布。用 `GITHUB_TOKEN` 推送的 tag 不会自动触发工作流。
 
 检查失败时，工作流为这个上游版本开一个 issue（已有同名 issue 时追加评论），之后的定时运行跳过这个版本。修好后手动运行工作流重试。上游出现配方里没有的 featuretags 时，核心照常发布（保留这些功能），另开 issue 提醒审阅是否加入 `omit`。
