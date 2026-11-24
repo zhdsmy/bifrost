@@ -150,7 +150,7 @@ eq top-keys '["auth_url","checks","conflict","core","daemon","dns","error","exit
 eq core-keys '["arch","build","check","installed","kernel_arch","prev","revision","serial","size","tailscale","update","variant"]' \
     "$(jq -c '.core | keys' "$ST_OUT")"
 
-eq run-basic "1 running null 0.2.0 true" \
+eq run-basic "1 running null $(head -n 1 "$BIFROST_VERSION_FILE") true" \
     "$(jq -r '"\(.schema) \(.state) \(.error) \(.plugin.version) \(.plugin.enabled)"' "$ST_OUT")"
 # core.size comes from manifest .assets[.arch].raw_size (25100448), NOT wc -c on the small mock binary
 eq run-core "1.104.7 1 7 arm aarch64 25100448 true 8 1.105.0" \
