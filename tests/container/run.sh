@@ -162,7 +162,13 @@ echo "PASS [stage-a] headscale v0.29.7 ready & pre-auth key minted (user=$user_i
 # 7. Verify router container environment (TUN, iptables, mock software center, LAN reachability).
 docker exec "$ROUTER_CTR" sh -eu -c '
     [ -c /dev/net/tun ]
-    iptables -N BIFROST_SMOKE && iptables -A BIFROST_SMOKE -j MARK --set-xmark 0x40000/0xff0000 && iptables -F BIFROST_SMOKE && iptables -X BIFROST_SMOKE
+    # One command per line: sh -e ignores a failure early in an && list.
+    iptables -N BIFROST_SMOKE
+    iptables -A BIFROST_SMOKE -j MARK --set-xmark 0x40000/0xff0000
+    iptables -F BIFROST_SMOKE
+    iptables -X BIFROST_SMOKE
+    iptables -t nat -S >/dev/null
+    ip6tables -S >/dev/null
     dbus set bifrost_smoke=ok
     [ "$(dbus get bifrost_smoke)" = ok ]
     dbus remove bifrost_smoke

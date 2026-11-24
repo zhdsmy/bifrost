@@ -99,5 +99,12 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
+      # The router image uses legacy iptables, like the firmware. A container
+      # cannot load kernel modules, and the runner host loads only nftables.
+      - name: Load legacy netfilter tables on the host
+        run: >-
+          sudo modprobe -a iptable_filter iptable_nat iptable_mangle
+          ip6table_filter ip6table_nat ip6table_mangle
+          xt_mark xt_MASQUERADE xt_nat xt_state xt_conntrack xt_TCPMSS
       - name: Run container integration suite
         run: tests/container/run.sh --full
