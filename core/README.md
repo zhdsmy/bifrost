@@ -10,15 +10,18 @@ combined binary (`bifrostd`) used by Bifrost. Local builds and GitHub Actions
   and `GOENV=off` are enforced; caller `GOFLAGS`/`GOEXPERIMENT`/etc. are cleared)
 - All modes check the local Go version before fetching source or running featuretags.
   HTTP, HTTPS, ALL and NO proxy variables (both cases) and `GOPROXY` pass through.
-- `git`, `jq`, `openssl`, `gzip`
+- `git`, `jq`, `openssl`, `gzip`, `curl`, and UPX 5.3.0 (the script downloads and verifies the pinned archive when `upx` is not on `PATH`)
 
 ## Usage
 
 ### 1. Build release cores and manifest
 
-Builds every target in `core/recipe.json`, checks embedded tags and version
-metadata, writes `bifrost-core-<version>-<revision>-linux-<target>.gz`
-(`gzip -9 -n`), `core.json`, and `LICENSE.tailscale` to `core/out/`.
+Builds every target in `core/recipe.json` twice, checks embedded tags and
+version metadata, and writes uncompressed and optional UPX assets to
+`core/out/`. Normal assets are named
+`bifrost-core-<version>-<revision>-linux-<target>.gz`. UPX assets add `-upx`
+before `-linux-<target>.gz`. Both use `gzip -9 -n`. The manifest and
+`LICENSE.tailscale` are written to the same directory.
 
 ```sh
 core/build.sh [--serial N] [--min-plugin X.Y.Z] [--out DIR] [--src DIR]
@@ -63,7 +66,10 @@ core/build.sh --test-arch arm64
   The build never resets or cleans a checkout.
 - Never use Tailscale's `--extra-small` (it removes subnet routing and exit node
   features required on routers).
-- Do not UPX-compress the core.
+- The uncompressed core is the default. UPX is optional and fixed to
+  `--best --no-lzma` because it reduces file size while keeping decompression
+  faster than the default LZMA mode. Each process still pays the decompression
+  cost and cannot share the resulting memory.
 
 
 ## Retrying a release

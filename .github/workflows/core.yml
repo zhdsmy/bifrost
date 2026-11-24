@@ -98,10 +98,36 @@ jobs:
         run: |
           set -eu
           core/build.sh --serial "${{ needs.validate.outputs.serial }}"
+          jq -e '
+            (.upx.version | type == "string") and
+            (.upx.flags == ["--best", "--no-lzma"]) and
+            ([(.assets | keys[]), (.upx_assets | keys[])] | sort | unique == ["arm", "arm64"])
+          ' core/out/core.json >/dev/null
           (
             cd core/out
             LC_ALL=C sha256sum bifrost-core-*.gz core.json LICENSE.tailscale >SHA256SUMS
           )
+
+      - name: Smoke test arm and arm64 normal and UPX cores
+        run: |
+          set -eu
+          run_version() {
+            platform=$1
+            asset=$2
+            gzip -cd "core/out/$asset" |
+              docker run --rm -i --platform "$platform" alpine:3.21 /bin/sh -c \
+                'cat >/tmp/bifrostd && chmod 755 /tmp/bifrostd && /tmp/bifrostd --version | head -n 1'
+          }
+          revision=$(jq -r .revision core/out/core.json)
+          for variant in normal upx; do
+            if [ "$variant" = normal ]; then
+              suffix=""
+            else
+              suffix="-upx"
+            fi
+            run_version linux/arm/v7 "bifrost-core-${{ needs.validate.outputs.tailscale_version }}-${revision}${suffix}-linux-arm.gz"
+            run_version linux/arm64 "bifrost-core-${{ needs.validate.outputs.tailscale_version }}-${revision}${suffix}-linux-arm64.gz"
+          done
 
       - name: Upload build A artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -134,6 +160,11 @@ jobs:
         run: |
           set -eu
           core/build.sh --serial "${{ needs.validate.outputs.serial }}"
+          jq -e '
+            (.upx.version | type == "string") and
+            (.upx.flags == ["--best", "--no-lzma"]) and
+            ([(.assets | keys[]), (.upx_assets | keys[])] | sort | unique == ["arm", "arm64"])
+          ' core/out/core.json >/dev/null
           (
             cd core/out
             LC_ALL=C sha256sum bifrost-core-*.gz core.json LICENSE.tailscale >SHA256SUMS

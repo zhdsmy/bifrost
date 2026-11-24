@@ -15,6 +15,7 @@ OUT_DIR="${CORE_OUT_DIR:-$SCRIPT_DIR/out}"
 SRC_DIR="${CORE_SRC_DIR:-}"
 SERIAL="${CORE_SERIAL:-1}"
 MIN_PLUGIN="${CORE_MIN_PLUGIN:-}"
+UPX_BIN="${CORE_UPX_BIN:-}"
 REPO_URL="${TAILSCALE_REPO_URL:-https://github.com/tailscale/tailscale.git}"
 MODE="build"
 TEST_ARCH=""
@@ -165,6 +166,13 @@ validate_recipe() {
         (.tailscale.commit | type == "string" and test("^[0-9a-f]{40}$")) and
         (.go | type == "string" and test("^[0-9]+\\.[0-9]+(\\.[0-9]+)?$")) and
         (.revision | type == "number" and floor == . and . >= 1) and
+        (.upx | type == "object" and
+            (.version | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+            (.url | type == "string" and startswith("https://")) and
+            (.sha256 | type == "string" and test("^[0-9a-f]{64}$"))) and
+        (.featuretags | type == "array" and length > 0 and
+            all(type == "string" and test("^[a-z0-9_]+$")) and
+            (length == (unique | length))) and
         ((has("min_plugin") | not) or (.min_plugin | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))) and
         (.omit | type == "array" and length > 0 and
             all(type == "string" and test("^[a-z0-9_]+$")) and
@@ -195,6 +203,9 @@ RECIPE_GO=$(jq -r '.go' "$RECIPE")
 REVISION=$(jq -r '.revision' "$RECIPE")
 OMIT_CSV=$(jq -r '.omit | join(",")' "$RECIPE")
 TAG="core-${TS_VERSION}-${REVISION}"
+UPX_VERSION=$(jq -r '.upx.version' "$RECIPE")
+UPX_URL=$(jq -r '.upx.url' "$RECIPE")
+UPX_SHA=$(jq -r '.upx.sha256' "$RECIPE")
 
 if [ -z "$MIN_PLUGIN" ]; then
     MIN_PLUGIN=$(jq -r '.min_plugin // "0.1.0"' "$RECIPE")
@@ -217,6 +228,30 @@ check_go_host() {
     _cg_raw=$(build_env go env GOVERSION) || die "failed to query Go version"
     _cg_ver=${_cg_raw#go}
     [ "$_cg_ver" = "$RECIPE_GO" ] || die "Go version mismatch: host has $_cg_ver, recipe requires $RECIPE_GO"
+}
+
+ensure_upx() {
+    _eu_candidate=$UPX_BIN
+    if [ -z "$_eu_candidate" ] && type upx >/dev/null 2>&1; then
+        _eu_candidate=$(command -v upx)
+    fi
+    if [ -z "$_eu_candidate" ]; then
+        need_cmd curl
+        need_cmd tar
+        _eu_archive="$WORK_DIR/upx.tar.xz"
+        mkdir -p "$WORK_DIR/upx"
+        curl -fsSL --retry 2 --connect-timeout 10 -o "$_eu_archive" "$UPX_URL" ||
+            die "failed to download UPX $UPX_VERSION"
+        [ "$(sha256_file "$_eu_archive")" = "$UPX_SHA" ] || die "UPX archive sha256 mismatch"
+        tar -xJf "$_eu_archive" -C "$WORK_DIR/upx" || die "failed to unpack UPX $UPX_VERSION"
+        for _eu_candidate in "$WORK_DIR"/upx/*/upx; do
+            [ -x "$_eu_candidate" ] && break
+        done
+    fi
+    [ -x "$_eu_candidate" ] || die "UPX executable not found"
+    _eu_got=$("$_eu_candidate" --version 2>/dev/null | awk 'NR == 1 { print $2; exit }')
+    [ "$_eu_got" = "$UPX_VERSION" ] || die "UPX version mismatch: got $_eu_got, want $UPX_VERSION"
+    UPX_BIN=$_eu_candidate
 }
 
 ensure_source() {
@@ -315,7 +350,9 @@ fi
 
 # Full release build for all targets in recipe.json.
 mkdir -p "$WORK_DIR"
+ensure_upx
 ASSETS_JSON='{}'
+UPX_ASSETS_JSON='{}'
 TARGET_COUNT=$(jq '.targets | length' "$RECIPE")
 IDX=0
 
@@ -350,7 +387,31 @@ while [ "$IDX" -lt "$TARGET_COUNT" ]; do
         --arg raw_sha256 "$RAW_SHA" \
         '$assets + {($name): {file:$file, size:$size, sha256:$sha256, raw_size:$raw_size, raw_sha256:$raw_sha256}}')
 
-    printf 'built %-5s raw=%s (%s) gz=%s (%s)\n' "$T_NAME" "$RAW_SIZE" "$RAW_SHA" "$GZ_SIZE" "$GZ_SHA"
+    UPX_RAW="$WORK_DIR/bifrostd-linux-${T_NAME}-upx"
+    cp "$RAW_BIN" "$UPX_RAW"
+    "$UPX_BIN" --best --no-lzma --force "$UPX_RAW" >/dev/null || die "UPX compression failed for $T_NAME"
+    chmod 755 "$UPX_RAW"
+    UPX_RAW_SIZE=$(file_size "$UPX_RAW")
+    UPX_RAW_SHA=$(sha256_file "$UPX_RAW")
+    UPX_GZ_NAME="bifrost-core-${TS_VERSION}-${REVISION}-upx-linux-${T_NAME}.gz"
+    UPX_GZ_PATH="$OUT_DIR/$UPX_GZ_NAME"
+    (unset GZIP; gzip -9 -n -c "$UPX_RAW") >"$UPX_GZ_PATH.tmp.$$" || die "gzip failed for UPX $T_NAME"
+    mv -f "$UPX_GZ_PATH.tmp.$$" "$UPX_GZ_PATH"
+    UPX_GZ_SIZE=$(file_size "$UPX_GZ_PATH")
+    UPX_GZ_SHA=$(sha256_file "$UPX_GZ_PATH")
+    UPX_ASSETS_JSON=$(jq -cn \
+        --argjson assets "$UPX_ASSETS_JSON" \
+        --arg name "$T_NAME" \
+        --arg file "$UPX_GZ_NAME" \
+        --argjson size "$UPX_GZ_SIZE" \
+        --arg sha256 "$UPX_GZ_SHA" \
+        --argjson raw_size "$UPX_RAW_SIZE" \
+        --arg raw_sha256 "$UPX_RAW_SHA" \
+        '$assets + {($name): {file:$file, size:$size, sha256:$sha256, raw_size:$raw_size, raw_sha256:$raw_sha256}}')
+
+    printf 'built %-5s raw=%s (%s) gz=%s (%s); upx raw=%s (%s) gz=%s (%s)\n' \
+        "$T_NAME" "$RAW_SIZE" "$RAW_SHA" "$GZ_SIZE" "$GZ_SHA" \
+        "$UPX_RAW_SIZE" "$UPX_RAW_SHA" "$UPX_GZ_SIZE" "$UPX_GZ_SHA"
     IDX=$((IDX + 1))
 done
 
@@ -366,6 +427,8 @@ jq -n \
     --arg commit "$TS_COMMIT" \
     --argjson omit "$OMIT_JSON" \
     --argjson assets "$ASSETS_JSON" \
+    --argjson upx_assets "$UPX_ASSETS_JSON" \
+    --arg upx_version "$UPX_VERSION" \
     '{
         schema: 1,
         serial: $serial,
@@ -378,7 +441,9 @@ jq -n \
             commit: $commit,
             omit: $omit
         },
-        assets: $assets
+        assets: $assets,
+        upx_assets: $upx_assets,
+        upx: {version: $upx_version, flags: ["--best", "--no-lzma"]}
     }' >"$MANIFEST_PATH.tmp.$$" || die "failed to write manifest"
 mv -f "$MANIFEST_PATH.tmp.$$" "$MANIFEST_PATH"
 

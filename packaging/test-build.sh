@@ -43,14 +43,19 @@ mkdir -p "$core_dir"
 cp "$REPO_ROOT/tests/shell/mock/bifrostd" "$work/bifrostd.raw"
 chmod 755 "$work/bifrostd.raw"
 gzip -9 -n -c "$work/bifrostd.raw" >"$core_dir/bifrost-core-1.104.7-1-linux-arm.gz"
+cp "$core_dir/bifrost-core-1.104.7-1-linux-arm.gz" \
+    "$core_dir/bifrost-core-1.104.7-1-upx-linux-arm.gz"
 raw_sha=$(openssl dgst -sha256 -r "$work/bifrostd.raw" | cut -d ' ' -f 1)
 raw_size=$(wc -c <"$work/bifrostd.raw" | tr -d ' ')
 gz_sha=$(openssl dgst -sha256 -r "$core_dir/bifrost-core-1.104.7-1-linux-arm.gz" | cut -d ' ' -f 1)
 gz_size=$(wc -c <"$core_dir/bifrost-core-1.104.7-1-linux-arm.gz" | tr -d ' ')
+upx_sha=$gz_sha
+upx_size=$gz_size
 
 jq -n \
     --arg gz_sha "$gz_sha" --argjson gz_size "$gz_size" \
     --arg raw_sha "$raw_sha" --argjson raw_size "$raw_size" \
+    --arg upx_sha "$upx_sha" --argjson upx_size "$upx_size" \
     '{
       schema: 1, serial: 1, tailscale: "1.104.7", revision: 1,
       tag: "core-1.104.7-1", min_plugin: "0.1.0",
@@ -61,7 +66,15 @@ jq -n \
           size: $gz_size, sha256: $gz_sha,
           raw_size: $raw_size, raw_sha256: $raw_sha
         }
-      }
+      },
+      upx_assets: {
+        arm: {
+          file: "bifrost-core-1.104.7-1-upx-linux-arm.gz",
+          size: $upx_size, sha256: $upx_sha,
+          raw_size: $raw_size, raw_sha256: $raw_sha
+        }
+      },
+      upx: {version: "5.3.0", flags: ["--best", "--no-lzma"]}
     }' >"$core_dir/core.json"
 
 # Generate ECDSA P-256 test keypairs (key1 valid, key2 wrong key).
@@ -89,12 +102,21 @@ if [ "$sha1" != "$sha2" ]; then
 fi
 echo "PASS [reproducibility] sha256=$sha1"
 
+packaging/build.sh --core-dir "$core_dir" --variant upx --keys-dir "$keys_dir" \
+    --web-dist "$REPO_ROOT/web/dist" --out "$work/out1" --source-date-epoch 1700000000
+ok_upx="$work/out1/bifrost-${ver}-hnd-upx.tar.gz"
+[ -s "$ok_upx" ] || { echo "FAIL [upx-package]: package not found" >&2; exit 1; }
+tar -xOf "$ok_upx" bifrost/bin/core.json | jq -e '.variant == "upx" and (.assets | keys == ["arm"])' >/dev/null
+echo "PASS [upx-package]"
+
 web_dist="$REPO_ROOT/web/dist"
 
 # 2. Signed --core-release via file:// URL.
 rel_dir="$work/releases/core-1.104.7-1"
 mkdir -p "$rel_dir" "$work/out3"
-cp "$core_dir/core.json" "$core_dir/bifrost-core-1.104.7-1-linux-arm.gz" "$rel_dir/"
+cp "$core_dir/core.json" \
+    "$core_dir/bifrost-core-1.104.7-1-linux-arm.gz" \
+    "$core_dir/bifrost-core-1.104.7-1-upx-linux-arm.gz" "$rel_dir/"
 openssl dgst -sha256 -sign "$work/priv1.pem" -out "$rel_dir/core.json.sig" "$rel_dir/core.json"
 
 packaging/build.sh --core-release core-1.104.7-1 \
@@ -104,6 +126,14 @@ packaging/build.sh --core-release core-1.104.7-1 \
     --out "$work/out3" \
     --source-date-epoch 1700000000
 echo "PASS [signed-core-release]"
+packaging/build.sh --core-release core-1.104.7-1 --variant upx \
+    --release-base "file://$work/releases" --keys-dir "$keys_dir" \
+    --web-dist "$web_dist" --out "$work/out3" --source-date-epoch 1700000000
+[ -s "$work/out3/bifrost-${ver}-hnd-upx.tar.gz" ] || {
+    echo "FAIL [signed-upx-core-release]" >&2
+    exit 1
+}
+echo "PASS [signed-upx-core-release]"
 rc=0
 missing=$(packaging/build.sh --core-release core-1.104.7-1 --arch arm64 \
     --release-base "file://$work/releases" --keys-dir "$keys_dir" \

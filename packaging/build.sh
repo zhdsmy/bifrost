@@ -4,8 +4,8 @@
 # Package layout and build flow adapted from po0fw asus-merlin (MIT), commit 0d9532d.
 #
 # Usage:
-#   packaging/build.sh --core-dir <dir> [--arch arm|arm64] [--out <dir>] [--web-dist <dir>]
-#   packaging/build.sh --core-release <tag> [--arch arm|arm64] [--out <dir>] [--web-dist <dir>]
+#   packaging/build.sh --core-dir <dir> [--arch arm|arm64] [--variant normal|upx]
+#   packaging/build.sh --core-release <tag> [--arch arm|arm64] [--variant normal|upx]
 #                      [--keys-dir <dir>] [--release-base <url>]
 set -eu
 
@@ -40,6 +40,7 @@ Options:
   --core-dir <dir>         Local core build output directory (verifies hashes only)
   --core-release <tag>     Download core release <tag>, verify signature and hashes
   --arch <arm|arm64>       Core architecture to bundle (default: arm)
+  --variant <normal|upx>   Core compression variant (default: normal)
   --out <dir>              Output directory (default: ./dist)
   --web-dist <dir>         Use pre-built web dist directory instead of running npm build
   --keys-dir <dir>         Public keys directory for signature verification (default: plugin/bifrost/keys)
@@ -52,6 +53,7 @@ EOF
 core_dir=""
 core_release=""
 arch="arm"
+variant="normal"
 out_dir="$CALLER_PWD/dist"
 web_dist=""
 keys_dir="$REPO_ROOT/plugin/bifrost/keys"
@@ -73,6 +75,11 @@ while [ $# -gt 0 ]; do
         --arch)
             [ $# -ge 2 ] || { echo "missing value for --arch" >&2; exit 2; }
             arch=$2
+            shift 2
+            ;;
+        --variant)
+            [ $# -ge 2 ] || { echo "missing value for --variant" >&2; exit 2; }
+            variant=$2
             shift 2
             ;;
         --out)
@@ -124,6 +131,10 @@ if ! valid_arch "$arch"; then
     echo "error: unsupported arch '$arch' (expected arm or arm64)" >&2
     exit 2
 fi
+case "$variant" in
+    normal | upx) ;;
+    *) echo "error: unsupported variant '$variant' (expected normal or upx)" >&2; exit 2 ;;
+esac
 
 for tool in jq openssl gzip gunzip tar python3; do
     if ! type "$tool" >/dev/null 2>&1; then
@@ -201,7 +212,7 @@ if ! jq -e --arg arch "$arch" '.assets | has($arch)' "$core_work/core.json" >/de
     echo "error: manifest has no asset for arch '$arch'" >&2
     exit 3
 fi
-if ! _upd_parse_manifest "$core_work/core.json" "$arch" any 1; then
+if ! _upd_parse_manifest "$core_work/core.json" "$arch" any 1 "$variant"; then
     echo "error: invalid core manifest (${BIFROST_ERR:-bad_manifest}, min_plugin=$(jq -r '.min_plugin' "$core_work/core.json"))" >&2
     exit 1
 fi
@@ -274,7 +285,12 @@ cp "$REPO_ROOT/NOTICE.md" "$pkg/NOTICE.md"
 cp "$SCRIPT_DIR/THIRD_PARTY_NOTICES.core.md" "$pkg/THIRD_PARTY_NOTICES.core.md"
 
 cp "$core_work/bifrostd.gz" "$pkg/bin/bifrostd.gz"
-jq --arg a "$arch" '.assets = {($a): .assets[$a]}' "$core_work/core.json" >"$pkg/bin/core.json"
+jq --arg a "$arch" --arg v "$variant" '
+    .variant = $v |
+    .assets = {($a): (if $v == "upx" and (.upx_assets | type) == "object"
+                      then .upx_assets[$a] else .assets[$a] end)} |
+    del(.upx_assets)
+' "$core_work/core.json" >"$pkg/bin/core.json"
 [ -s "$REPO_ROOT/plugin/bifrost/bin/bifrost" ] || {
     echo "error: plugin/bifrost/bin/bifrost not found" >&2
     exit 1
@@ -318,10 +334,12 @@ done
 # 4. Create deterministic ustar tar.gz on Linux (GNU tar) and macOS (bsdtar).
 mkdir -p "$out_dir"
 if [ "$arch" = arm ]; then
-    out_name="bifrost-${version}-hnd.tar.gz"
+    out_name="bifrost-${version}-hnd"
 else
-    out_name="bifrost-${version}-hnd-${arch}.tar.gz"
+    out_name="bifrost-${version}-hnd-${arch}"
 fi
+if [ "$variant" = upx ]; then out_name="${out_name}-upx"; fi
+out_name="${out_name}.tar.gz"
 out_path="${out_dir%/}/${out_name}"
 
 utc_stamp=$(TZ=UTC date -u -r "$epoch" '+%Y%m%d%H%M.%S' 2>/dev/null ||
@@ -420,8 +438,10 @@ if grep -Eq 'detect_package|ks_tar_install' "$verify_dir/bifrost/install.sh"; th
 fi
 pkg_arches=$(jq -r '.assets | keys | join(",")' "$verify_dir/bifrost/bin/core.json")
 [ "$pkg_arches" = "$arch" ] || { echo "self-check failed: bin/core.json assets=$pkg_arches (want $arch)" >&2; exit 1; }
+pkg_variant=$(jq -r '.variant // "normal"' "$verify_dir/bifrost/bin/core.json")
+[ "$pkg_variant" = "$variant" ] || { echo "self-check failed: bin/core.json variant=$pkg_variant (want $variant)" >&2; exit 1; }
 
 mv -f "$tar_out" "$out_path"
 pkg_sha=$(sha256_file "$out_path")
 pkg_size=$(file_size "$out_path")
-echo "Built $out_path (${pkg_size} bytes, sha256=${pkg_sha}, core=${ts_ver}/${arch})"
+echo "Built $out_path (${pkg_size} bytes, sha256=${pkg_sha}, core=${ts_ver}/${arch}/${variant})"
