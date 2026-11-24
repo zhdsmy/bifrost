@@ -79,6 +79,7 @@ _status_render_jq() {
         --rawfile man_text "$_sr_man_file" \
         --rawfile previous_routes "$_sr_routes_file" \
         --rawfile lat_text "$_sr_lat_file" \
+        --rawfile chk_text "$_sr_chk_file" \
         --argjson now "$_sr_now" \
         --arg fstate "$_sr_fstate" \
         --arg ferr "$_sr_ferr" \
@@ -127,6 +128,7 @@ _status_render_jq() {
         def clean_expiry:
             if type != "string" or . == "" or startswith("0001-01-01") then "" else . end;
         def object_or_null: try (fromjson | if type == "object" then . else null end) catch null;
+        def semver: try (split(".") | map(tonumber)) catch null;
         '"$(fw_exit_jq)"'
         def installed_arch: '"$(status_core_arch_jq)"';
         '"$(dns_policy_jq)"'
@@ -135,6 +137,7 @@ _status_render_jq() {
         (if $st != null then ($pr_text | object_or_null) else null end) as $pr |
         ($man_text | object_or_null) as $man |
         ($lat_text | object_or_null) as $lat |
+        ($chk_text | object_or_null) as $chk |
 
         (if $fstate != "" then {s: $fstate, e: $ferr}
          elif $st == null then {s: "error", e: "cli_failed"}
@@ -152,13 +155,16 @@ _status_render_jq() {
 
         ($man.serial // 0) as $man_serial |
         ($man | installed_arch) as $core_arch |
+        ($man.variant // "normal") as $core_variant |
         ($man.assets[$core_arch].raw_size // 0) as $core_size |
-        (if $lat != null and (($lat.serial | type) == "number") and ($lat.serial > $man_serial) then
+        (if $chk != null and (($chk.core.latest.serial | type) == "number") then $chk.core.latest else $lat end) as $latest |
+        (if $latest != null and (($latest.serial | type) == "number") and ($latest.serial > $man_serial) then
             {
-                tailscale: ($lat.tailscale // ""),
-                revision: ($lat.revision // 0),
-                serial: $lat.serial,
-                tag: ($lat.tag // "")
+                tailscale: ($latest.tailscale // ""),
+                revision: ($latest.revision // 0),
+                serial: $latest.serial,
+                tag: ($latest.tag // ""),
+                variant: ($latest.variant // $core_variant)
             }
          else null end) as $core_update |
 
@@ -255,17 +261,31 @@ _status_render_jq() {
             time: $now,
             state: $state,
             error: (if $err == "" then null else $err end),
-            plugin: { version: $pver, enabled: $enabled },
+            plugin: {
+                version: $pver,
+                enabled: $enabled,
+                # A check recorded before an upgrade must not offer the
+                # version that is now installed.
+                update: ($chk.plugin.update // null |
+                    if . != null and ((.version | semver) // []) > (($pver | semver) // [])
+                    then . else null end)
+            },
             core: {
                 tailscale: ($man.tailscale // ""),
                 revision: ($man.revision // 0),
                 serial: $man_serial,
                 arch: $core_arch,
+                variant: $core_variant,
                 kernel_arch: $karch,
                 size: $core_size,
                 installed: $cinst,
                 prev: $cprev,
                 update: $core_update,
+                check: {
+                    checked: ($chk.checked // 0),
+                    status: ($chk.core.status // "unknown"),
+                    error: ($chk.core.error // null)
+                },
                 build: (if ($man.build | type) == "object" then $man.build else null end)
             },
             daemon: { running: $drun, pid: $dpid, restarts: $restarts },
@@ -437,8 +457,10 @@ status_refresh() {
 
     _sr_man_file=/dev/null
     _sr_lat_file=/dev/null
+    _sr_chk_file=/dev/null
     [ -f "$BIFROST_MANIFEST" ] && _sr_man_file=$BIFROST_MANIFEST
     [ -f "$BIFROST_RUN/core_latest.json" ] && _sr_lat_file="$BIFROST_RUN/core_latest.json"
+    [ -f "$BIFROST_HOME/core-check.json" ] && _sr_chk_file="$BIFROST_HOME/core-check.json"
 
     # The last advertised values are small and independent of the live peer
     # list. On the first refresh after an upgrade, use the existing page once.

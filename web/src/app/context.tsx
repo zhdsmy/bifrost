@@ -24,6 +24,7 @@ import {
   readUiConfig,
   refreshStatus,
   saveUiConfig,
+  api,
 } from "../core/api";
 import type {
   JobName, JobProgressState, JobState, MigrateJobData, NetcheckJobData,
@@ -65,6 +66,7 @@ export interface AppContextValue {
     trigger: () => Promise<unknown>,
     options?: {
       onDone?: (finalState: JobState<TData>) => void;
+      silent?: boolean;
       suppressLoginFailure?: boolean;
     },
   ) => Promise<JobState<TData> | null>;
@@ -232,6 +234,7 @@ function AppContextInner({
       options?: {
         onInitialRead?: () => void;
         onDone?: (finalState: JobState<TData>) => void;
+        silent?: boolean;
       },
     ): Promise<JobState<TData> | null> => {
       jobAbortRefs.current[job]?.abort();
@@ -247,7 +250,7 @@ function AppContextInner({
           onUnavailable: (err) => {
             if (ctrl.signal.aborted) return;
             options?.onInitialRead?.();
-            notify({ title: tError(err), variant: "error" });
+            if (!options?.silent) notify({ title: tError(err), variant: "error" });
           },
           onUpdate: (state) => {
             if (ctrl.signal.aborted || !state.running) return;
@@ -270,14 +273,14 @@ function AppContextInner({
           options?.onDone?.(final);
           const hasExplanation = (job === "login" && final.code === "login_expired") ||
             (job === "migrate" && (final.data as MigrateJobData).rolled_back);
-          if (final.ok === false && final.code && !hasExplanation) {
+          if (!options?.silent && final.ok === false && final.code && !hasExplanation) {
             notify({ title: translateError(langRef.current, final.code), variant: "error" });
           }
         }
         void reloadStatus();
         return final;
       } catch (err) {
-        if (!ctrl.signal.aborted && !(restoring && err instanceof ApiError && err.httpStatus === 404)) {
+        if (!options?.silent && !ctrl.signal.aborted && !(restoring && err instanceof ApiError && err.httpStatus === 404)) {
           notify({ title: tError(err), variant: "error" });
         }
         return null;
@@ -441,6 +444,7 @@ function AppContextInner({
       trigger: () => Promise<unknown>,
       options?: {
         onDone?: (finalState: JobState<TData>) => void;
+        silent?: boolean;
         suppressLoginFailure?: boolean;
       },
     ): Promise<JobState<TData> | null> => {
@@ -462,7 +466,7 @@ function AppContextInner({
         }
         return final;
       } catch (err) {
-        notify({ title: tError(err), variant: "error" });
+        if (!options?.silent) notify({ title: tError(err), variant: "error" });
         return null;
       } finally {
         if (stopping && stoppingLoginRef.current === stopping) stoppingLoginRef.current = undefined;
@@ -470,6 +474,16 @@ function AppContextInner({
     },
     [attachJobPoll, notify, tError],
   );
+
+  const autoCheckStartedRef = useRef(false);
+  useEffect(() => {
+    if (initializing || savingUi || !status || !status.core.check || lockingJobRunning || autoCheckStartedRef.current) return;
+    if (document.visibilityState !== "visible") return;
+    const checked = status.core.check?.checked ?? 0;
+    if (checked > 0 && Math.floor(Date.now() / 1000) - checked <= 86_400) return;
+    autoCheckStartedRef.current = true;
+    void runJob<UpdateJobData>("update", () => api.coreCheck(), { silent: true });
+  }, [initializing, savingUi, status, lockingJobRunning, runJob]);
 
   const busy = initializing || savingUi || lockingJobRunning;
 

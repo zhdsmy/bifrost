@@ -53,7 +53,10 @@ function AppShell() {
     { value: "overview", label: t("tab.overview") },
     { value: "devices", label: t("tab.devices") },
     { value: "settings", label: t("tab.settings") },
-    { value: "core", label: t("tab.core") },
+    {
+      value: "core",
+      label: status?.core.update || status?.plugin.update ? `${t("tab.core")} •` : t("tab.core"),
+    },
     { value: "diagnostics", label: t("tab.diagnostics") },
   ];
 

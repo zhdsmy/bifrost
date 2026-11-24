@@ -194,14 +194,21 @@ ok install-file-symlink [ -L "$BIFROST_CLI" ]
 eq install-file-manifest-arch arm "$(jq -r .arch "$BIFROST_MANIFEST")"
 eq install-file-manifest-serial 1 "$(jq -r .serial "$BIFROST_MANIFEST")"
 
-# Upgrade no-downgrade and same-serial preservation (keeps arm64 on same-serial arm reinstall)
+# Upgrade no-downgrade and same-serial package selection (package wins for equal serial)
 uname_set aarch64
 ok install-file-v2-arm64 core_install_file "$FIX/v2-arm64.gz" "$FIX/m2.json" arm64
 eq install-file-v2-ver 1.105.0 "$(core_version)"
 eq install-file-v2-arch arm64 "$(jq -r .arch "$BIFROST_MANIFEST")"
 ok install-file-same-serial-keeps core_install_file "$FIX/v2-arm.gz" "$FIX/m2.json" arm
-eq install-file-same-serial-arch arm64 "$(jq -r .arch "$BIFROST_MANIFEST")"
-eq install-file-same-serial-sha "$(sha256_file "$FIX/v2-arm64")" "$(sha256_file "$BIFROST_CORE")"
+eq install-file-same-serial-arch arm "$(jq -r .arch "$BIFROST_MANIFEST")"
+eq install-file-same-serial-sha "$(sha256_file "$FIX/v2-arm")" "$(sha256_file "$BIFROST_CORE")"
+# The same core again is not rewritten: the inode stays the same.
+# shellcheck disable=SC2012
+_ino_before=$(ls -i "$BIFROST_CORE" | awk '{print $1}')
+ok install-file-identical-skips core_install_file "$FIX/v2-arm.gz" "$FIX/m2.json" arm
+# shellcheck disable=SC2012
+_ino_after=$(ls -i "$BIFROST_CORE" | awk '{print $1}')
+eq install-file-identical-inode "$_ino_before" "$_ino_after"
 ok install-file-lower-serial-keeps core_install_file "$FIX/v1-arm.gz" "$FIX/m1.json" arm
 eq install-file-kept-serial 2 "$(jq -r .serial "$BIFROST_MANIFEST")"
 uname_set armv7l
@@ -276,6 +283,8 @@ eq check-avail-ok "false true done 100 check 2 false" \
     "$(jq -r '"\(.running) \(.ok) \(.phase) \(.progress) \(.data.action) \(.data.latest.serial) \(.data.up_to_date)"' "$jf")"
 ok check-latest-written [ -f "$BIFROST_RUN/core_latest.json" ]
 eq check-latest-tag core-1.105.0-1 "$(jq -r .tag "$BIFROST_RUN/core_latest.json")"
+eq check-record-schema 1 "$(jq -r .schema "$BIFROST_HOME/core-check.json")"
+eq check-record-status ok "$(jq -r .core.status "$BIFROST_HOME/core-check.json")"
 
 # Check through mirror prefix
 MIR="https://mirror.example.com/gh/"
@@ -434,7 +443,47 @@ eq arch-arm-manifest arm "$(jq -r .arch "$BIFROST_MANIFEST")"
 eq arch-arm-sha "$(sha256_file "$FIX/v2-arm")" "$(sha256_file "$BIFROST_CORE")"
 ok arch-arm-daemon daemon_running
 
-# ---- 10. Concurrent update job returns busy ----
+# ---- 10. Core type switching reuses the update transaction ----
+cp "$FIX/v2-arm.gz" "$FIX/v2-upx-arm.gz"
+jq '.upx_assets = {arm:(.assets.arm | .file = "bifrost-core-1.105.0-1-upx-linux-arm.gz")}' \
+    "$FIX/m2.json" >"$FIX/m2-upx.json"
+sh "$T_SRC/tools/sign.sh" "$KEYDIR/key1.key.pem" "$FIX/m2-upx.json"
+curl_map_reset
+curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m2-upx.json"
+curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m2-upx.json.sig"
+curl_map_set "$BIFROST_RELEASE_BASE/core-1.105.0-1/bifrost-core-1.105.0-1-upx-linux-arm.gz" "file:$FIX/v2-upx-arm.gz"
+ok type-upx-act act_core_type upx
+bg_drain
+eq type-upx-ok true "$(jq -r .ok "$jf")"
+eq type-upx-action type "$(jq -r .data.action "$jf")"
+eq type-upx-manifest upx "$(jq -r .variant "$BIFROST_MANIFEST")"
+eq type-upx-file bifrost-core-1.105.0-1-upx-linux-arm.gz "$(jq -r '.assets.arm.file' "$BIFROST_MANIFEST")"
+ok type-upx-daemon daemon_running
+
+jq '.assets.arm.raw_sha256 = ("0" * 64)' "$FIX/m2.json" >"$FIX/m2-bad-normal.json"
+sh "$T_SRC/tools/sign.sh" "$KEYDIR/key1.key.pem" "$FIX/m2-bad-normal.json"
+curl_map_reset
+curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m2-bad-normal.json"
+curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m2-bad-normal.json.sig"
+curl_map_set "$BIFROST_RELEASE_BASE/core-1.105.0-1/bifrost-core-1.105.0-1-linux-arm.gz" "file:$FIX/v2-arm.gz"
+ok type-normal-fail-act act_core_type normal
+bg_drain
+eq type-normal-fail-code hash_mismatch "$(jq -r .code "$jf")"
+eq type-normal-fail-keeps upx "$(jq -r .variant "$BIFROST_MANIFEST")"
+
+curl_map_reset
+curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m2.json"
+curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m2.json.sig"
+curl_map_set "$BIFROST_RELEASE_BASE/core-1.105.0-1/bifrost-core-1.105.0-1-linux-arm.gz" "file:$FIX/v2-arm.gz"
+ok type-normal-act act_core_type normal
+bg_drain
+eq type-normal-ok true "$(jq -r .ok "$jf")"
+eq type-normal-manifest normal "$(jq -r .variant "$BIFROST_MANIFEST")"
+eq type-normal-file bifrost-core-1.105.0-1-linux-arm.gz "$(jq -r '.assets.arm.file' "$BIFROST_MANIFEST")"
+eq type-invalid-page '{"ok":false,"code":"invalid_param"}' "$(t_page core-type lzma)"
+eq type-nargs-page '{"ok":false,"code":"invalid_param"}' "$(t_page core-type)"
+
+# ---- 11. Concurrent update job returns busy ----
 job_begin update
 no busy-check act_core_check
 eq busy-check-code busy "$BIFROST_ERR"

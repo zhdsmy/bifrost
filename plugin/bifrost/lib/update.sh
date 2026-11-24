@@ -96,6 +96,14 @@ _upd_installed_serial() {
     printf '0\n'
 }
 
+_upd_installed_variant() {
+    if [ -r "$BIFROST_MANIFEST" ]; then
+        _uiv_v=$(jq -r '.variant // "normal"' "$BIFROST_MANIFEST" 2>/dev/null)
+        case "$_uiv_v" in normal | upx) printf '%s\n' "$_uiv_v"; return 0 ;; esac
+    fi
+    printf 'normal\n'
+}
+
 # Installed serial describes the actual core. The channel floor survives
 # rollbacks and can also record a checked release before the user installs it.
 _upd_channel_floor() {
@@ -136,6 +144,80 @@ _upd_plugin_version() {
         fi
     fi
     return 1
+}
+
+_upd_plugin_channel_url() {
+    case "$BIFROST_CHANNEL_URL" in
+        */core.json) printf '%splugin.json\n' "${BIFROST_CHANNEL_URL%core.json}" ;;
+        *) printf '%s/plugin.json\n' "${BIFROST_CHANNEL_URL%/}" ;;
+    esac
+}
+
+_upd_parse_plugin_manifest() {
+    _upp_json=$1
+    _upp_fields=$(jq -ers '
+        select(length == 1) | .[0] |
+        select(type == "object" and .schema == 1 and
+            (.version | type == "string" and test("^(0|[1-9][0-9]{0,9})(\\.(0|[1-9][0-9]{0,9})){2}\\z")) and
+            (.tag == ("v" + .version)) and
+            (.url | type == "string" and startswith("https://"))) |
+        [.version, .tag, .url] | @tsv
+    ' "$_upp_json" 2>/dev/null) || return 1
+    IFS='	' read -r _UP_VERSION _UP_TAG _UP_URL <<EOF
+$_upp_fields
+EOF
+    _upd_valid_semver "$_UP_VERSION"
+}
+
+_upd_plugin_check() {
+    _UP_STATUS=unknown
+    _UP_UPDATE_JSON=null
+    _UP_JSON="$_jc_dir/plugin.json"
+    _UP_SIG="$_jc_dir/plugin.json.sig"
+    if ! _upd_download "$(_upd_plugin_channel_url)" "$_UP_JSON" ||
+        ! _upd_download "$(_upd_plugin_channel_url).sig" "$_UP_SIG"; then
+        _UP_ERROR=download_failed
+        return 0
+    fi
+    if ! manifest_verify "$_UP_JSON" "$_UP_SIG" || ! _upd_parse_plugin_manifest "$_UP_JSON"; then
+        _UP_ERROR=bad_manifest
+        return 0
+    fi
+    _UP_CURRENT=$(_upd_plugin_version 2>/dev/null || echo "")
+    if ! _upd_valid_semver "$_UP_CURRENT"; then
+        _UP_ERROR=internal
+        return 0
+    fi
+    _UP_STATUS=ok
+    _UP_ERROR=""
+    if ! _upd_ver_ge "$_UP_CURRENT" "$_UP_VERSION"; then
+        _UP_UPDATE_JSON=$(jq -cn --arg v "$_UP_VERSION" --arg t "$_UP_TAG" --arg u "$_UP_URL" \
+            '{version:$v,tag:$t,url:$u}')
+    fi
+}
+
+_upd_record_check() {
+    _urc_time=$1
+    _urc_core_status=$2
+    _urc_core_error=$3
+    _urc_core_latest=${4:-null}
+    _urc_plugin_status=${5:-unknown}
+    _urc_plugin_error=${6:-}
+    _urc_plugin_update=${7:-null}
+    _urc_file="$BIFROST_HOME/core-check.json"
+    mkdir -p "$BIFROST_HOME" || return 1
+    jq -cn \
+        --argjson checked "$_urc_time" \
+        --arg core_status "$_urc_core_status" \
+        --arg core_error "$_urc_core_error" \
+        --argjson core_latest "$_urc_core_latest" \
+        --arg plugin_status "$_urc_plugin_status" \
+        --arg plugin_error "$_urc_plugin_error" \
+        --argjson plugin_update "$_urc_plugin_update" \
+        '{schema:1, checked:$checked,
+          core:{status:$core_status,error:(if $core_error == "" then null else $core_error end),latest:$core_latest},
+          plugin:{status:$plugin_status,error:(if $plugin_error == "" then null else $plugin_error end),update:$plugin_update}}' |
+        json_write "$_urc_file"
 }
 
 # _upd_free_kb <dir>: print available 1K blocks on the filesystem containing dir.
@@ -281,18 +363,26 @@ core_version() {
 
 # ---- Manifest parsing, validation and staging ----
 
-# _upd_parse_manifest <json> <arch> <serial_mode: gt|ge|any> <check_plugin: 0|1>
+# _upd_parse_manifest <json> <arch> <serial_mode: gt|ge|any> <check_plugin: 0|1> [variant]
 # Sets _UM_SERIAL, _UM_TS, _UM_REV, _UM_TAG, _UM_MIN_PLUGIN,
-# _UM_FILE, _UM_SIZE, _UM_SHA, _UM_RAW_SIZE, _UM_RAW_SHA, _UM_LATEST_JSON.
+# _UM_FILE, _UM_SIZE, _UM_SHA, _UM_RAW_SIZE, _UM_RAW_SHA, _UM_VARIANT,
+# _UM_LATEST_JSON.
 _upd_parse_manifest() {
     _pm_json=$1
     _pm_arch=$2
     _pm_smode=$3
     _pm_cplug=$4
+    _pm_variant=${5:-auto}
+    if [ "$_pm_variant" = auto ]; then
+        _pm_variant=$(
+            jq -r 'if .variant == "upx" then "upx" else "normal" end' "$_pm_json" 2>/dev/null
+        ) || _pm_variant=normal
+    fi
+    case "$_pm_variant" in normal | upx) ;; *) fail bad_manifest; return 1 ;; esac
 
     # Validate every asset while the original JSON types and string boundaries
     # are available. Only the checked printable fields cross into the shell.
-    _pm_fields=$(jq -ers --arg arch "$_pm_arch" '
+    _pm_fields=$(jq -ers --arg arch "$_pm_arch" --arg variant "$_pm_variant" '
         def positive: type == "number" and floor == . and . >= 1 and . <= 9999999999;
         def version: type == "string" and test("^(0|[1-9][0-9]{0,9})(\\.(0|[1-9][0-9]{0,9})){2}\\z");
         def digest: type == "string" and test("^[0-9a-f]{64}\\z");
@@ -303,16 +393,23 @@ _upd_parse_manifest() {
                 (contains("..") | not) and endswith("-linux-" + $a + ".gz")) and
                 (.size | positive) and (.raw_size | positive) and
                 (.sha256 | digest) and (.raw_sha256 | digest));
+        def asset_set:
+            if $variant == "upx" then
+                if (.upx_assets | type) == "object" then .upx_assets
+                elif .variant == "upx" then .assets
+                else {} end
+            else .assets end;
         select(length == 1) | .[0] |
         select(type == "object" and .schema == 1 and (.serial | positive) and
             (.tailscale | version) and (.min_plugin | version) and (.revision | positive) and
             .tag == ("core-" + .tailscale + "-" + (.revision | tostring)) and
-            (.assets | type == "object" and all(to_entries[]; asset))) |
-        [.serial, .tailscale, .revision, .tag, .min_plugin,
-         (.assets[$arch] | .file // "-", .size // 0, .sha256 // "-", .raw_size // 0, .raw_sha256 // "-")] |
+            (.assets | type == "object" and all(to_entries[]; asset)) and
+            (asset_set | type == "object" and all(to_entries[]; asset))) |
+        [.serial, .tailscale, .revision, .tag, .min_plugin, $variant,
+         (asset_set[$arch] | .file // "-", .size // 0, .sha256 // "-", .raw_size // 0, .raw_sha256 // "-")] |
         @tsv
     ' "$_pm_json" 2>/dev/null) || { fail bad_manifest; return 1; }
-    read -r _UM_SERIAL _UM_TS _UM_REV _UM_TAG _UM_MIN_PLUGIN _UM_FILE _UM_SIZE _UM_SHA _UM_RAW_SIZE _UM_RAW_SHA <<EOF
+    read -r _UM_SERIAL _UM_TS _UM_REV _UM_TAG _UM_MIN_PLUGIN _UM_VARIANT _UM_FILE _UM_SIZE _UM_SHA _UM_RAW_SIZE _UM_RAW_SHA <<EOF
 $_pm_fields
 EOF
 
@@ -356,7 +453,8 @@ EOF
         --argjson rev "$_UM_REV" \
         --argjson ser "$_UM_SERIAL" \
         --arg tag "$_UM_TAG" \
-        '{tailscale:$ts, revision:$rev, serial:$ser, tag:$tag}') || {
+        --arg variant "$_UM_VARIANT" \
+        '{tailscale:$ts, revision:$rev, serial:$ser, tag:$tag, variant:$variant}') || {
         fail internal
         return 1
     }
@@ -365,8 +463,15 @@ EOF
 
 # Write the installed representation to a staging file on its destination FS.
 _upd_stage_manifest() {
-    { jq -ec --arg arch "$2" '.arch = $arch | .assets = {($arch): .assets[$arch]}' "$1" >"$3" &&
-        chmod 644 "$3"; } || { fail internal; return 1; }
+    _usm_variant=${3:-normal}
+    { jq -ec --arg arch "$2" --arg variant "$_usm_variant" '
+        .arch = $arch |
+        .variant = $variant |
+        .assets = {($arch): (if $variant == "upx" and (.upx_assets | type) == "object"
+                             then .upx_assets[$arch] else .assets[$arch] end)} |
+        del(.upx_assets)
+    ' "$1" >"$4" &&
+        chmod 644 "$4"; } || { fail internal; return 1; }
 }
 
 # Back up $BIFROST_CORE to bifrostd.old without removing $BIFROST_CORE so a
@@ -433,14 +538,19 @@ _upd_install_package() {
     [ -r "$_ci_gz" ] && [ -r "$_ci_man" ] || { fail bad_manifest; return 1; }
     _upd_parse_manifest "$_ci_man" "$_ci_arch" any 0 || return 1
 
-    if [ -x "$BIFROST_CORE" ] && [ "$(_upd_installed_serial)" -ge "$_UM_SERIAL" ]; then
+    # The package core wins unless the installed one is newer or the same
+    # file; an identical core is not rewritten to flash.
+    if [ -x "$BIFROST_CORE" ] && {
+        [ "$(_upd_installed_serial)" -gt "$_UM_SERIAL" ] ||
+            [ "$(jq -r '[.assets[]][0].raw_sha256 // ""' "$BIFROST_MANIFEST" 2>/dev/null)" = "$_UM_RAW_SHA" ]
+    }; then
         ln -sf bifrostd "$BIFROST_CLI" || { fail internal; return 1; }
         return 0
     fi
     _upd_unpack_candidate "$_ci_gz" "$_UM_RAW_SIZE" &&
         _upd_check_raw "$_ut_new" &&
         _upd_test_version "$_ut_new" &&
-        _upd_stage_manifest "$_ci_man" "$_ci_arch" "$_ut_manifest" &&
+        _upd_stage_manifest "$_ci_man" "$_ci_arch" "$_UM_VARIANT" "$_ut_manifest" &&
         _upd_begin_swap package 0 && _upd_replace && _upd_mark committed
 }
 
@@ -669,39 +779,54 @@ _upd_interrupted() {
 
 # ---- Job body (contract section 4 & 6.2) ----
 
+_upd_check_fail() {
+    _ucf_code=${BIFROST_ERR:-internal}
+    _upd_record_check "$_jc_now" error "$_ucf_code" null unknown "" null || :
+    rm -rf "$_jc_dir"
+    fail "$_ucf_code"
+    return 1
+}
+
 _upd_job_check() {
+    _jc_now=$(now)
     _jc_dir="$BIFROST_RUN/update"
     rm -rf "$_jc_dir"
     mkdir -p "$_jc_dir" || { fail internal; return 1; }
 
     job_data update '{"action":"check","latest":null,"up_to_date":false,"kept_prev":false}'
     _jc_arch=$(_upd_installed_arch)
-    _upd_arch_supported "$_jc_arch" || { rm -rf "$_jc_dir"; return 1; }
+    _jc_variant=$(_upd_installed_variant)
+    _upd_arch_supported "$_jc_arch" || { _upd_check_fail; return 1; }
 
     job_phase update manifest 20
     _jc_json="$_jc_dir/core.json"
     _jc_sig="$_jc_dir/core.json.sig"
     if ! _upd_download "$BIFROST_CHANNEL_URL" "$_jc_json" ||
         ! _upd_download "${BIFROST_CHANNEL_URL}.sig" "$_jc_sig"; then
-        rm -rf "$_jc_dir"
+        _upd_check_fail
         return 1
     fi
 
     job_phase update verify_manifest 60
     if ! manifest_verify "$_jc_json" "$_jc_sig"; then
-        rm -rf "$_jc_dir"
+        _upd_check_fail
         return 1
     fi
-    if ! _upd_parse_manifest "$_jc_json" "$_jc_arch" ge 1; then
-        rm -rf "$_jc_dir"
+    if ! _upd_parse_manifest "$_jc_json" "$_jc_arch" ge 1 "$_jc_variant"; then
+        _upd_check_fail
         return 1
     fi
 
-    if ! _upd_remember_serial "$_UM_SERIAL"; then rm -rf "$_jc_dir"; return 1; fi
+    _upd_plugin_check
+    _jc_plugin_status=$_UP_STATUS
+    _jc_plugin_error=$_UP_ERROR
+    _jc_plugin_update=$_UP_UPDATE_JSON
+
+    if ! _upd_remember_serial "$_UM_SERIAL"; then _upd_check_fail; return 1; fi
     if ! atomic_write "$BIFROST_RUN/core_latest.json" 644 <"$_jc_json"; then
         rm -f "$BIFROST_RUN/core_latest.json.tmp.$$"
-        rm -rf "$_jc_dir"
         fail internal
+        _upd_check_fail
         return 1
     fi
 
@@ -712,8 +837,14 @@ _upd_job_check() {
         _jc_utd=true
     fi
     _jc_data=$(jq -cn --argjson latest "$_UM_LATEST_JSON" --argjson utd "$_jc_utd" \
-        '{latest:$latest, up_to_date:$utd}')
+        --argjson plugin_update "$_jc_plugin_update" \
+        '{latest:$latest, up_to_date:$utd, plugin_update:$plugin_update}')
     job_data update "$_jc_data"
+    _upd_record_check "$_jc_now" ok "" "$_UM_LATEST_JSON" "$_jc_plugin_status" "$_jc_plugin_error" "$_jc_plugin_update" || {
+        rm -rf "$_jc_dir"
+        fail internal
+        return 1
+    }
     rm -rf "$_jc_dir"
     log update "check complete: serial=$_UM_SERIAL installed=$_jc_cur_ser up_to_date=$_jc_utd"
     return 0
@@ -722,11 +853,13 @@ _upd_job_check() {
 _upd_job_install_remote() {
     _jr_action=$1
     _jr_arch=$2
-    job_data update "{\"action\":\"$_jr_action\",\"latest\":null,\"up_to_date\":false,\"kept_prev\":false}"
+    _jr_variant=${3:-normal}
+    job_data update "{\"action\":\"$_jr_action\",\"latest\":null,\"up_to_date\":false,\"kept_prev\":false,\"variant\":\"$_jr_variant\"}"
     _upd_arch_supported "$_jr_arch" || return 1
 
     _jr_cur_arch=$(_upd_installed_arch)
-    if [ "$_jr_action" = arch ] && [ "$_jr_arch" != "$_jr_cur_arch" ]; then
+    if { [ "$_jr_action" = arch ] && [ "$_jr_arch" != "$_jr_cur_arch" ]; } ||
+        { [ "$_jr_action" = type ] && [ "$_jr_variant" != "$(_upd_installed_variant)" ]; }; then
         _jr_smode=ge
     else
         _jr_smode=gt
@@ -744,7 +877,7 @@ _upd_job_install_remote() {
     if ! manifest_verify "$_jr_json" "$_jr_sig"; then
         return 1
     fi
-    if ! _upd_parse_manifest "$_jr_json" "$_jr_arch" "$_jr_smode" 1; then
+    if ! _upd_parse_manifest "$_jr_json" "$_jr_arch" "$_jr_smode" 1 "$_jr_variant"; then
         return 1
     fi
 
@@ -780,8 +913,8 @@ _upd_job_install_remote() {
         _upd_check_raw "$_ut_new" || return 1
 
     job_phase update test 70
-    _upd_test_version "$_ut_new" &&
-        _upd_stage_manifest "$_jr_json" "$_jr_arch" "$_ut_manifest" &&
+        _upd_test_version "$_ut_new" &&
+        _upd_stage_manifest "$_jr_json" "$_jr_arch" "$_jr_variant" "$_ut_manifest" &&
         _upd_swap_and_verify keep || return 1
     if ! atomic_write "$BIFROST_RUN/core_latest.json" 644 <"$_jr_json"; then
         log update "core installed; latest manifest cache write failed"
@@ -800,7 +933,7 @@ _upd_job_rollback() {
         { _rb_arch=$(jq -er '.arch // (.assets | keys | select(length == 1) | first)' "$_rb_man" 2>/dev/null) &&
             valid_arch "$_rb_arch"; } || { fail bad_manifest; return 1; }
         _upd_parse_manifest "$_rb_man" "$_rb_arch" any 0 && _upd_arch_supported "$_rb_arch" &&
-            _upd_stage_manifest "$_rb_man" "$_rb_arch" "$_ut_manifest" || return 1
+            _upd_stage_manifest "$_rb_man" "$_rb_arch" "$_UM_VARIANT" "$_ut_manifest" || return 1
         job_phase update unpack 50
         _upd_unpack_candidate "$_rb_gz" "$_UM_RAW_SIZE" && _upd_check_raw "$_ut_new" || return 1
         job_phase update test 65
@@ -825,8 +958,9 @@ job_update() {
     if core_recover; then
         case "${1:-}" in
             check) _upd_job_check || _ju_rc=1 ;;
-            update) _upd_transaction _upd_job_install_remote update "$(_upd_installed_arch)" || _ju_rc=1 ;;
-            arch) _upd_transaction _upd_job_install_remote arch "${2:-}" || _ju_rc=1 ;;
+            update) _upd_transaction _upd_job_install_remote update "$(_upd_installed_arch)" "$(_upd_installed_variant)" || _ju_rc=1 ;;
+            arch) _upd_transaction _upd_job_install_remote arch "${2:-}" "$(_upd_installed_variant)" || _ju_rc=1 ;;
+            type) _upd_transaction _upd_job_install_remote type "$(_upd_installed_arch)" "${2:-}" || _ju_rc=1 ;;
             rollback) _upd_transaction _upd_job_rollback || _ju_rc=1 ;;
             *) fail invalid_param; _ju_rc=1 ;;
         esac
@@ -857,5 +991,13 @@ act_core_rollback() {
 
 act_core_arch() {
     _upd_arch_supported "${1:-}" || return 1
-    job_start update arch "$1"
+    job_start update arch "$1" "$(_upd_installed_variant)"
+}
+
+act_core_type() {
+    case "${1:-}" in
+        normal | upx) ;;
+        *) fail invalid_param; return 1 ;;
+    esac
+    job_start update type "$1"
 }

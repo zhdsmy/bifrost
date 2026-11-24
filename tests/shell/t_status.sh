@@ -136,6 +136,9 @@ printf '%s\n%s\n%s\nbadline\n' "$((_now - 3600))" "$((_now - 600))" "$((_now - 6
 cat >"$BIFROST_RUN/core_latest.json" <<'EOF'
 {"schema":1,"serial":8,"tailscale":"1.105.0","revision":1,"tag":"core-1.105.0-1","min_plugin":"0.1.0","extra":"ignored"}
 EOF
+cat >"$BIFROST_HOME/core-check.json" <<'EOF'
+{"schema":1,"checked":1795435200,"core":{"status":"ok","error":null,"latest":{"tailscale":"1.105.0","revision":1,"serial":8,"tag":"core-1.105.0-1","variant":"normal"}},"plugin":{"status":"ok","error":null,"update":{"version":"0.3.0","tag":"v0.3.0","url":"https://github.com/zhdsmy/bifrost/releases/tag/v0.3.0"}}}
+EOF
 
 : >"$MOCK_STATE/ts.log"
 ok refresh-running status_refresh
@@ -144,18 +147,22 @@ eq cli-at-most-2 2 "$(wc -l <"$MOCK_STATE/ts.log" | tr -d ' ')"
 # Exact top-level keys match contract 6.1
 eq top-keys '["auth_url","checks","conflict","core","daemon","dns","error","exit_node","health","lan","peers","plugin","prefs","routes","schema","self","settings","state","time"]' \
     "$(jq -c 'keys' "$ST_OUT")"
-eq core-keys '["arch","build","installed","kernel_arch","prev","revision","serial","size","tailscale","update"]' \
+eq core-keys '["arch","build","check","installed","kernel_arch","prev","revision","serial","size","tailscale","update","variant"]' \
     "$(jq -c '.core | keys' "$ST_OUT")"
 
-eq run-basic "1 running null 0.1.0 true" \
+eq run-basic "1 running null 0.2.0 true" \
     "$(jq -r '"\(.schema) \(.state) \(.error) \(.plugin.version) \(.plugin.enabled)"' "$ST_OUT")"
 # core.size comes from manifest .assets[.arch].raw_size (25100448), NOT wc -c on the small mock binary
 eq run-core "1.104.7 1 7 arm aarch64 25100448 true 8 1.105.0" \
     "$(jq -r '"\(.core.tailscale) \(.core.revision) \(.core.serial) \(.core.arch) \(.core.kernel_arch) \(.core.size) \(.core.prev) \(.core.update.serial) \(.core.update.tailscale)"' "$ST_OUT")"
 eq run-core-build '{"commit":"cbc74fe48ef1b1649f69a4d9a602319427e25102","go":"1.27.4","omit":["aws","bird"]}' \
     "$(jq -Sc '.core.build' "$ST_OUT")"
-eq run-core-update-keys '["revision","serial","tag","tailscale"]' \
+eq run-core-update-keys '["revision","serial","tag","tailscale","variant"]' \
     "$(jq -c '.core.update | keys' "$ST_OUT")"
+eq run-core-check "1795435200 ok null" \
+    "$(jq -r '"\(.core.check.checked) \(.core.check.status) \(.core.check.error)"' "$ST_OUT")"
+eq run-plugin-update "0.3.0 v0.3.0" \
+    "$(jq -r '"\(.plugin.update.version) \(.plugin.update.tag)"' "$ST_OUT")"
 ok run-core-inst-pos [ "$(jq -r '.core.installed' "$ST_OUT")" -gt 0 ]
 
 eq run-daemon "true $FAKE_DPID 2" \
@@ -223,7 +230,16 @@ eq arm64-core "arm64 24576160 null null" \
 eq core-arch-helper arm64 "$(jq -r "$(status_core_arch_jq)" "$BIFROST_MANIFEST")"
 seed_manifest
 
+# A check recorded before an upgrade does not offer the installed version.
+_st_pv=$(head -n 1 "$BIFROST_VERSION_FILE")
+jq --arg v "$_st_pv" '.plugin.update.version = $v | .plugin.update.tag = ("v" + $v)' \
+    "$BIFROST_HOME/core-check.json" >"$BIFROST_HOME/core-check.json.tmp"
+mv "$BIFROST_HOME/core-check.json.tmp" "$BIFROST_HOME/core-check.json"
+ok refresh-plugin-installed status_refresh
+eq plugin-update-installed null "$(jq -c '.plugin.update' "$ST_OUT")"
+
 # core_latest.json with equal/smaller serial yields update=null
+rm -f "$BIFROST_HOME/core-check.json"
 cat >"$BIFROST_RUN/core_latest.json" <<'EOF'
 {"schema":1,"serial":7,"tailscale":"1.104.7","revision":1,"tag":"core-1.104.7-1"}
 EOF

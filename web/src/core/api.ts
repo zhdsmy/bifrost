@@ -1,6 +1,7 @@
 // Adapted from po0fw asus-merlin (MIT), commit 0d9532d.
 import type {
   CoreArch,
+  CoreVariant,
   DiagData,
   JobName,
   JobStartResult,
@@ -264,6 +265,8 @@ export const api = {
   coreRollback: (signal?: AbortSignal) => postScript<JobStartResult>("bifrost_config.sh", ["core-rollback"], signal),
   coreArch: (arch: CoreArch, signal?: AbortSignal) =>
     postScript<JobStartResult>("bifrost_config.sh", ["core-arch", arch], signal),
+  coreType: (variant: CoreVariant, signal?: AbortSignal) =>
+    postScript<JobStartResult>("bifrost_config.sh", ["core-type", variant], signal),
   netcheck: (signal?: AbortSignal) => postScript<JobStartResult>("bifrost_config.sh", ["netcheck"], signal),
   ping: (ip: string, signal?: AbortSignal) => postScript<PingResult>("bifrost_config.sh", ["ping", ip], signal),
   logs: (signal?: AbortSignal) => postScript("bifrost_config.sh", ["logs"], signal),

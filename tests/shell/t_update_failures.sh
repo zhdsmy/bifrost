@@ -495,7 +495,7 @@ act_core_check
 bg_drain
 assert_unchanged chk-old-serial old_serial
 
-make_manifest "$FIX/m-minp.json" 6 1.105.0 0.2.0 arm "$FIX/v2" "$FIX/v2.gz"
+make_manifest "$FIX/m-minp.json" 6 1.105.0 0.3.0 arm "$FIX/v2" "$FIX/v2.gz"
 sh "$T_SRC/tools/sign.sh" "$KEYDIR/prod.key.pem" "$FIX/m-minp.json"
 curl_map_reset
 curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m-minp.json"
@@ -544,7 +544,7 @@ act_core_arch arm64
 bg_drain
 assert_unchanged arch-no-arch no_arch
 
-make_manifest "$FIX/m-minp64.json" 6 1.105.0 0.2.0 arm64 "$FIX/v2" "$FIX/v2.gz"
+make_manifest "$FIX/m-minp64.json" 6 1.105.0 0.3.0 arm64 "$FIX/v2" "$FIX/v2.gz"
 sh "$T_SRC/tools/sign.sh" "$KEYDIR/prod.key.pem" "$FIX/m-minp64.json"
 curl_map_reset
 curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m-minp64.json"

@@ -10,9 +10,9 @@ import { JobProgress } from "../components/JobProgress";
 import { DetailItem, DetailList, SectionCard } from "../components/SectionCard";
 import { api } from "../core/api";
 import { CORE_VERIFY_COMMAND, formatBytes, formatDateTime, isCoreUpToDate } from "../core/format";
-import type { CoreArch, JobProgressState, UpdateJobData } from "../core/types";
+import type { CoreArch, CoreVariant, JobProgressState, UpdateJobData } from "../core/types";
 
-type CoreConfirmKind = "update" | "rollback" | { arch: CoreArch };
+type CoreConfirmKind = "update" | "rollback" | { arch: CoreArch } | { variant: CoreVariant };
 
 interface CoreConfirmState {
   kind: CoreConfirmKind;
@@ -33,6 +33,9 @@ export function CorePage() {
   const latest = core.update ?? (checkedLatest && checkedLatest.serial > core.serial ? checkedLatest : null);
   const canSwitchArch = core.kernel_arch === "aarch64";
   const targetArch: CoreArch = core.arch === "arm64" ? "arm" : "arm64";
+  const currentVariant: CoreVariant = core.variant ?? "normal";
+  const targetVariant: CoreVariant = currentVariant === "upx" ? "normal" : "upx";
+  const variantLabel = (v: CoreVariant) => t(v === "upx" ? "core.variant.upx" : "core.variant.normal");
   const upToDate = isCoreUpToDate(status, updateJob);
   const lostPrev = Boolean(
     updateJob &&
@@ -57,7 +60,7 @@ export function CorePage() {
     } else if (kind === "rollback") {
       await runCoreMutation(() => api.coreRollback());
     } else {
-      await runCoreMutation(() => api.coreArch(kind.arch));
+      await runCoreMutation(() => "arch" in kind ? api.coreArch(kind.arch) : api.coreType(kind.variant));
     }
   }
 
@@ -71,6 +74,9 @@ export function CorePage() {
           </DetailItem>
           <DetailItem label={t("core.field.arch")}>
             <Badge variant="outline">{core.arch || "—"}</Badge>
+          </DetailItem>
+          <DetailItem label={t("core.field.variant")}>
+            <Badge variant="outline">{variantLabel(currentVariant)}</Badge>
           </DetailItem>
           <DetailItem label={t("core.field.kernelArch")}>
             <Badge variant="secondary">{core.kernel_arch || "—"}</Badge>
@@ -106,6 +112,24 @@ export function CorePage() {
                 className="inline-flex items-center gap-1 text-sm font-medium text-kumo-link underline"
               >
                 {t("core.releaseNotesLink")}
+                <ArrowSquareOutIcon size={14} aria-hidden />
+              </a>
+            }
+          />
+        )}
+
+        {status.plugin.update && (
+          <Banner
+            variant="default"
+            title={t("core.pluginUpdateBanner", { version: status.plugin.update.version })}
+            action={
+              <a
+                href={status.plugin.update.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-sm font-medium text-kumo-link underline"
+              >
+                {t("core.pluginReleaseLink")}
                 <ArrowSquareOutIcon size={14} aria-hidden />
               </a>
             }
@@ -161,7 +185,19 @@ export function CorePage() {
               {targetArch === "arm64" ? t("core.action.switchArm64") : t("core.action.switchArm")}
             </Button>
           )}
+          {core.variant && (
+            <Button
+              variant="secondary"
+              disabled={busy}
+              loading={updateJob?.running && updateJob.data?.action === "type"}
+              onClick={(e) => setConfirmState({ kind: { variant: targetVariant }, anchor: e.currentTarget })}
+            >
+              {targetVariant === "upx" ? t("core.action.switchUpx") : t("core.action.switchNormal")}
+            </Button>
+          )}
         </div>
+
+        <p className="text-xs text-kumo-subtle">{t("core.variant.cost")}</p>
 
         {!core.prev && <p className="text-xs text-kumo-subtle">{t("core.noPrevHint")}</p>}
       </SectionCard>
@@ -221,14 +257,18 @@ export function CorePage() {
               ? t("core.confirm.updateTitle")
               : confirmState.kind === "rollback"
                 ? t("core.confirm.rollbackTitle")
-                : t("core.confirm.archTitle", { arch: confirmState.kind.arch })
+                : "arch" in confirmState.kind
+                  ? t("core.confirm.archTitle", { arch: confirmState.kind.arch })
+                  : t("core.confirm.typeTitle", { type: variantLabel(confirmState.kind.variant) })
           }
           description={
             confirmState.kind === "update"
               ? t("core.confirm.updateDesc")
               : confirmState.kind === "rollback"
                 ? t("core.confirm.rollbackDesc")
-                : t("core.confirm.archDesc", { arch: confirmState.kind.arch })
+                : "arch" in confirmState.kind
+                  ? t("core.confirm.archDesc", { arch: confirmState.kind.arch })
+                  : t("core.confirm.typeDesc", { type: variantLabel(confirmState.kind.variant) })
           }
           disruptive={true}
           onConfirm={() => executeConfirm(confirmState.kind)}

@@ -96,7 +96,7 @@ page() {
                 return 1
             }
             ;;
-        core-arch | ping)
+        core-arch | core-type | ping)
             nargs 1 $# || {
                 respond_err invalid_param
                 return 1
@@ -122,6 +122,7 @@ page() {
         core-update) run_act act_core_update ;;
         core-rollback) run_act act_core_rollback ;;
         core-arch) run_act act_core_arch "$1" ;;
+        core-type) run_act act_core_type "$1" ;;
         netcheck) run_act act_netcheck ;;
         ping) run_act act_ping "$1" ;;
         logs) run_act act_logs ;;

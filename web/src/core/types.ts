@@ -39,6 +39,15 @@ export interface CoreLatest {
   revision: number;
   serial: number;
   tag: string;
+  variant?: CoreVariant;
+}
+
+export type CoreVariant = "normal" | "upx";
+
+export interface PluginUpdate {
+  version: string;
+  tag: string;
+  url: string;
 }
 
 export interface CoreBuildInfo {
@@ -52,11 +61,17 @@ export interface CoreInfo {
   revision: number;
   serial: number;
   arch: string;
+  variant?: CoreVariant;
   kernel_arch: string;
   size: number;
   installed: number;
   prev: boolean;
   update: CoreLatest | null;
+  check?: {
+    checked: number;
+    status: string;
+    error: string | null;
+  };
   build: CoreBuildInfo | null;
 }
 
@@ -121,6 +136,7 @@ export interface StatusData {
   plugin: {
     version: string;
     enabled: boolean;
+    update?: PluginUpdate | null;
   };
   core: CoreInfo;
   daemon: {
@@ -187,8 +203,10 @@ export interface MigrateJobData {
 }
 
 export interface UpdateJobData {
-  action?: "check" | "update" | "rollback" | "arch";
+  action?: "check" | "update" | "rollback" | "arch" | "type";
   latest?: CoreLatest | null;
+  plugin_update?: PluginUpdate | null;
+  variant?: CoreVariant;
   up_to_date?: boolean;
   kept_prev?: boolean;
 }

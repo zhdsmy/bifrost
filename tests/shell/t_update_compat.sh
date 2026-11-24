@@ -29,4 +29,16 @@ ok v010-accepts-additive-fields _upd_parse_manifest_v010 "$fixture" arm any 0
 eq v010-selects-normal-file "bifrost-core-1.104.7-2-linux-arm.gz" "$_UM_FILE"
 eq v010-selects-normal-size 123 "$_UM_SIZE"
 
+# The paths v0.1.0 uses for "check" (ge) and "update" (gt): installed
+# serial 1, plugin 0.1.0.
+mkdir -p "$BIFROST_HOME"
+printf '0.1.0\n' >"$BIFROST_VERSION_FILE"
+jq '.serial = 1 | .revision = 1 | .tag = "core-1.104.7-1" | .arch = "arm" |
+    .assets = {arm: .assets.arm} | del(.upx_assets, .upx)' "$fixture" >"$BIFROST_MANIFEST"
+ok v010-check-path _upd_parse_manifest_v010 "$fixture" arm ge 1
+ok v010-update-path _upd_parse_manifest_v010 "$fixture" arm gt 1
+eq v010-update-file "bifrost-core-1.104.7-2-linux-arm.gz" "$_UM_FILE"
+ok v010-arm64-path _upd_parse_manifest_v010 "$fixture" arm64 gt 1
+eq v010-arm64-file "bifrost-core-1.104.7-2-linux-arm64.gz" "$_UM_FILE"
+
 t_done
