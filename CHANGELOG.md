@@ -5,6 +5,12 @@ All notable changes to Bifrost will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- After the daemon started without a cached network map (a restart, a core update, or an upgrade), the firewall was applied before the tailnet address was known. The DNAT rules for the router admin page over the tailnet were missing until the next watchdog run, up to 2 minutes later. The start sequence now waits up to 10 seconds for the first network map.
+
 ## [0.2.0] - 2026-11-24
 
 ### Added

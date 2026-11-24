@@ -9,6 +9,7 @@ fresh() {
     t_setup
     t_load
     BIFROST_WAIT_READY=5
+    BIFROST_WAIT_NETMAP=5
     BIFROST_STOP_TIMEOUT=2
     BIFROST_FW_RETRY_SLEEP=0
     BIFROST_DNSMASQ_MAIN="$T/dnsmasq.conf"
@@ -138,6 +139,39 @@ eq start-real-dns-line "server=/example.ts.net/100.100.100.100" "$(cat "$BIFROST
 eq start-real-status running "$(jq -r .state "$BIFROST_UPLOAD/bifrost_status.json")"
 has start-cru-a "CRU a $BIFROST_WATCHDOG_NAME" "$(cat "$MOCK_STATE/cru.log")"
 has start-cru-entry "local watchdog #$BIFROST_WATCHDOG_NAME#" "$(cat "$MOCK_STATE/cru.txt")"
+no start-no-netmap-wait grep -q "no network map" "$BIFROST_LOG"
+dbus_seed bifrost_enable=0
+daemon_stop
+
+# Without a cached network map the core reports NoState and no tailnet address
+# until control answers. The firewall waits for it, so the local-access DNAT
+# rules are there at once instead of after the next watchdog run.
+fresh
+dbus_seed bifrost_enable=1
+ts_out status '{"BackendState":"NoState","TailscaleIPs":null}'
+(
+    sleep 2
+    cp "$FIX/status_running.json" "$MOCK_STATE/ts/status.tmp" &&
+        mv -f "$MOCK_STATE/ts/status.tmp" "$MOCK_STATE/ts/status.out"
+) &
+netmap_pid=$!
+ok netmap-wait-start daemon_start
+wait "$netmap_pid"
+has netmap-wait-inputs " cli:100.64.0.1" "$(head -n 1 "$BIFROST_RUN/fw.rules")"
+has netmap-wait-dnat "-d 100.64.0.1 -p tcp --dport 80 -j DNAT" "$(iptables -t nat -S BIFROST_PREROUTING)"
+ok netmap-wait-check fw_check
+no netmap-wait-no-timeout grep -q "no network map" "$BIFROST_LOG"
+dbus_seed bifrost_enable=0
+daemon_stop
+
+# No network map within the limit: start anyway, without the address rules.
+fresh
+dbus_seed bifrost_enable=1
+ts_out status '{"BackendState":"NoState","TailscaleIPs":null}'
+BIFROST_WAIT_NETMAP=1
+ok netmap-timeout-start daemon_start
+has netmap-timeout-log "no network map after 1 s" "$(cat "$BIFROST_LOG")"
+eq netmap-timeout-dnat "" "$(iptables -t nat -S BIFROST_PREROUTING | grep DNAT)"
 dbus_seed bifrost_enable=0
 daemon_stop
 

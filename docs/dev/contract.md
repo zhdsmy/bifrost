@@ -333,6 +333,7 @@ own time limit, as long as it keeps refreshing status.
 | `daemon_watchdog_remove` | P2 | P2, P5 | Removes the `$BIFROST_WATCHDOG_NAME` cron job (name defined at the top of `daemon.sh`) |
 | `daemon_restart` | P2 | P1, P2 | stop + start |
 | `daemon_wait_ready <secs>` | P2 | P1 | 0 when `status --json` answers within the time |
+| `daemon_wait_netmap` | P2 | P2 | Called by `daemon_start` before `fw_apply`. Waits up to `$BIFROST_WAIT_NETMAP` (10) seconds while `BackendState` is `NoState`, so the tailnet address used by the local-access DNAT rules is known. Always returns 0; a timeout only writes a line to `bifrost.log` |
 | `prefs_json` | P2 | P3 | Prints `debug prefs` output (JSON) or fails `not_running` |
 | `backend_state` | P2 | P1, P3 | Prints `BackendState` or fails |
 | `fw_apply` / `fw_clear` | P3 | P2 | PLAN 9.3. Idempotent. `fw_apply` fails with `fw_failed` |

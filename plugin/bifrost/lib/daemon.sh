@@ -4,6 +4,7 @@
 # Load order: env.sh, validate.sh, common.sh, daemon.sh.
 
 : "${BIFROST_WAIT_READY:=15}"
+: "${BIFROST_WAIT_NETMAP:=10}"
 : "${BIFROST_STOP_TIMEOUT:=10}"
 : "${BIFROST_CLEANUP_TIMEOUT:=15}"
 : "${BIFROST_LOCK_WAIT:=30}"
@@ -226,6 +227,26 @@ daemon_wait_ready() {
         if [ "$(now)" -ge "$_dw_deadline" ]; then
             fail start_failed
             return 1
+        fi
+        sleep 1
+    done
+}
+
+# daemon_wait_netmap: until its first network map, from control or the disk
+# cache, the core reports NoState and status has no tailnet address, so
+# fw_apply would leave out the rules that use it until the next watchdog run.
+# Wait up to BIFROST_WAIT_NETMAP seconds, then go on without it.
+daemon_wait_netmap() {
+    _dwn_deadline=$(($(now) + BIFROST_WAIT_NETMAP))
+    while :; do
+        _dwn_rem=$((_dwn_deadline - $(now)))
+        [ "$_dwn_rem" -lt 1 ] && _dwn_rem=1
+        _dwn_state=$(ts_cli_t "$_dwn_rem" status --json --peers=false 2>/dev/null |
+            jq -r '.BackendState // empty' 2>/dev/null)
+        [ "$_dwn_state" = NoState ] || return 0
+        if [ "$(now)" -ge "$_dwn_deadline" ]; then
+            log daemon "no network map after $BIFROST_WAIT_NETMAP s; applying the firewall without the tailnet address"
+            return 0
         fi
         sleep 1
     done
@@ -499,6 +520,7 @@ daemon_start() {
         daemon_running_has_nologs || { daemon_err_set start_failed; return 1; }
     fi
     daemon_phase firewall 85
+    daemon_wait_netmap
     if ! fw_apply; then
         _dst_err=${BIFROST_ERR:-fw_failed}
         log daemon "fw_apply failed: $_dst_err"
