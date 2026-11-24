@@ -9,13 +9,13 @@ plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ### Added
 
-- Initial Bifrost plugin for KoolCenter / Koolshare software center (HND platform).
-- Reproducible core build recipe (`core/recipe.json`, Tailscale v1.104.7, 25 omitted feature tags, no UPX, gzipped in offline packages).
-- Open-source BusyBox `/bin/sh` runtime, daemon watchdog, login/pre-auth key/headscale client support, settings management, and one-click migration from the original plugin with automatic rollback.
+- Initial Bifrost plugin for the KoolCenter / Koolshare software center (HND platform).
+- Reproducible core build recipe (`core/recipe.json`, Tailscale v1.104.7, 25 omitted feature tags, no UPX, gzipped inside offline packages).
+- Open-source BusyBox `/bin/sh` runtime, daemon watchdog, settings management, and interactive, pre-auth key, and headscale client login.
+- Migration from the original plugin: stops the original plugin through its own script, disables its autostart, copies state read-only, rebuilds the firewall to clear leftover NAT rules, and restores the original service automatically if verification fails.
 - Dedicated `BIFROST_*` IPv4/IPv6 firewall chains (`--netfilter-mode=off`) with local access toggle, LAN masquerade, configurable inbound SNAT (`auto` / `on` / `off`), and dnsmasq MagicDNS forwarding.
-- Recovery of core updates and migrations interrupted by a signal or power loss: journals on flash are finished or rolled back at boot, and an interrupted migration restores the original plugin.
-- Migration stops the original plugin through its own script, disables its autostart, rebuilds the firewall to remove the original plugin's leftover NAT rules, and restores the original service automatically when verification fails.
-- ECDSA P-256 + SHA-256 signed core update checks, anti-downgrade `serial` enforcement, automatic rollback on startup failure, and manual rollback support.
+- Crash recovery for core updates and migrations interrupted by signals or power loss: flash journals complete or roll back at boot, and an interrupted migration restores the original plugin.
+- ECDSA P-256 + SHA-256 signed core update checks, monotonic `serial` anti-downgrade enforcement, automatic rollback on startup failure, and manual rollback support.
 - Kumo-based Shadow DOM web UI with 5 tabs (Overview, Devices, Settings, Core, Diagnostics), Simplified Chinese / English switching, dark / light / system modes, and redacted diagnostic export.
-- Atomic installer/upgrader (`install.sh`), clean uninstaller (`uninstall.sh`) preserving `/koolshare/configs/bifrost/`, reproducible packaging (`packaging/build.sh`), BusyBox 1.25 shell & install tests, headscale v0.29.7 container integration suite, and GitHub Actions CI/release workflows.
+- Atomic installer/upgrader (`install.sh`), uninstaller (`uninstall.sh`) preserving `/koolshare/configs/bifrost/`, reproducible packaging (`packaging/build.sh`), BusyBox 1.25 shell and install tests, headscale v0.29.7 container integration suite, and GitHub Actions CI/release workflows.
 - System-log events for daemon exits, firewall repairs, init hooks, migration results, and page jobs, with redacted exit records retained across reboots.

@@ -5,12 +5,12 @@
 ## 文档目录
 
 - [PLAN.md](PLAN.md)：完整产品与技术方案（架构、核心编译、运行时、防火墙、DNS、迁移、核心签名更新、前端设计、测试与里程碑）。
-- [dev/contract.md](dev/contract.md)：模块间接口约定（文件归属、shell 编写约定、错误码表、状态/任务 JSON 格式、跨包函数签名与质量门槛）。
-- [../AGENTS.md](../AGENTS.md)：项目硬规则（BusyBox 1.25 兼容性、禁止 UPX / `--extra-small`、禁止提交私密信息、路由器操作规程）。
+- [dev/contract.md](dev/contract.md)：模块间接口约定（文件归属、shell 编写约定、错误码表、状态 / 任务 JSON 格式、跨包函数签名与质量门槛）。
+- [../AGENTS.md](../AGENTS.md)：项目硬规则（BusyBox 1.25 兼容性、禁止 UPX 与 `--extra-small`、禁止提交私密信息、路由器操作规程）。
 - [../NOTICE.md](../NOTICE.md)：第三方软件许可证与代码来源声明。
 - [../packaging/THIRD_PARTY_NOTICES.core.md](../packaging/THIRD_PARTY_NOTICES.core.md)：由 `go version -m` 生成的核心静态链接 Go 模块许可证清单。
 - [../CHANGELOG.md](../CHANGELOG.md)：版本变更记录。
-- [../release-notes/v0.1.0.md](../release-notes/v0.1.0.md)：首个插件版本的正式发布说明（由发布工作流直接读取）。
+- [../release-notes/v0.1.0.md](../release-notes/v0.1.0.md)：首个插件版本的发布说明（由发布工作流直接读取）。
 
 ## 本地检查与测试
 
@@ -64,13 +64,13 @@ packaging/build.sh --core-dir core/out --arch arm --out dist
 packaging/build.sh --core-release "$(cat packaging/core-tag)" --arch arm --out dist
 ```
 
-- 在 macOS 上，`packaging/test-build.sh` 使用相同输入、工具和固定时间戳打包两次并比对 SHA-256。Linux CI 使用同一测试在运行器内比对两个包。
+- 在 macOS 上，`packaging/test-build.sh` 用相同输入、工具和固定时间戳打包两次，并比对 SHA-256。Linux CI 用同一测试在运行器内比对两个包。
 - 相对路径参数（`--core-dir`、`--out`、`--web-dist`、`--keys-dir`）均按调用者当前工作目录解析。
-- 若已预先构建前端，可附加 `--web-dist web/dist` 跳过重复构建。
+- 已提前构建前端时，可附加 `--web-dist web/dist` 跳过重复构建。
 
 ## 升级核心版本后更新第三方 Go 模块声明
 
-静态链接的 Tailscale 核心包含 wireguard-go、`golang.org/x/*` 等数十个 Go 模块。每次更新 `core/recipe.json` 后，请重新生成 `packaging/THIRD_PARTY_NOTICES.core.md`（会自动打进插件包并安装到 `/koolshare/bifrost/`）：
+静态链接的 Tailscale 核心包含 wireguard-go、`golang.org/x/*` 等数十个 Go 模块。每次更新 `core/recipe.json` 后，请重新生成 `packaging/THIRD_PARTY_NOTICES.core.md`。该文件会自动打进插件包并安装到 `/koolshare/bifrost/`：
 
 ```sh
 # 1. 编译一个本机可检查的测试核心（确保依赖已缓存在 GOMODCACHE）
@@ -82,11 +82,11 @@ packaging/gen-core-notices.py core/out/test/bifrostd-linux-arm64
 
 ## 正式签名密钥的生成与轮换
 
-路由器端使用 OpenSSL 1.1.1w，采用 **ECDSA P-256 (`prime256v1`) + SHA-256** 进行清单与发布物验签（见 [PLAN.md](PLAN.md) 第 12.3 节）。
+路由器使用 OpenSSL 1.1.1w，以 **ECDSA P-256 (`prime256v1`) + SHA-256** 校验清单和发布物签名（见 [PLAN.md](PLAN.md) 第 12.3 节）。
 
 ### 生成正式密钥对
 
-请在离线或受保护环境中生成密钥对，**私钥绝不提交到仓库**（`.gitignore` 已忽略 `*.key.pem`）：
+在离线或受保护环境中生成密钥对。**不要把私钥提交到仓库**（`.gitignore` 已忽略 `*.key.pem`）：
 
 ```sh
 # 生成 ECDSA P-256 私钥（权限 600）
@@ -100,30 +100,29 @@ openssl ec -in bifrost-release.key.pem -pubout \
 
 ### 配置 GitHub Actions Secret
 
-1. 将 `bifrost-release.key.pem` 的完整 PEM 文本存入仓库 Secrets，名称统一为 **`BIFROST_SIGNING_KEY`**（`core.yml` 与 `release.yml` 共用同一密钥）。
-2. 将 `plugin/bifrost/keys/release-2026.pub.pem` 提交到 `main` 分支，并随插件包一起分发。
-3. 妥善离线备份私钥并删除本机临时私钥文件。
+1. 将 `bifrost-release.key.pem` 的完整 PEM 文本存入仓库 Secrets，名称设为 **`BIFROST_SIGNING_KEY`**（`core.yml` 与 `release.yml` 共用同一密钥）。
+2. 将 `plugin/bifrost/keys/release-2026.pub.pem` 提交到 `main` 分支，随插件包一起分发。
+3. 离线备份私钥，并删除本机临时私钥文件。
 
 ### 密钥轮换与撤销
 
-1. 生成新密钥对，将新公钥（如 `release-2027.pub.pem`）加入 `plugin/bifrost/keys/` 并发布一版同时包含新旧两个公钥的插件。
+1. 生成新密钥对，将新公钥（如 `release-2027.pub.pem`）加入 `plugin/bifrost/keys/`，先发布一版同时包含新旧两个公钥的插件。
 2. 等待用户升级后，将仓库 Secret `BIFROST_SIGNING_KEY` 切换为新私钥。
-3. 如发生私钥泄露，立即从 `plugin/bifrost/keys/` 移除旧公钥并发布紧急插件版本。
+3. 若私钥泄露，立即从 `plugin/bifrost/keys/` 移除旧公钥，并发布紧急插件版本。
 
 ## 发布流程
 
 ### 1. 发布核心（`core.yml`）
 
-1. 更新 `core/recipe.json` 中的 Tailscale 版本、提交哈希、Go 版本或 `revision`，并重新运行 `packaging/gen-core-notices.py` 更新 `packaging/THIRD_PARTY_NOTICES.core.md`。
+1. 更新 `core/recipe.json` 中的 Tailscale 版本、提交哈希、Go 版本或 `revision`，并运行 `packaging/gen-core-notices.py` 更新 `packaging/THIRD_PARTY_NOTICES.core.md`。
 2. 合并到 `main` 后打 tag 并推送：`git tag core-<Tailscale版本>-<revision> && git push origin core-<Tailscale版本>-<revision>`。
-3. `core.yml` 会在两个独立 job 中分别编译比对哈希，运行容器冒烟测试，签名 `core.json` / `SHA256SUMS`，生成构建来源证明并发布，同时更新 `channel-stable`。
+3. `core.yml` 在两个独立 job 中分别编译并比对哈希，运行容器冒烟测试，签名 `core.json` 和 `SHA256SUMS`，生成构建来源证明并发布，最后更新 `channel-stable`。
 
 ### 2. 发布插件（`release.yml`）
 
-1. 更新 `plugin/bifrost/version`、`packaging/core-tag` 和 `CHANGELOG.md`。
-   同时新增 `release-notes/v<版本>.md`，发布工作流会从该文件读取完整发布说明。
+1. 更新 `plugin/bifrost/version`、`packaging/core-tag` 和 `CHANGELOG.md`，并新增 `release-notes/v<版本>.md`（发布工作流会直接读取该文件作为发布说明）。
 2. 合并到 `main` 后打 tag 并推送：`git tag v<版本> && git push origin v<版本>`。
 3. `release.yml` 分三个权限隔离的 job 执行：
-   - `verify`（只读，`persist-credentials: false`）：校验 tag 位于 `origin/main`、与 `plugin/bifrost/version` 一致，并重跑 `check-sh.sh`、`check-private.sh`、`tests/shell/run.sh`、`tests/install/run.sh`。
-   - `build`（只读，`persist-credentials: false`）：以 `npm ci --ignore-scripts` 构建前端并打包 `arm` 与可用的 `arm64` 离线包，上传构件。
-   - `publish`（不运行任何 npm/node 代码）：检查同名发布不存在、生成并校验 `SHA256SUMS.sig`、附加构建来源证明并创建 GitHub Release（附带 `LICENSE` 与 `LICENSE.tailscale`）。
+   - `verify`（只读，`persist-credentials: false`）：校验 tag 位于 `origin/main` 且与 `plugin/bifrost/version` 一致，然后重跑 `check-sh.sh`、`check-private.sh`、`tests/shell/run.sh` 和 `tests/install/run.sh`。
+   - `build`（只读，`persist-credentials: false`）：用 `npm ci --ignore-scripts` 构建前端，打包 `arm` 及可用的 `arm64` 离线包，并上传构件。
+   - `publish`（不运行任何 npm/node 代码）：确认同名发布不存在，生成并校验 `SHA256SUMS.sig`，附加构建来源证明，然后创建 GitHub Release（附带 `LICENSE` 与 `LICENSE.tailscale`）。
