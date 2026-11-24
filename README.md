@@ -121,7 +121,7 @@ Bifrost 支持作为客户端接入自建控制服务器（当前容器测试验
 
 ```sh
 # 1. 验证 SHA256SUMS 签名
-pubkey=plugin/bifrost/keys/release-2026.pub.pem  # 改为发行方提供的可信公钥
+pubkey=plugin/bifrost/keys/release-1.pub.pem  # 改为发行方提供的可信公钥
 openssl dgst -sha256 -verify "$pubkey" \
   -signature SHA256SUMS.sig SHA256SUMS
 

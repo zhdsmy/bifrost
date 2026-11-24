@@ -121,7 +121,7 @@ Bifrost supports connecting as a client to self-hosted control servers (containe
 
 ```sh
 # 1. Verify the SHA256SUMS signature
-pubkey=plugin/bifrost/keys/release-2026.pub.pem  # Set to the trusted release public key
+pubkey=plugin/bifrost/keys/release-1.pub.pem  # Set to the trusted release public key
 openssl dgst -sha256 -verify "$pubkey" \
   -signature SHA256SUMS.sig SHA256SUMS
 
