@@ -39,10 +39,10 @@
 # The original Koolshare plugin (read only; Bifrost never changes its files).
 : "${BIFROST_ORIG_STATE:=$BIFROST_KSROOT/configs/tailscale}"
 : "${BIFROST_ORIG_CONFIG:=$BIFROST_SCRIPTS/tailscale_config}"
+# 1: migration stops the original itself and restarts it on rollback
+#    (PLAN 11.2 step 4, verified on a router with the original 2.0.8).
 # 0: migration waits for the user to stop the original in its own page.
-# 1: migration stops and restarts the original itself (PLAN 11.2 step 4,
-#    not verified on a router yet).
-: "${BIFROST_MIGRATE_AUTOSTOP:=0}"
+: "${BIFROST_MIGRATE_AUTOSTOP:=1}"
 
 # dbus keys owned by Bifrost and their defaults (PLAN 4.2).
 bifrost_default() {

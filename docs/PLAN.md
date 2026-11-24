@@ -668,11 +668,11 @@ tailscaled 的防火墙模式固定为 `off`，所有规则由 Bifrost 自己的
 1. **预检查**：原版的 state 文件存在；Bifrost 的核心可用；Bifrost 的 daemon 没在运行。
 2. **记录**：用原版的命令行读它的设备 ID、公钥和 `BackendState`，存到 `/tmp/bifrost-run/migrate/`。
 3. **备份**：Bifrost 的 state 目录里已经有文件时，先改名为带时间的备份。
-4. **停止原版**：通过原版自己的脚本停止，并关掉它的开机启动。具体调用方式【已核实】（2026-11-24，原版 2.0.8）：把 `tailscale_enable` 设成 `0`，再执行 `tailscale_config stop`，约 3 秒后 tailscaled 和 `tailscale0` 都没有了；`tailscale_enable=1` 加 `tailscale_config start` 约 11 秒恢复到 Running。页面的提交动作是 `tailscale_config <请求号> web_submit`，不带请求号时什么也不做。原版停止后会留下 nat 表里的 DNAT 和 MASQUERADE 规则（注释 `tailscale_rule`），下次重建防火墙时才消失。
+4. **停止原版**：通过原版自己的脚本停止，并关掉它的开机启动。具体调用方式【已核实】（2026-11-24，原版 2.0.8）：把 `tailscale_enable` 设成 `0`，再执行 `tailscale_config stop`，约 3 秒后 tailscaled 和 `tailscale0` 都没有了；`tailscale_enable=1` 加 `tailscale_config start` 约 11 秒恢复到 Running。页面的提交动作是 `tailscale_config <请求号> web_submit`，不带请求号时什么也不做。原版停止后会留下 nat 表里的 DNAT 和 MASQUERADE 规则（注释 `tailscale_rule`），下次重建防火墙时才消失。迁移默认由 Bifrost 这样停止原版（`BIFROST_MIGRATE_AUTOSTOP=1`）；设成 `0` 时改为等用户在原版页面里关闭。
 5. **复制**：把原版的 `tailscaled.state` 和 `derpmap.cached.json` 复制到 Bifrost 的 state 目录，权限 600。不复制 `files/`（Taildrop 已去掉）。原版的文件一个都不改。
 6. **启动 Bifrost**：`bifrost_enable=1`，执行启动顺序。第 6 步会把防火墙模式改成 `off`。
 7. **验证**：60 秒内 `BackendState` 回到记录的状态，设备 ID 和公钥与记录的相同。
-8. **成功**：写结果文件。页面提示以后可以卸载原版。
+8. **成功**：写结果文件。执行一次 `service restart_firewall`，清掉原版留下的 nat 规则；nat-start 钩子会把 Bifrost 的规则加回来。页面提示以后可以卸载原版。
 9. **失败**：停止 Bifrost，`bifrost_enable=0`，删掉刚复制的文件，恢复第 3 步的备份，重新启用并启动原版，把失败原因写进结果文件。
 
 原版的设置不用单独迁移：宣告网段、接受路由等都在 state 文件里，跟着文件过来。

@@ -19,13 +19,13 @@ migrate_orig_cli() {
     printf '%s\n' "${BIFROST_ORIG_CLI:-$BIFROST_KSBIN/tailscale}"
 }
 
-# Read the original plugin's autostart key (unverified on router; PLAN 11.2 step 4).
+# Read the original plugin's autostart key (PLAN 11.2 step 4).
 migrate_orig_get_enable() {
     dbus get tailscale_enable 2>/dev/null # check-sh: allow
 }
 
-# Stop the original plugin via its own script (unverified on router;
-# PLAN 11.2 step 4). Only invoked when BIFROST_MIGRATE_AUTOSTOP=1.
+# Stop the original plugin via its own script (PLAN 11.2 step 4).
+# Only invoked when BIFROST_MIGRATE_AUTOSTOP=1.
 migrate_orig_stop() {
     if [ -x "$BIFROST_ORIG_CONFIG" ]; then
         # The parent handles signals after the bounded stop script completes.
@@ -39,14 +39,14 @@ migrate_orig_stop() {
     return 0
 }
 
-# Disable the original plugin's autostart (unverified on router;
-# PLAN 11.2 step 4). Only invoked when BIFROST_MIGRATE_AUTOSTOP=1.
+# Disable the original plugin's autostart (PLAN 11.2 step 4).
+# Only invoked when BIFROST_MIGRATE_AUTOSTOP=1.
 migrate_orig_disable_autostart() {
     dbus set tailscale_enable=0 >/dev/null 2>&1 # check-sh: allow
 }
 
 # Restore the original plugin's autostart value and optionally restart it
-# (unverified on router; PLAN 11.2 step 9). Only invoked when BIFROST_MIGRATE_AUTOSTOP=1.
+# (PLAN 11.2 step 9). Only invoked when BIFROST_MIGRATE_AUTOSTOP=1.
 # Args: <orig_enable_val> <orig_was_running:0|1>
 migrate_orig_restore() {
     _mor_en=$1
@@ -354,6 +354,10 @@ migrate_apply_locked() {
     migrate_mark committed || return 1
     _jm_committed=1
     migrate_cleanup || true
+    # The original plugin leaves its nat rules when it stops; one sends every
+    # port on the tailnet IP to the LAN IP. A firewall rebuild drops them, and
+    # the nat-start hook adds ours back.
+    service restart_firewall >/dev/null 2>&1 || log migrate "firewall rebuild request failed"
     status_refresh || true
     log migrate "migration succeeded"
     return 0

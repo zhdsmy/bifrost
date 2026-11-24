@@ -68,6 +68,12 @@ EOF
     chmod 755 "$BIFROST_ORIG_CONFIG"
 }
 
+# --- 0. Migration stops the original itself unless told otherwise ---
+
+# shellcheck disable=SC2016
+eq mig-autostop-default 1 "$(sh -c 'unset BIFROST_MIGRATE_AUTOSTOP; . "$1"; echo "$BIFROST_MIGRATE_AUTOSTOP"' \
+    sh "$T_SRC/plugin/bifrost/lib/env.sh")"
+
 # --- 1. Precheck failures ---
 
 fresh
@@ -117,7 +123,7 @@ pidof_set tailscaled 7777
 echo "OLD_PRIVATE_STATE" >"$BIFROST_STATE/old.state"
 BIFROST_MIGRATE_WAIT_TIMEOUT=60
 job_begin migrate
-(export BIFROST_MIGRATE_WAIT_TIMEOUT BIFROST_MIGRATE_WAIT_POLL; t_call local job migrate) &
+(export BIFROST_MIGRATE_WAIT_TIMEOUT BIFROST_MIGRATE_WAIT_POLL BIFROST_MIGRATE_AUTOSTOP; t_call local job migrate) &
 mig_bg_pid=$!
 ok mig-wait-phase wait_original_phase
 no mig-wait-no-lock [ -d "$BIFROST_RUN/lock.state" ]
@@ -280,6 +286,8 @@ eq mig-auto-job "false true done false false" \
     "$(jq -r '"\(.running) \(.ok) \(.phase) \(.data.manual_stop) \(.data.rolled_back)"' "$jf")"
 has mig-auto-stopped-orig "ORIG_CFG stop" "$(cat "$MOCK_STATE/orig_cfg.log")"
 eq mig-auto-orig-disabled 0 "$(dbus get tailscale_enable)"
+# The original's leftover nat rules go away with a firewall rebuild.
+has mig-auto-fw-rebuild restart_firewall "$(cat "$MOCK_STATE/service.log" 2>/dev/null)"
 ok mig-auto-running daemon_running
 dbus_seed bifrost_enable=0
 daemon_stop
@@ -327,6 +335,7 @@ bg_drain
 eq mig-auto-rb-job "false migrate_verify_failed true" \
     "$(jq -r '"\(.ok) \(.code) \(.data.rolled_back)"' "$jf")"
 has mig-auto-rb-restarted "ORIG_CFG start" "$(cat "$MOCK_STATE/orig_cfg.log")"
+no mig-auto-rb-no-fw-rebuild grep -q restart_firewall "$MOCK_STATE/service.log"
 eq mig-auto-rb-orig-enabled 0 "$(dbus get tailscale_enable)"
 ok mig-auto-rb-orig-running orig_running
 eq mig-auto-rb-restored "PREV_STATE" "$(cat "$BIFROST_STATE/prev.txt")"
