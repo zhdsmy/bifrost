@@ -96,7 +96,19 @@ jobs:
             fi
           done
           for package in dist/bifrost-*.tar.gz; do
-            python3 packaging/gen-core-notices.py --check-package "$package"
+            case "$package" in
+              *-upx.tar.gz)
+                # A UPX core hides its Go build info. It is compressed from
+                # the same build as the uncompressed core, so its notice must
+                # equal the notice that the uncompressed package passed with.
+                normal="${package%-upx.tar.gz}.tar.gz"
+                [ -f "$normal" ] || { echo "no uncompressed package for $package" >&2; exit 1; }
+                tar -xzOf "$package" bifrost/THIRD_PARTY_NOTICES.core.md >"$RUNNER_TEMP/upx-notice.md"
+                tar -xzOf "$normal" bifrost/THIRD_PARTY_NOTICES.core.md >"$RUNNER_TEMP/normal-notice.md"
+                cmp "$RUNNER_TEMP/upx-notice.md" "$RUNNER_TEMP/normal-notice.md"
+                ;;
+              *) python3 packaging/gen-core-notices.py --check-package "$package" ;;
+            esac
           done
           cp LICENSE dist/LICENSE
           cp packaging/LICENSE.tailscale dist/LICENSE.tailscale
