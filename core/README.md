@@ -10,7 +10,7 @@ combined binary (`bifrostd`) used by Bifrost. Local builds and GitHub Actions
   and `GOENV=off` are enforced; caller `GOFLAGS`/`GOEXPERIMENT`/etc. are cleared)
 - All modes check the local Go version before fetching source or running featuretags.
   HTTP, HTTPS, ALL and NO proxy variables (both cases) and `GOPROXY` pass through.
-- `git`, `jq`, `openssl`, `gzip`, `curl`, and UPX 5.3.0 (the script downloads and verifies the pinned archive when `upx` is not on `PATH`)
+- `git`, `jq`, `openssl`, `gzip`, `curl`, `tar` with xz support; the script downloads and verifies the pinned Linux amd64 UPX 5.3.0 archive (set `CORE_UPX_BIN` on other hosts)
 
 ## Usage
 
@@ -56,6 +56,10 @@ core/build.sh --test-arch arm64
 - **Cross-platform comparison**: Compare `raw_sha256` (the uncompressed ELF
   binary) when verifying macOS vs. Linux builds. Apple/BSD `gzip` on macOS and
   GNU `gzip` on Linux can produce different `.gz` bytes even with `gzip -9 -n`.
+- **UPX cores**: Only the pinned Linux amd64 upx archive in `recipe.json`
+  reproduces the released UPX cores; Homebrew's upx 5.3.0 compresses
+  differently. `build.sh` never uses a `upx` on `PATH`. On other hosts, set
+  `CORE_UPX_BIN` to build anyway and compare only the uncompressed cores.
 - **Release `.gz` archives**: Official release `.gz` files and published
   `core.json` manifests are generated exclusively on Linux CI
   (`.github/workflows/core.yml`), where two independent runners verify

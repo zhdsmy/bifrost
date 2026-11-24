@@ -234,14 +234,12 @@ upx_version() {
     "$1" --version 2>/dev/null | awk 'NR == 1 { print $2; exit }'
 }
 
-# CORE_UPX_BIN must be the pinned version. Another upx on PATH (CI runner
-# images ship one) is skipped in favour of the pinned, hash-checked download.
+# Only the pinned, hash-checked Linux amd64 archive reproduces the released
+# UPX cores: Homebrew's upx 5.3.0, for one, compresses differently. A upx on
+# PATH is never used. CORE_UPX_BIN overrides the archive (it must still be the
+# pinned version), but its UPX cores may not match the release.
 ensure_upx() {
     _eu_candidate=$UPX_BIN
-    if [ -z "$_eu_candidate" ] && type upx >/dev/null 2>&1 &&
-        [ "$(upx_version "$(command -v upx)")" = "$UPX_VERSION" ]; then
-        _eu_candidate=$(command -v upx)
-    fi
     if [ -z "$_eu_candidate" ]; then
         need_cmd curl
         need_cmd tar
@@ -257,7 +255,8 @@ ensure_upx() {
     fi
     [ -x "$_eu_candidate" ] || die "UPX executable not found"
     _eu_got=$(upx_version "$_eu_candidate")
-    [ "$_eu_got" = "$UPX_VERSION" ] || die "UPX version mismatch: got $_eu_got, want $UPX_VERSION"
+    [ "$_eu_got" = "$UPX_VERSION" ] ||
+        die "UPX version mismatch: got ${_eu_got:-no output}, want $UPX_VERSION (the pinned upx runs on Linux amd64; elsewhere set CORE_UPX_BIN)"
     UPX_BIN=$_eu_candidate
 }
 

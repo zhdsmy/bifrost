@@ -298,7 +298,7 @@ export const zhCN = {
   "core.confirm.typeDesc": "将下载并校验 {type} 核心后重启服务，期间 tailnet 连接会短暂中断。",
   "core.section.recipe": "编译配方与校验",
   "core.recipe.desc": "以下信息来自已安装核心清单；核心基于 Tailscale 官方源码独立编译并保留网段路由，UPX 是可选类型。",
-  "core.variant.cost": "UPX 核心文件约为不压缩版的三分之一，但启动更慢（实测每次命令行调用约 0.39 秒，不压缩版约 0.02 秒），且每个进程独立解压，内存不能共享。",
+  "core.variant.cost": "UPX 核心文件约为不压缩版的三分之一，但启动更慢（实测每次命令行调用约 0.33 秒，不压缩版约 0.02 秒），且每个进程独立解压，内存不能共享。",
   "core.recipe.go": "Go 版本",
   "core.recipe.commit": "源码提交",
   "core.recipe.omit": "省略功能（{count} 项）",

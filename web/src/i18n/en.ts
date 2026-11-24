@@ -300,7 +300,7 @@ export const en: Record<MessageKey, string> = {
   "core.confirm.typeDesc": "Downloads and verifies the {type} core binary and restarts the daemon, briefly interrupting connectivity.",
   "core.section.recipe": "Build Recipe & Verification",
   "core.recipe.desc": "Read from the installed core manifest; compiled from official Tailscale source keeping subnet routing, with UPX available as an optional type.",
-  "core.variant.cost": "The UPX core file is about a third of the size, but it starts more slowly (measured at about 0.39 s per CLI call, versus 0.02 s uncompressed), and each process decompresses its own copy, so memory is not shared.",
+  "core.variant.cost": "The UPX core file is about a third of the size, but it starts more slowly (measured at about 0.33 s per CLI call, versus 0.02 s uncompressed), and each process decompresses its own copy, so memory is not shared.",
   "core.recipe.go": "Go Toolchain",
   "core.recipe.commit": "Source Commit",
   "core.recipe.omit": "Omitted Features ({count})",

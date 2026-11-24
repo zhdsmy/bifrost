@@ -9,7 +9,7 @@ plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ### Added
 
-- Optional UPX core (`upx 5.3.0 --best --no-lzma`) for `arm` and `arm64`, as online assets from `core-1.104.7-2` and as `hnd-upx` / `hnd-arm64-upx` offline packages. The uncompressed core stays the default: the UPX core file is about a third of the size, but each CLI call takes about 0.39 s instead of 0.02 s on an RT-AX86U.
+- Optional UPX core (`upx 5.3.0 --best --no-lzma`) for `arm` and `arm64`, as online assets from `core-1.104.7-2` and as `hnd-upx` / `hnd-arm64-upx` offline packages. The uncompressed core stays the default: the UPX core file is about a third of the size, but each CLI call takes about 0.33 s instead of 0.02 s on an RT-AX86U.
 - Core type switching on the Core tab, through the signed update transaction with automatic rollback.
 - A silent background update check when the page opens and the last check is more than 24 hours old. The result is kept on JFFS. The Core tab shows a new core and a new plugin version (with a release-page link); installing stays manual.
 - A signed `plugin.json` on the `channel-stable` release, published by `release.yml`.
