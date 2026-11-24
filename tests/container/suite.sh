@@ -67,12 +67,12 @@ wait_for 30 r_job_done /tmp/upload/bifrost_daemon.json || {
     fail_case "enable-job" "daemon job did not finish"
     exit 1
 }
-r_exec "/koolshare/scripts/bifrost_config.sh 2 login '$HS_URL' '$AUTHKEY'" >/dev/null
-wait_for 45 r_state_is running || {
-    r_exec 'jq -c "{state,error}" /tmp/upload/bifrost_status.json; jq -c "{ok,code,phase}" /tmp/upload/bifrost_login.json' >&2
+if ! r_exec "/koolshare/scripts/bifrost_config.sh 2 login '$HS_URL' '$AUTHKEY'" >/dev/null ||
+   ! wait_for 45 r_state_is running; then
+    sh "$(dirname "$0")/diagnostics.sh" "$HS_CTR" "$ROUTER_CTR" >&2 || true
     fail_case "headscale-login" "router did not reach running state"
     exit 1
-}
+fi
 pass "headscale-preauth-login-running"
 
 # Verify key status JSON fields (contract section 6.1).

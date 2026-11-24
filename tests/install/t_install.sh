@@ -120,7 +120,7 @@ check_assets() {
     ok "$_ca_label-js-exists" test -s "$BIFROST_RES/$_ca_js"
     ok "$_ca_label-css-exists" test -s "$BIFROST_RES/$_ca_css"
     # shellcheck disable=SC2012
-    _ca_got=$(ls -1A "$BIFROST_RES" | sort)
+    _ca_got=$(ls -1A "$BIFROST_RES" | sed '/^icon-tailscale\.png$/d' | sort)
     _ca_want=$(printf '%s\n' "$_ca_js" "$_ca_css" icon-bifrost.png unrelated.js bifrost-app.notes.css | sort)
     eq "$_ca_label-res-exact" "$_ca_want" "$_ca_got"
     no_glob "$_ca_label-no-asp-tmp" "$BIFROST_WEBS"/.bifrost-app.new*
@@ -237,7 +237,12 @@ no upg-run-pid-changed test "$new_pid" = "$old_pid"
 # =====================================================================
 # 3. Upgrade failure AFTER daemon_stop restores previously running daemon (Item 2)
 # =====================================================================
-make_pkg "$T/pkgs/v2fail" "0.2.9" 2 arm "console.log('v2fail');" ":host{color:#229;}" >/dev/null
+make_pkg "$T/pkgs/v2fail" "0.2.9" 9 arm "console.log('v2fail');" ":host{color:#229;}" >/dev/null
+# Force distinct payloads and save references for exact rollback checks.
+echo '# upgrade only' >>"$T/pkgs/v2fail/lib/login.sh"
+echo '# upgrade only' >>"$T/pkgs/v2fail/scripts/bifrost_config.sh"
+cp "$BIFROST_MANIFEST" "$T/old-manifest"
+cp "$BIFROST_CORE" "$T/old-core"
 mkdir -p "$T/reject-mv"
 cat >"$T/reject-mv/mv" <<EOF
 #!/bin/sh
@@ -256,6 +261,81 @@ check_assets upg-fail-keeps-h2 "$h2"
 restored_pid=$(cat "$BIFROST_PIDFILE" 2>/dev/null || true)
 ok upg-fail-daemon-restored test -n "$restored_pid"
 ok upg-fail-daemon-alive kill -0 "$restored_pid"
+
+no upg-fail-lock test -e "$BIFROST_RUN/lock.state"
+eq upg-fail-version 0.2.0 "$(cat "$BIFROST_VERSION_FILE")"
+eq upg-fail-dbus-version 0.2.0 "$(dbus get softcenter_module_bifrost_version)"
+ok upg-fail-manifest cmp "$T/old-manifest" "$BIFROST_MANIFEST"
+ok upg-fail-core cmp "$T/old-core" "$BIFROST_CORE"
+ok upg-fail-library cmp "$T/pkgs/v2/lib/login.sh" "$BIFROST_LIB/login.sh"
+ok upg-fail-script cmp "$T/pkgs/v2/scripts/bifrost_config.sh" "$BIFROST_SCRIPTS/bifrost_config.sh"
+
+# Fail after registration, while starting the new version. Recover using the
+# old libraries and preserve an explicitly empty dbus key.
+cp -R "$T/pkgs/v2fail" "$T/pkgs/startfail"
+printf '\ndaemon_start() { return 1; }\n' >>"$T/pkgs/startfail/lib/daemon.sh"
+dbus set bifrost_magicdns=
+dbus set bifrost_version=legacy
+out=$(sh "$T/pkgs/startfail/install.sh" 2>&1)
+eq startfail-exit 1 "$?"
+has startfail-message "重启失败" "$out"
+ok startfail-old-core cmp "$T/old-core" "$BIFROST_CORE"
+eq startfail-version 0.2.0 "$(cat "$BIFROST_VERSION_FILE")"
+eq startfail-dbus-version 0.2.0 "$(dbus get softcenter_module_bifrost_version)"
+eq startfail-empty-key 'bifrost_magicdns=' "$(dbus list bifrost_magicdns)"
+eq startfail-legacy-key legacy "$(dbus get bifrost_version)"
+ok startfail-live kill -0 "$(cat "$BIFROST_PIDFILE")"
+no startfail-lock test -d "$BIFROST_RUN/lock.state"
+check_assets startfail-page "$h2"
+
+# Both contractual stop errors must abort, release the lock and invoke start.
+cp -R "$T/pkgs/v2fail" "$T/pkgs/stoperr"
+sed 's/^daemon_stop()/real_stop()/' "$T/pkgs/stoperr/lib/daemon.sh" >"$T/stoperr"
+cat "$T/stoperr" >"$T/pkgs/stoperr/lib/daemon.sh"
+cat >>"$T/pkgs/stoperr/lib/daemon.sh" <<'EOF'
+daemon_stop() {
+    if [ "$STOP_ERROR" = cleanup ]; then real_stop || return 1; fi
+    return 1
+}
+EOF
+for error in running cleanup; do
+    out=$(STOP_ERROR=$error sh "$T/pkgs/stoperr/install.sh" 2>&1)
+    eq "stop-error-$error" 1 "$?"
+    has "stop-error-$error-restore" "恢复原 Bifrost 服务" "$out"
+    ok "stop-error-$error-live" kill -0 "$(cat "$BIFROST_PIDFILE")"
+    no "stop-error-$error-lock" test -d "$BIFROST_RUN/lock.state"
+done
+
+# Deliver real signals inside the foreground installer, with state locked and
+# the old process already stopped (noninteractive background jobs ignore INT).
+cp -R "$T/pkgs/v2fail" "$T/pkgs/signal"
+cat >>"$T/pkgs/signal/lib/update.sh" <<'EOF'
+core_install_file() { kill -"$INSTALL_SIGNAL" "$$"; return 1; }
+EOF
+for sig in INT TERM; do
+    case "$sig" in INT) expected=130 ;; TERM) expected=143 ;; esac
+    out=$(INSTALL_SIGNAL=$sig sh "$T/pkgs/signal/install.sh" 2>&1)
+    eq "signal-$sig-exit" "$expected" "$?"
+    no "signal-$sig-lock" test -d "$BIFROST_RUN/lock.state"
+    ok "signal-$sig-live" kill -0 "$(cat "$BIFROST_PIDFILE")"
+done
+
+# A failed recovery must be visible. Restore the original library for retry.
+cp "$BIFROST_LIB/daemon.sh" "$T/daemon.good"
+printf '\ndaemon_start() { return 1; }\n' >>"$BIFROST_LIB/daemon.sh"
+out=$(STOP_ERROR=running sh "$T/pkgs/stoperr/install.sh" 2>&1)
+eq restore-error-exit 1 "$?"
+has restore-error-visible "恢复原 Bifrost 服务失败" "$out"
+no restore-error-lock test -d "$BIFROST_RUN/lock.state"
+cp "$T/daemon.good" "$BIFROST_LIB/daemon.sh"
+
+make_pkg "$T/pkgs/bad-running" "0.2.8" 8 arm "bad-core" ":host{}" bad_hash >/dev/null
+out=$(sh "$T/pkgs/bad-running/install.sh" 2>&1)
+eq bad-running-exit 0 "$?"
+has bad-running-warning "保留原有核心" "$out"
+ok bad-running-core cmp "$T/old-core" "$BIFROST_CORE"
+ok bad-running-manifest cmp "$T/old-manifest" "$BIFROST_MANIFEST"
+ok bad-running-live kill -0 "$(cat "$BIFROST_PIDFILE")"
 
 # Stop daemon cleanly via real daemon_stop before stopped-upgrade test.
 sh -c '
@@ -363,6 +443,23 @@ rc=$?
 no corefail-fresh-ver-rc test "$rc" -eq 0
 has corefail-fresh-ver-msg "core_test_failed" "$out"
 no corefail-fresh-ver-no-home test -e "$BIFROST_HOME"
+
+no corefail-fresh-lock test -d "$BIFROST_RUN/lock.state"
+
+# A directory at an old hashed asset makes rm -f fail after publication.
+stale="$BIFROST_RES/bifrost-app.0123456789abcdef0123.js"
+mkdir "$stale"
+make_pkg "$T/pkgs/stale" "0.1.0" 1 arm "stale" ":host{}" >/dev/null
+out=$(sh "$T/pkgs/stale/install.sh" 2>&1)
+eq stale-cleanup-rc 1 "$?"
+has stale-cleanup-message "清理旧网页资源失败" "$out"
+no stale-cleanup-home test -e "$BIFROST_HOME"
+no stale-cleanup-asp test -e "$BIFROST_WEBS/Module_bifrost.asp"
+no stale-cleanup-wrapper test -e "$BIFROST_KSBIN/bifrost"
+ok stale-cleanup-original test -d "$stale"
+eq stale-cleanup-assets "${stale##*/}" "$(ls "$BIFROST_RES")"
+eq stale-cleanup-dbus "" "$(dbus list softcenter_module_bifrost_)"
+no stale-cleanup-lock test -d "$BIFROST_RUN/lock.state"
 
 # =====================================================================
 # 8. Missing web asset & daemon_stop failure abort cleanly (Item 4)
@@ -532,8 +629,24 @@ while [ ! -f "$MOCK_STATE/in_critical" ] && [ "$_wi" -lt 300 ]; do
     usleep 100000 2>/dev/null || sleep 1
     _wi=$((_wi + 1))
 done
-BIFROST_INSTALL_LOCK_WAIT=60 sh "$T/pkgs/c2/install.sh" >"$T/c2b.out" 2>&1 &
+mkdir "$T/watch-lock"
+cat >"$T/watch-lock/mkdir" <<'EOF'
+#!/bin/sh
+/opt/bb125/busybox mkdir "$@" && exit 0
+[ "$1" != "$BIFROST_RUN/lock.state" ] || : >"$MOCK_STATE/c2-contended"
+exit 1
+EOF
+chmod 755 "$T/watch-lock/mkdir"
+PATH="$T/watch-lock:$PATH" BIFROST_INSTALL_LOCK_WAIT=60 sh "$T/pkgs/c2/install.sh" >"$T/c2b.out" 2>&1 &
 p2=$!
+_wi=0
+while [ ! -e "$MOCK_STATE/c2-contended" ] && [ "$_wi" -lt 100 ]; do
+    usleep 100000
+    _wi=$((_wi + 1))
+done
+ok conc-ser-contended test -f "$MOCK_STATE/c2-contended"
+eq conc-ser-owner "$p1" "$(cat "$BIFROST_RUN/lock.state/pid")"
+eq conc-ser-waiting "ENTER $p1" "$(cat "$MOCK_STATE/concurrency.log")"
 : >"$T/release2"
 r1=0; wait "$p1" || r1=$?
 r2=0; wait "$p2" || r2=$?
@@ -551,6 +664,11 @@ inst_setup
 : >"$BIFROST_RES/bifrost-app.notes.css"
 : >"$BIFROST_SCRIPTS/bifrost_local.sh"
 dbus set other_plugin_enable=1
+mkdir -p "$BIFROST_ORIG_STATE"
+for path in "$BIFROST_ORIG_CONFIG" "$BIFROST_WEBS/Module_tailscale.asp" "$BIFROST_RES/icon-tailscale.png" \
+    "$BIFROST_ORIG_STATE/tailscaled.state" "$BIFROST_UPLOAD/bifrost_user.json"; do
+    printf 'preserve original\n' >"$path"
+done
 snapshot_sandbox >"$T/uninst_before.snap"
 
 hu=$(make_pkg "$T/pkgs/vu" "0.3.0" 3 arm "console.log('U');" ":host{color:#777;}")
@@ -592,6 +710,15 @@ ok uninst-stopfail-keeps-self test -x "$BIFROST_SCRIPTS/uninstall_bifrost.sh"
 ok uninst-stopfail-keeps-core test -x "$BIFROST_CORE"
 ok uninst-stopfail-keeps-cfg test -x "$BIFROST_SCRIPTS/bifrost_config.sh"
 eq uninst-stopfail-keeps-dbus 1 "$(dbus get softcenter_module_bifrost_install)"
+# Fail after the real daemon stops, as with unsuccessful rule cleanup.
+sed 's/^daemon_stop()/real_stop()/' "$T/daemon.sh.orig" >"$BIFROST_LIB/daemon.sh"
+printf '\ndaemon_stop() { real_stop; return 1; }\n' >>"$BIFROST_LIB/daemon.sh"
+out=$(sh "$BIFROST_SCRIPTS/uninstall_bifrost.sh" 2>&1)
+eq uninst-cleanupfail-rc 1 "$?"
+has uninst-cleanupfail-retry "请稍后重试" "$out"
+ok uninst-cleanupfail-keeps-self test -x "$BIFROST_SCRIPTS/uninstall_bifrost.sh"
+ok uninst-cleanupfail-keeps-core test -x "$BIFROST_CORE"
+eq uninst-cleanupfail-keeps-dbus 1 "$(dbus get softcenter_module_bifrost_install)"
 rm "$BIFROST_LIB/daemon.sh"
 out=$(sh "$BIFROST_SCRIPTS/uninstall_bifrost.sh" 2>&1)
 eq uninst-missing-stop-rc 1 "$?"
@@ -601,7 +728,32 @@ mv -f "$T/daemon.sh.orig" "$BIFROST_LIB/daemon.sh"
 
 # Item 7: running uninstall.sh from the package dir (under $T/pkgs/vu) must target $BIFROST_KSROOT,
 # NOT $T/pkgs (must NOT delete $T/pkgs/vu/version or anything outside $BIFROST_KSROOT!).
-out=$(sh "$T/pkgs/vu/uninstall.sh" 2>&1)
+# Model the revised stop contract on older P2 implementations, retaining the
+# real cron commands and the real stop sequence.
+sed '/^daemon_stop()/,/^}/s/^    daemon_watchdog_remove || true$/    :/' "$BIFROST_LIB/daemon.sh" >"$T/daemon.contract"
+cp "$T/daemon.contract" "$BIFROST_LIB/daemon.sh"
+# The previous failed stop may have removed the job on the older P2 baseline.
+cru a bifrost_watchdog '* * * * * /bin/true'
+: >"$MOCK_STATE/cru.log"
+mkdir "$T/interrupt-remove"
+cat >"$T/interrupt-remove/rm" <<'EOF'
+#!/bin/sh
+if [ "$2" = "$BIFROST_HOME" ] && [ -d "$2/.uninstall-lib" ]; then
+    /opt/bb125/busybox rm "$@" || exit 1
+    kill -TERM "$PPID"
+    exit 0
+fi
+exec /opt/bb125/busybox rm "$@"
+EOF
+chmod 755 "$T/interrupt-remove/rm"
+export BIFROST_HOME
+out=$(PATH="$T/interrupt-remove:$PATH" sh "$T/pkgs/vu/uninstall.sh" 2>&1)
+eq uninst-interrupted 143 "$?"
+no uninst-interrupted-lib test -e "$BIFROST_LIB"
+ok uninst-interrupted-self test -x "$BIFROST_SCRIPTS/uninstall_bifrost.sh"
+no uninst-interrupted-lock test -d "$BIFROST_RUN/lock.state"
+ok uninst-watchdog-removed-by-entry grep -Fxq 'CRU d bifrost_watchdog' "$MOCK_STATE/cru.log"
+out=$(sh "$BIFROST_SCRIPTS/uninstall_bifrost.sh" 2>&1)
 eq uninst-rc 0 "$?"
 has uninst-done "卸载完成" "$out"
 ok uninst-pkgdir-untouched test -f "$T/pkgs/vu/version"

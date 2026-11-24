@@ -2,9 +2,13 @@
 """Generate the core's module inventory and accompanying redistribution notices."""
 
 import argparse
+import gzip
 import json
 import re
+import shutil
 import subprocess
+import tarfile
+import tempfile
 from pathlib import Path
 
 
@@ -31,10 +35,41 @@ def license_label(file, body):
     return ", ".join(labels) or file.name
 
 
-def generate(binary):
+def read_metadata(binary):
     build = json.loads(go("version", "-m", "-json", str(binary)))
     if build["Path"] != "tailscale.com/cmd/tailscaled" or not build.get("Deps"):
         raise ValueError("expected a Bifrost tailscaled binary with embedded module metadata")
+    return build
+
+
+def dependencies(build):
+    for dep in sorted(build["Deps"], key=lambda dep: dep["Path"]):
+        module = dep.get("Replace", dep)
+        path = module["Path"]
+        name = dep["Path"] if module is dep else f"{dep['Path']} => {path}"
+        yield name, module["Version"], path
+
+
+def check_package(package):
+    # Inspect the final artifact. No module downloads or execution of the ELF.
+    with tarfile.open(package, "r:gz") as archive, tempfile.TemporaryDirectory() as tmp:
+        binary = Path(tmp) / "bifrostd"
+        with gzip.open(archive.extractfile("bifrost/bin/bifrostd.gz")) as src, binary.open("wb") as dst:
+            shutil.copyfileobj(src, dst)
+        build = read_metadata(binary)
+        notice = archive.extractfile("bifrost/THIRD_PARTY_NOTICES.core.md").read().decode()
+    header = notice.split("## Notice ", 1)[0]
+    actual = re.findall(r"^\| `([^`]+)` \| `([^`]+)` \|", header, re.M)
+    expected = [("Go standard library", build["GoVersion"])]
+    expected.extend((name, version) for name, version, _ in dependencies(build))
+    main = build["Main"]
+    if (actual != expected or
+            re.findall(r"^Main module `([^`]+)`", header, re.M) != [f"{main['Path']} {main['Version']}"]):
+        raise ValueError(f"{package.name}: core module inventory differs from the packaged notice")
+
+
+def generate(binary):
+    build = read_metadata(binary)
     env = json.loads(go("env", "-json", "GOROOT", "GOVERSION", "GOMODCACHE"))
     if build["GoVersion"] != env["GOVERSION"]:
         raise ValueError(f"use {build['GoVersion']} to collect the matching Go license")
@@ -58,10 +93,7 @@ def generate(binary):
         rows.append(f"| `{name}` | `{version}` | {', '.join(links)} |")
 
     add("Go standard library", build["GoVersion"], Path(env["GOROOT"]))
-    for dep in sorted(build["Deps"], key=lambda dep: dep["Path"]):
-        module = dep.get("Replace", dep)
-        path, version = module["Path"], module["Version"]
-        name = dep["Path"] if module is dep else f"{dep['Path']} => {path}"
+    for name, version, path in dependencies(build):
         add(name, version, cache / f"{cache_name(path)}@{cache_name(version)}")
 
     main = build["Main"]
@@ -77,8 +109,16 @@ def generate(binary):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("binary", type=Path)
+    parser.add_argument("--check-package", action="store_true",
+                        help="verify the inventory inside a packaged tarball")
+    parser.add_argument("input", type=Path)
     parser.add_argument("output", nargs="?", type=Path,
                         default=Path(__file__).with_name("THIRD_PARTY_NOTICES.core.md"))
     args = parser.parse_args()
-    args.output.write_text(generate(args.binary), encoding="utf-8")
+    if args.check_package:
+        try:
+            check_package(args.input)
+        except ValueError as exc:
+            parser.exit(1, f"{exc}\n")
+    else:
+        args.output.write_text(generate(args.input), encoding="utf-8")

@@ -125,7 +125,7 @@ if ! valid_arch "$arch"; then
     exit 2
 fi
 
-for tool in jq openssl gzip gunzip tar; do
+for tool in jq openssl gzip gunzip tar python3; do
     if ! type "$tool" >/dev/null 2>&1; then
         echo "error: required tool missing: $tool" >&2
         exit 1
@@ -412,18 +412,7 @@ if ! grep -Fq "src=\"/res/$asset_js\"" "$asp"; then
     exit 1
 fi
 
-# PLAN 2.4 item 6: <body> line must contain app, onload, and skin so Koolshare
-# does not rewrite the page with sed.
-body_line=$(grep -i '<body' "$asp" | head -n 1 || true)
-for token in app onload skin; do
-    case "$body_line" in
-        *"$token"*) ;;
-        *)
-            echo "self-check failed: Module_bifrost.asp <body> line missing '$token': $body_line" >&2
-            exit 1
-            ;;
-    esac
-done
+python3 "$SCRIPT_DIR/check-contents.py" "$verify_dir/bifrost" "$keys_dir" "$key_count"
 
 if grep -Eq 'detect_package|ks_tar_install' "$verify_dir/bifrost/install.sh"; then
     echo "self-check failed: install.sh contains forbidden software-center keyword" >&2

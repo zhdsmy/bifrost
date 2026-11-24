@@ -56,6 +56,15 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Read Go version for embedded module inspection
+        id: go-ver
+        run: echo "version=$(jq -r .go core/recipe.json)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: ${{ steps.go-ver.outputs.version }}
+          cache: false
+
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
@@ -82,6 +91,9 @@ jobs:
           elif [ "$rc" -ne 0 ]; then
             exit "$rc"
           fi
+          for package in dist/bifrost-*.tar.gz; do
+            python3 packaging/gen-core-notices.py --check-package "$package"
+          done
           cp LICENSE dist/LICENSE
           cp packaging/LICENSE.tailscale dist/LICENSE.tailscale
 
@@ -98,6 +110,7 @@ jobs:
   publish:
     name: Sign, attest & publish GitHub Release
     needs: [verify, build]
+    environment: release
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -125,6 +138,7 @@ jobs:
           path: dist
 
       - name: Generate and sign SHA256SUMS
+        id: sign
         env:
           BIFROST_SIGNING_KEY: ${{ secrets.BIFROST_SIGNING_KEY }}
         run: |
@@ -154,6 +168,7 @@ jobs:
           for pub in plugin/bifrost/keys/*.pub.pem; do
             [ -r "$pub" ] || continue
             if openssl dgst -sha256 -verify "$pub" -signature dist/SHA256SUMS.sig dist/SHA256SUMS >/dev/null 2>&1; then
+              echo "public_key=$pub" >> "$GITHUB_OUTPUT"
               verified=1
               break
             fi
@@ -172,6 +187,7 @@ jobs:
 
       - name: Publish GitHub Release
         env:
+          PUBLIC_KEY: ${{ steps.sign.outputs.public_key }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
@@ -195,7 +211,7 @@ jobs:
           Verify \`SHA256SUMS.sig\` with the public key in \`plugin/bifrost/keys/\`:
 
           \`\`\`sh
-          pubkey=plugin/bifrost/keys/release-2026.pub.pem  # Set to the trusted release public key
+          pubkey="${PUBLIC_KEY}"
           openssl dgst -sha256 -verify "\${pubkey}" -signature SHA256SUMS.sig SHA256SUMS
           sha256sum -c --ignore-missing SHA256SUMS   # Linux
           shasum -a 256 -c --ignore-missing SHA256SUMS  # macOS

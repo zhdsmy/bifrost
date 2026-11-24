@@ -147,6 +147,7 @@ while [ "$i" -lt 30 ]; do
 done
 if [ "$i" -ge 30 ]; then
     echo "error: headscale did not become healthy" >&2
+    sh "$SCRIPT_DIR/diagnostics.sh" "$HS_CTR" >&2 || true
     exit 1
 fi
 
@@ -289,6 +290,25 @@ jq -n \
 ver=$(tr -d ' \t\r\n' <"$REPO_ROOT/plugin/bifrost/version")
 "$REPO_ROOT/packaging/build.sh" --core-dir "$core_dir" --arch arm64 --out "$WORK/dist"
 PKG_TAR="$WORK/dist/bifrost-${ver}-hnd-arm64.tar.gz"
+
+# Exercise the release inventory check on a real packaged ELF. Drop one
+# dependency row in a private copy to prove that a stale notice is rejected.
+notice_check="$REPO_ROOT/packaging/gen-core-notices.py"
+python3 "$notice_check" --check-package "$PKG_TAR"
+notice_test="$WORK/notice-test"
+mkdir "$notice_test"
+tar -xzf "$PKG_TAR" -C "$notice_test" bifrost/bin/bifrostd.gz bifrost/THIRD_PARTY_NOTICES.core.md
+notice="$notice_test/bifrost/THIRD_PARTY_NOTICES.core.md"
+awk '/^\| `/ && !/Go standard library/ && !omitted { omitted=1; next } { print } END { exit !omitted }' \
+    "$notice" >"$notice.tmp"
+mv "$notice.tmp" "$notice"
+tar -czf "$WORK/stale-notice.tar.gz" -C "$notice_test" bifrost
+if python3 "$notice_check" --check-package "$WORK/stale-notice.tar.gz" >"$WORK/notice-error" 2>&1; then
+    echo "error: stale module notice accepted" >&2
+    exit 1
+fi
+grep -Fq "core module inventory differs" "$WORK/notice-error"
+echo "PASS [packaging] real core notice verified, missing dependency rejected"
 
 export HS_CTR ROUTER_CTR PEER_CTR LAN_CTR HS_URL AUTHKEY PKG_TAR
 sh "$SCRIPT_DIR/suite.sh"

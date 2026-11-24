@@ -104,6 +104,31 @@ packaging/build.sh --core-release core-1.104.7-1 \
     --out "$work/out3" \
     --source-date-epoch 1700000000
 echo "PASS [signed-core-release]"
+rc=0
+missing=$(packaging/build.sh --core-release core-1.104.7-1 --arch arm64 \
+    --release-base "file://$work/releases" --keys-dir "$keys_dir" \
+    --web-dist "$web_dist" --out "$work/out3" 2>&1) || rc=$?
+if [ "$rc" != 3 ] || [ -e "$work/out3/bifrost-${ver}-hnd-arm64.tar.gz" ]; then
+    echo "FAIL [signed-release-without-arm64]: exit $rc or unexpected package" >&2
+    exit 1
+fi
+case "$missing" in
+    *"no asset for arch 'arm64'"*) echo "PASS [signed-release-without-arm64]" ;;
+    *) echo "FAIL [signed-release-without-arm64]: $missing" >&2; exit 1 ;;
+esac
+
+mkdir "$work/extract"
+tar -xzf "$work/out3/bifrost-${ver}-hnd.tar.gz" -C "$work/extract"
+extracted="$work/extract/bifrost"
+for lib in daemon update; do
+    mv "$extracted/lib/$lib.sh" "$work/lib.saved"
+    expect_fail "missing-$lib" "missing or empty lib/$lib.sh" \
+        python3 packaging/check-contents.py "$extracted" "$keys_dir" 1
+    mv "$work/lib.saved" "$extracted/lib/$lib.sh"
+done
+rm "$extracted/keys/test1.pub.pem"
+expect_fail missing-packaged-key "public key count differs" \
+    python3 packaging/check-contents.py "$extracted" "$keys_dir" 1
 
 # 3. Negative checks (Items 13 & 14).
 # 3a. Wrong public key
@@ -183,7 +208,7 @@ expect_fail bad-asp-body-skin "<body> line missing 'skin'" \
 sed 's/onload/onx/g' "$web_dist/Module_bifrost.asp" >"$work/bad-web-dist/Module_bifrost.asp"
 expect_fail bad-asp-body-onload "<body> line missing 'onload'" \
     packaging/build.sh --core-dir "$core_dir" --keys-dir "$keys_dir" --web-dist "$work/bad-web-dist" --out "$work/out-bad"
-sed 's/id="app"/id="x"/g' "$web_dist/Module_bifrost.asp" >"$work/bad-web-dist/Module_bifrost.asp"
+sed 's/id="app"/class="app-x" data-id="app"/g' "$web_dist/Module_bifrost.asp" >"$work/bad-web-dist/Module_bifrost.asp"
 expect_fail bad-asp-body-app "<body> line missing 'app'" \
     packaging/build.sh --core-dir "$core_dir" --keys-dir "$keys_dir" --web-dist "$work/bad-web-dist" --out "$work/out-bad"
 
