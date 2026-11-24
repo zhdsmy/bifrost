@@ -206,7 +206,7 @@ sh -c '
     . "$BIFROST_LIB/env.sh"
     . "$BIFROST_LIB/validate.sh"
     . "$BIFROST_LIB/common.sh"
-    for m in daemon fw dns status; do . "$BIFROST_LIB/$m.sh"; done
+    for m in daemon fw dns status login settings migrate update diag; do . "$BIFROST_LIB/$m.sh"; done
     daemon_start
 '
 eq upg-pre-start-rc 0 "$?"
@@ -342,7 +342,7 @@ sh -c '
     . "$BIFROST_LIB/env.sh"
     . "$BIFROST_LIB/validate.sh"
     . "$BIFROST_LIB/common.sh"
-    for m in daemon fw dns status; do . "$BIFROST_LIB/$m.sh"; done
+    for m in daemon fw dns status login settings migrate update diag; do . "$BIFROST_LIB/$m.sh"; done
     daemon_stop
 '
 eq stop-before-t3-rc 0 "$?"
@@ -687,7 +687,7 @@ sh -c '
     . "$BIFROST_LIB/env.sh"
     . "$BIFROST_LIB/validate.sh"
     . "$BIFROST_LIB/common.sh"
-    for m in daemon fw dns status; do . "$BIFROST_LIB/$m.sh"; done
+    for m in daemon fw dns status login settings migrate update diag; do . "$BIFROST_LIB/$m.sh"; done
     daemon_start
 '
 eq uninst-start-rc 0 "$?"
@@ -747,8 +747,14 @@ exec /opt/bb125/busybox rm "$@"
 EOF
 chmod 755 "$T/interrupt-remove/rm"
 export BIFROST_HOME
+# An unrecovered migration journal: the original plugin was disabled and not yet restored.
+dbus set tailscale_enable=0
+mkdir -m 700 "$BIFROST_HOME/.migration"
+printf 'stopping 1 0 1 0\n' >"$BIFROST_HOME/.migration/record"
 out=$(PATH="$T/interrupt-remove:$PATH" sh "$T/pkgs/vu/uninstall.sh" 2>&1)
 eq uninst-interrupted 143 "$?"
+eq uninst-migration-restored-orig 1 "$(dbus get tailscale_enable)"
+dbus remove tailscale_enable
 no uninst-interrupted-lib test -e "$BIFROST_LIB"
 ok uninst-interrupted-self test -x "$BIFROST_SCRIPTS/uninstall_bifrost.sh"
 no uninst-interrupted-lock test -d "$BIFROST_RUN/lock.state"

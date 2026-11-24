@@ -85,9 +85,14 @@ _in_on_exit() {
             echo_date "升级中止，正在尝试恢复原 Bifrost 服务..."
             # Load the restored version, including when stop failed after cleanup.
             if ! (
-                for _ix_lib in env validate common daemon fw dns status; do
+                for _ix_lib in env validate common; do
                     # shellcheck disable=SC1090
                     . "$BIFROST_LIB/$_ix_lib.sh" || exit 1
+                done
+                # The same modules as the entry scripts: daemon_start needs core_version.
+                for _ix_lib in daemon fw dns status login settings migrate update diag; do
+                    # shellcheck disable=SC1090
+                    [ ! -f "$BIFROST_LIB/$_ix_lib.sh" ] || . "$BIFROST_LIB/$_ix_lib.sh" || exit 1
                 done
                 daemon_start
             ); then

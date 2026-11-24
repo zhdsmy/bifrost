@@ -56,10 +56,16 @@ log uninstall "starting uninstall"
 _un_retired="$BIFROST_HOME/.uninstall-lib"
 _un_registered=$(dbus get softcenter_module_bifrost_install) || exit 1
 if [ -d "$BIFROST_LIB" ] || [ "$_un_registered" = 1 ]; then
-    for _un_m in daemon fw dns status; do
+    for _un_m in daemon fw dns status login settings migrate update diag; do
         # shellcheck disable=SC1090
         [ ! -f "$BIFROST_LIB/$_un_m.sh" ] || . "$BIFROST_LIB/$_un_m.sh" || exit 1
     done
+    # The migration journal lives in BIFROST_HOME. Restore the original plugin
+    # before that tree is removed; keep everything if the restore fails.
+    if has_cmd migrate_recover && ! migrate_recover; then
+        echo_date "恢复未完成的迁移失败，已中止卸载并保留现有脚本，请稍后重试"
+        exit 1
+    fi
     if ! has_cmd daemon_stop; then
         echo_date "缺少 daemon_stop 函数，无法安全停止 Bifrost 服务，已中止卸载并保留现有脚本"
         exit 1
