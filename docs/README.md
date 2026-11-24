@@ -10,6 +10,7 @@
 - [../NOTICE.md](../NOTICE.md)：第三方软件许可证与代码来源声明。
 - [../packaging/THIRD_PARTY_NOTICES.core.md](../packaging/THIRD_PARTY_NOTICES.core.md)：由 `go version -m` 生成的核心静态链接 Go 模块许可证清单。
 - [../CHANGELOG.md](../CHANGELOG.md)：版本变更记录。
+- [../release-notes/v0.1.0.md](../release-notes/v0.1.0.md)：首个插件版本的正式发布说明（由发布工作流直接读取）。
 
 ## 本地检查与测试
 
@@ -120,6 +121,7 @@ openssl ec -in bifrost-release.key.pem -pubout \
 ### 2. 发布插件（`release.yml`）
 
 1. 更新 `plugin/bifrost/version`、`packaging/core-tag` 和 `CHANGELOG.md`。
+   同时新增 `release-notes/v<版本>.md`，发布工作流会从该文件读取完整发布说明。
 2. 合并到 `main` 后打 tag 并推送：`git tag v<版本> && git push origin v<版本>`。
 3. `release.yml` 分三个权限隔离的 job 执行：
    - `verify`（只读，`persist-credentials: false`）：校验 tag 位于 `origin/main`、与 `plugin/bifrost/version` 一致，并重跑 `check-sh.sh`、`check-private.sh`、`tests/shell/run.sh`、`tests/install/run.sh`。

@@ -12,7 +12,6 @@ permissions:
 # same channel-stable serial and emit duplicate serials.
 concurrency:
   group: core-release
-  queue: max
 
 jobs:
   validate:

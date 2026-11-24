@@ -5,7 +5,7 @@
 **Bifrost** 是一个面向 KoolCenter / Koolshare 软件中心（华硕梅林 386/388 改版固件，HND 平台）的**非官方** Tailscale 插件。核心由本仓库依据公开配方从 Tailscale 官方源码编译，脚本完全以 BusyBox `/bin/sh` 开源编写，管理界面基于 Kumo 设计系统重新构建，支持简体中文 / 英文与深色 / 浅色外观切换。
 
 > [!IMPORTANT]
-> 本项目为非官方插件，与 Tailscale Inc. 及 Cloudflare, Inc. 均无关联，未获其认可或赞助。Tailscale 是 Tailscale Inc. 的商标。
+> 本项目为非官方插件，与 Tailscale Inc. 无关联，未获其认可或赞助。Tailscale 是 Tailscale Inc. 的商标。
 
 ## 与原版插件的区别
 
@@ -63,8 +63,8 @@ Bifrost 与原版 `tailscale` 插件使用完全独立的模块名、dbus 键、
 
 1. 安装 Bifrost 后不要直接启用（安装不会停止原版）。
 2. 打开 Bifrost 页面，在概览页点击 **「迁移并切换」**。
-3. 迁移脚本会在后台执行（不依赖浏览器连接，避免通过 tailnet 操作时中断）：记录原版设备 ID 与公钥 → 备份已有 Bifrost 状态 → 停止原版（或等待你在原版页面手动关闭）→ 复制 `tailscaled.state` 与 `derpmap.cached.json`（只读原版，不修改原版任何文件）→ 启动 Bifrost 并验证设备身份一致。
-4. 若验证失败，脚本会自动停用 Bifrost、恢复备份并提示切回原版。
+3. 迁移脚本会在后台执行（不依赖浏览器连接，避免通过 tailnet 操作时中断）：记录原版设备 ID 与公钥 → 备份已有 Bifrost 状态 → 通过原版自己的脚本停止原版并关闭其开机启动 → 复制 `tailscaled.state` 与 `derpmap.cached.json`（只读原版，不修改原版任何文件）→ 启动 Bifrost 并验证设备身份一致 → 重建防火墙以清理原版遗留的 NAT 规则。
+4. 若验证失败，脚本会自动停用 Bifrost、恢复备份、重新启用并启动原版，然后提示切回原版。
 
 ### 迁移后与手动切回
 

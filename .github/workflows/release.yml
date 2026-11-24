@@ -192,32 +192,28 @@ jobs:
         run: |
           set -eu
           version="$(tr -d ' \t\r\n' < plugin/bifrost/version)"
-          core_tag="$(tr -d ' \t\r\n' < packaging/core-tag)"
+          notes_file="release-notes/v${version}.md"
+          [ -s "$notes_file" ] || {
+            echo "release notes not found: $notes_file" >&2
+            exit 1
+          }
+          notes="$(cat "$notes_file")"
           sums="$(cat dist/SHA256SUMS)"
-          notes="$(cat <<EOF
-          Bifrost v${version} — KoolCenter / Koolshare offline plugin package (HND).
+          notes="${notes}
 
-          - Bundled core release: \`${core_tag}\`
-          - Tested headscale version: \`v0.29.7\`
-          - Designed for the ASUSWRT skin; firmware skins need hardware verification.
-          - Licenses included: \`LICENSE\` (MIT), \`LICENSE.tailscale\` (BSD-3-Clause), and \`THIRD_PARTY_NOTICES.core.md\` inside each tarball
-
-          ### SHA256SUMS
+          ## Published checksums
 
           \`\`\`
           ${sums}
           \`\`\`
 
-          Verify \`SHA256SUMS.sig\` with the public key in \`plugin/bifrost/keys/\`:
+          Verify \`SHA256SUMS.sig\` with the public key \`${PUBLIC_KEY}\`:
 
           \`\`\`sh
-          pubkey="${PUBLIC_KEY}"
-          openssl dgst -sha256 -verify "\${pubkey}" -signature SHA256SUMS.sig SHA256SUMS
+          openssl dgst -sha256 -verify \"${PUBLIC_KEY}\" -signature SHA256SUMS.sig SHA256SUMS
           sha256sum -c --ignore-missing SHA256SUMS   # Linux
           shasum -a 256 -c --ignore-missing SHA256SUMS  # macOS
-          \`\`\`
-          EOF
-          )"
+          \`\`\`"
           gh release create "${GITHUB_REF_NAME}" \
             dist/bifrost-*.tar.gz \
             dist/SHA256SUMS \

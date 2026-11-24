@@ -5,7 +5,7 @@ English | [简体中文](README.md)
 **Bifrost** is an **unofficial** Tailscale plugin for the KoolCenter / Koolshare software center on Asuswrt-Merlin 386/388 based firmware (HND platform). Its Tailscale core is built from official upstream source via a public reproducible recipe, all router scripts are open-source BusyBox `/bin/sh`, and the web UI is rebuilt with the Kumo design system featuring Simplified Chinese / English localization and dark / light modes.
 
 > [!IMPORTANT]
-> Bifrost is an unofficial project and is not affiliated with, endorsed by, or sponsored by Tailscale Inc. or Cloudflare, Inc. Tailscale is a trademark of Tailscale Inc.
+> Bifrost is an unofficial project and is not affiliated with, endorsed by, or sponsored by Tailscale Inc. Tailscale is a trademark of Tailscale Inc.
 
 ## How Bifrost Differs from the Original Plugin
 
@@ -63,8 +63,8 @@ Bifrost uses its own module name, dbus keys, file paths, socket, and state direc
 
 1. Install Bifrost without enabling it first (installation leaves the original plugin untouched).
 2. Open the Bifrost Overview page and click **Migrate & Switch**.
-3. The migration runs as a background job (surviving disconnects if you are connected over tailnet): records the original device ID/key → backs up any existing Bifrost state → stops the original plugin (or waits for you to stop it in its own page) → copies `tailscaled.state` and `derpmap.cached.json` read-only → starts Bifrost and verifies identity matches.
-4. If verification fails, Bifrost stops itself, restores backups, and rolls back automatically.
+3. The migration runs as a background job (surviving disconnects if you are connected over tailnet): records the original device ID/key → backs up any existing Bifrost state → stops the original plugin through its own script and disables its boot auto-start → copies `tailscaled.state` and `derpmap.cached.json` read-only → starts Bifrost and verifies identity matches → rebuilds the firewall to remove NAT rules left by the original plugin.
+4. If verification fails, Bifrost stops itself, restores backups, re-enables and starts the original plugin, then reports the rollback result.
 
 ### Post-Migration & Switching Back
 

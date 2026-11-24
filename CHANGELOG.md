@@ -5,7 +5,7 @@ All notable changes to Bifrost will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-11-24
 
 ### Added
 
@@ -14,6 +14,8 @@ plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 - Open-source BusyBox `/bin/sh` runtime, daemon watchdog, login/pre-auth key/headscale client support, settings management, and one-click migration from the original plugin with automatic rollback.
 - Dedicated `BIFROST_*` IPv4/IPv6 firewall chains (`--netfilter-mode=off`) with local access toggle, LAN masquerade, configurable inbound SNAT (`auto` / `on` / `off`), and dnsmasq MagicDNS forwarding.
 - Recovery of core updates and migrations interrupted by a signal or power loss: journals on flash are finished or rolled back at boot, and an interrupted migration restores the original plugin.
+- Migration stops the original plugin through its own script, disables its autostart, rebuilds the firewall to remove the original plugin's leftover NAT rules, and restores the original service automatically when verification fails.
 - ECDSA P-256 + SHA-256 signed core update checks, anti-downgrade `serial` enforcement, automatic rollback on startup failure, and manual rollback support.
 - Kumo-based Shadow DOM web UI with 5 tabs (Overview, Devices, Settings, Core, Diagnostics), Simplified Chinese / English switching, dark / light / system modes, and redacted diagnostic export.
 - Atomic installer/upgrader (`install.sh`), clean uninstaller (`uninstall.sh`) preserving `/koolshare/configs/bifrost/`, reproducible packaging (`packaging/build.sh`), BusyBox 1.25 shell & install tests, headscale v0.29.7 container integration suite, and GitHub Actions CI/release workflows.
+- System-log events for daemon exits, firewall repairs, init hooks, migration results, and page jobs, with redacted exit records retained across reboots.
