@@ -469,6 +469,9 @@ pidof_set tailscaled 8888
 ok act-enable-conflict-start act_enable
 bg_drain
 eq job-enable-conflict "false false conflict" "$(jq -r '"\(.running) \(.ok) \(.code)"' "$jf")"
+eq job-enable-conflict-dbus 0 "$(cfg bifrost_enable)"
+no job-enable-conflict-wd grep -q "#$BIFROST_WATCHDOG_NAME#" "$MOCK_STATE/cru.txt"
+no job-enable-conflict-err-file test -e "$BIFROST_DAEMON_ERR"
 rm -f "$MOCK_STATE/pidof/tailscaled"
 
 # purge while running: logout, stop, wipe state dir + migration backups, remove wd, bifrost_enable=0

@@ -666,6 +666,13 @@ job_daemon() {
             daemon_start
             _jdm_rc=$?
             _BIFROST_DAEMON_JOB=""
+            # Refused because another tailscaled owns the interface: do not
+            # leave Bifrost enabled for the next boot or the watchdog.
+            if [ "$_jdm_rc" -ne 0 ] && [ "${BIFROST_ERR:-}" = conflict ]; then
+                daemon_unschedule disable || true
+                daemon_err_clear
+                fail conflict
+            fi
             return "$_jdm_rc"
             ;;
         stop)

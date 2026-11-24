@@ -659,6 +659,7 @@ tailscaled 的防火墙模式固定为 `off`，所有规则由 Bifrost 自己的
 - 两个插件不能同时运行，因为都要用 `tailscale0`，而且迁移后是同一个设备身份。
 - **安装 Bifrost 不动原版。** 新装后 `bifrost_enable=0`。
 - 启动 Bifrost 时如果原版在运行，拒绝启动，并在页面上给出迁移入口。
+- 在页面上点「启用」时如果因为原版在运行而被拒绝，`bifrost_enable` 改回 0，守护任务也一并移除。否则下次开机时 Bifrost 会和原版抢 `tailscale0`。
 
 ### 11.2 迁移流程
 
