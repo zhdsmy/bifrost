@@ -5,6 +5,12 @@ All notable changes to Bifrost will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Devices tab: columns have set widths per language, smaller headers, and long device names stay on one line with an ellipsis (hover shows the full name). Drag a column edge in the header, or focus it and use the arrow keys, to change a width. Double-click an edge to reset that column. The widths are kept in the browser; "Reset column widths" restores the defaults.
+
 ## [0.2.1] - 2026-11-25
 
 ### Fixed

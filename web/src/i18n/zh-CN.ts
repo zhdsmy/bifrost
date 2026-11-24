@@ -187,6 +187,8 @@ export const zhCN = {
   "devices.col.traffic": "收发流量",
   "devices.col.routes": "出口 / 网段",
   "devices.col.action": "操作",
+  "devices.resizeColumn": "调整「{column}」列宽",
+  "devices.resetColumns": "恢复默认列宽",
   "devices.status.online": "在线",
   "devices.status.offline": "离线",
   "devices.path.direct": "直连",

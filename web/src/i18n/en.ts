@@ -189,6 +189,8 @@ export const en: Record<MessageKey, string> = {
   "devices.col.traffic": "Rx / Tx",
   "devices.col.routes": "Routes",
   "devices.col.action": "Action",
+  "devices.resizeColumn": "Resize the {column} column",
+  "devices.resetColumns": "Reset column widths",
   "devices.status.online": "Online",
   "devices.status.offline": "Offline",
   "devices.path.direct": "Direct",

@@ -43,8 +43,11 @@ export function useCopy(text: string) {
 
 export function CopyInline({
   value,
+  small = false,
 }: {
   value: string;
+  // 12 px text for dense tables.
+  small?: boolean;
 }) {
   const { t } = useApp();
   const { copied, handleCopy } = useCopy(value);
@@ -60,7 +63,7 @@ export function CopyInline({
     >
       <span
         data-raw-value="true"
-        className="truncate font-mono text-sm text-kumo-subtle group-hover/inline-copy:text-kumo-default group-focus-visible/inline-copy:text-kumo-default"
+        className={`truncate font-mono ${small ? "text-xs" : "text-sm"} text-kumo-subtle group-hover/inline-copy:text-kumo-default group-focus-visible/inline-copy:text-kumo-default`}
       >
         {value}
       </span>

@@ -531,6 +531,58 @@ test("devices page: preserves backend peer order, filters, caps at 200 rows, and
   await page.getByText(/38 ms · DERP（tok）/).waitFor();
 });
 
+test("devices page: long names stay on one line, and column widths resize by drag and keys, persist, and reset", async (t) => {
+  const { page, url } = await openPreview(t, {
+    initialState: "running",
+    mutateStatus: (s) => {
+      s.peers[0].name = "living-room-gateway-with-a-long-name";
+    },
+  });
+  await page.goto(url);
+  await ready(page);
+  await clickTab(page, "设备");
+
+  const headWidth = (index) =>
+    page.locator("main thead th").nth(index).evaluate((el) => Math.round(el.getBoundingClientRect().width));
+  const nameEdge = page.getByRole("separator", { name: "调整「设备名」列宽" });
+  const osEdge = page.getByRole("separator", { name: "调整「系统」列宽" });
+  const reset = page.getByRole("button", { name: "恢复默认列宽" });
+
+  const name = await page.locator("main tbody td:first-child span").first().evaluate((el) => ({
+    lines: el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight),
+    cut: el.scrollWidth > el.clientWidth,
+  }));
+  assert.ok(name.cut && name.lines < 1.5, `name wraps or is not cut: ${JSON.stringify(name)}`);
+  assert.equal(await headWidth(0), 124);
+  assert.equal(await reset.count(), 0);
+
+  const box = await nameEdge.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 60, box.y + box.height / 2, { steps: 4 });
+  await page.mouse.up();
+  assert.equal(await headWidth(0), 184);
+
+  await osEdge.focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  assert.equal(await headWidth(2), 92);
+  assert.equal(await osEdge.getAttribute("aria-valuenow"), "92");
+
+  // The widths survive a reload. A double-click resets one column; the button resets all.
+  await page.reload();
+  await ready(page);
+  await clickTab(page, "设备");
+  assert.equal(await headWidth(0), 184);
+  assert.equal(await headWidth(2), 92);
+  await osEdge.dblclick();
+  assert.equal(await headWidth(2), 60);
+  await reset.click();
+  assert.equal(await headWidth(0), 124);
+  assert.equal(await reset.count(), 0);
+  assert.equal(await page.evaluate(() => localStorage.getItem("bifrost.devices.columnWidths.v1")), null);
+});
+
 test("settings page: saves send requests and display server read-back values, validation, warnings, and prefs-null disabling", async (t) => {
   const sentSets = [];
   const { page, url } = await openPreview(t, {

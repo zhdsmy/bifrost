@@ -91,6 +91,8 @@ async function collectShadowTexts(page) {
       if (text) results.push(text);
     }
     for (const el of shadow.querySelectorAll("[aria-label], [placeholder], [title]")) {
+      // A raw value's title repeats the value, such as a device name.
+      if (el.closest("[data-raw-value]")) continue;
       for (const attr of ["aria-label", "placeholder", "title"]) {
         const label = el.getAttribute(attr)?.trim();
         if (label) results.push(label);
