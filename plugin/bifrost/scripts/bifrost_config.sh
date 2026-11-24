@@ -9,6 +9,9 @@
 
 # shellcheck disable=SC1091
 . "${BIFROST_KSROOT:-/koolshare}/scripts/base.sh"
+# The software center runs scripts with umask 0, which would make every
+# directory and file we create world-writable.
+umask 022
 : "${BIFROST_LIB:=${BIFROST_KSROOT:-/koolshare}/bifrost/lib}"
 # shellcheck source=../lib/env.sh
 . "$BIFROST_LIB/env.sh"

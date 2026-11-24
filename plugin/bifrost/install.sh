@@ -3,6 +3,10 @@
 # Follows docs/PLAN.md section 15.1 and docs/dev/contract.md sections 2, 7 & 8.
 # Page asset atomic swap and dbus registration adapted from po0fw asus-merlin (MIT), commit 0d9532d.
 
+# The software center runs scripts with umask 0, which would make every
+# directory and file we create world-writable.
+umask 022
+
 : "${BIFROST_INSTALL_LOCK_WAIT:=60}"
 
 _in_dir=$(cd "$(dirname "$0")" && pwd)

@@ -28,6 +28,9 @@ These add to PLAN section 14 and `AGENTS.md`.
 - Load order: `base.sh` (top level, so it sees `$1`), `env.sh`, `validate.sh`,
   `common.sh`, then `daemon fw dns status login settings migrate update diag`
   (each only if present). See `scripts/bifrost_config.sh`.
+- Entry points (`install.sh`, `uninstall.sh`, `scripts/*.sh`, `bin/bifrost`)
+  run `umask 022` before they create any file: the software center runs
+  scripts with umask 0.
 - Lib files define functions and nothing else: no commands at the top level,
   no `exit`. Tunables use `: "${BIFROST_<NAME>:=<default>}"` in the owning lib
   file and are listed in the package report.

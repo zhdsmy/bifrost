@@ -139,7 +139,8 @@ printf 'orig-state\n' >"$BIFROST_ORIG_STATE/tailscaled.state"
 h1=$(make_pkg "$T/pkgs/v1" "0.1.0" 1 arm "console.log('v1');" ":host{color:#111;}")
 # Add an extra scripts/bifrost_extra.sh to verify install + uninstall track dynamic scripts (Item 11).
 printf '#!/bin/sh\necho extra\n' >"$T/pkgs/v1/scripts/bifrost_extra.sh"
-out=$(sh "$T/pkgs/v1/install.sh" 2>&1)
+# The software center runs install.sh with umask 0.
+out=$(umask 000; sh "$T/pkgs/v1/install.sh" 2>&1)
 eq fresh-rc 0 "$?"
 has fresh-done "安装完成" "$out"
 has fresh-orig-hint "迁移" "$out"
@@ -166,6 +167,12 @@ eq fresh-s99 "$BIFROST_SCRIPTS/bifrost_config.sh" "$(readlink "$BIFROST_INITD/S9
 eq fresh-n99 "$BIFROST_SCRIPTS/bifrost_config.sh" "$(readlink "$BIFROST_INITD/N99bifrost.sh")"
 ok fresh-ksbin test -x "$BIFROST_KSBIN/bifrost"
 check_assets fresh "$h1"
+for _m_d in "$BIFROST_HOME" "$BIFROST_BIN" "$BIFROST_LIB" "$BIFROST_KEYS"; do
+    # shellcheck disable=SC2012
+    eq "fresh-mode-${_m_d##*/}" "drwxr-xr-x" "$(ls -ld "$_m_d" | cut -c1-10)"
+done
+# shellcheck disable=SC2012
+eq fresh-mode-installed-scripts "-rw-r--r--" "$(ls -l "$BIFROST_HOME/installed.scripts" | cut -c1-10)"
 
 # dbus defaults & software center registration (NO bifrost_version key per Item 8)
 eq fresh-dbus-install 1 "$(dbus get softcenter_module_bifrost_install)"
