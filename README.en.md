@@ -9,7 +9,7 @@ English | [简体中文](README.md)
 
 ## How Bifrost Differs from the Original Plugin
 
-- **Transparent, reproducible core builds**: Cross-compiled from official Tailscale stable releases (currently v1.104.7) with a public `core/recipe.json` and feature omission list. Binaries are shipped uncompressed on JFFS (no UPX) for ~0.02 s CLI startup latency, and stored gzipped inside the offline tarball to keep software-center free-space checks low.
+- **Transparent, reproducible core builds**: Cross-compiled from official Tailscale stable releases (currently v1.104.7) with a public `core/recipe.json` and feature omission list. Binaries are shipped uncompressed on JFFS (no UPX) for ~0.02 s CLI startup latency (vs ~0.94 s with UPX), and stored gzipped inside the offline tarball to keep software-center free-space checks low.
 - **Open-source router scripts**: Every script is plain BusyBox POSIX `/bin/sh` with no obfuscation or `shc` wrapping, whitelist input validation, no `eval`, and exclusive locking for state-mutating operations.
 - **Bifrost-managed firewall chains**: `tailscaled` runs with `--netfilter-mode=off`, while Bifrost manages its own `BIFROST_*` chains. Firmware firewall rebuilds restore rules without restarting the daemon or dropping tailnet sessions, the local router access toggle actually works, and CGNAT WAN traffic (`100.64.0.0/10`) is not dropped.
 - **Redesigned UI**: Mounted inside a Shadow DOM so firmware chrome stays intact, offering device tables, path/relay indicators, route approval status, signed core updates, and redacted diagnostics in Chinese and English.
@@ -47,10 +47,13 @@ English | [简体中文](README.md)
 
 ### Offline Package Installation
 
-1. Download `bifrost-<version>-hnd.tar.gz` from GitHub Releases (optionally download `SHA256SUMS` and `SHA256SUMS.sig` to verify integrity and signature as shown below).
+1. Download the offline tarball from GitHub Releases:
+   - `bifrost-<version>-hnd.tar.gz` (default 32-bit `arm` core; works on all HND routers, including 64-bit kernel / 32-bit userland models);
+   - When the matching core release includes `arm64`, `bifrost-<version>-hnd-arm64.tar.gz` is also provided (`aarch64` kernels only; you can also install the default package and switch online from the **Core** tab).
+   - Optional: download `SHA256SUMS` and `SHA256SUMS.sig` to verify integrity and signature as shown below.
 2. In the router web UI, go to **Software Center** → **Offline Install** and upload the `.tar.gz` package.
 3. **A fresh install does not auto-start the service and never modifies the original plugin.** Open Bifrost after installation to enable it or migrate from the original plugin.
-4. To upgrade, upload the newer package directly: existing settings and the state directory are preserved, a running daemon is restarted automatically after upgrading, and an already-installed newer core (`serial`) will never be downgraded by an older package.
+4. To upgrade, upload the newer package directly: existing settings and the state directory are preserved, a running daemon is restarted automatically after upgrading (and restored if an upgrade aborts after stopping it), and an already-installed newer core (`serial`) will never be downgraded by an older package.
 
 ## Migrating from the Original Plugin
 
@@ -114,19 +117,26 @@ Bifrost supports connecting as a client to self-hosted control servers (containe
 - Core binaries are released separately under `core-<tailscale-version>-<revision>` tags, updating `core.json` and `core.json.sig` in the `channel-stable` release.
 - **Signing algorithm**: ECDSA P-256 with SHA-256 (verified by the router's OpenSSL 1.1.1w). Public keys live in `/koolshare/bifrost/keys/*.pub.pem` with multi-key rotation support.
 - **Anti-downgrade & rollback**: Monotonic `serial` numbers block replay/downgrade attacks. Updates verify the manifest signature → check `.gz` and unpacked `raw_sha256` → test `--version` → swap and verify `Running` within 60 s, rolling back automatically on failure. When JFFS space permits, `bifrostd.prev.gz` is kept for manual rollback.
-- **Verifying offline release tarballs**:
+- **Verifying offline release tarballs** (works even if you downloaded only one architecture tarball):
 
 ```sh
-openssl dgst -sha256 -verify plugin/bifrost/keys/<pubkey>.pub.pem \
+# 1. Verify the SHA256SUMS signature
+pubkey=plugin/bifrost/keys/release-2026.pub.pem  # Set to the trusted release public key
+openssl dgst -sha256 -verify "$pubkey" \
   -signature SHA256SUMS.sig SHA256SUMS
-sha256sum -c SHA256SUMS
+
+# 2. Verify the downloaded tarball (Linux)
+sha256sum -c --ignore-missing SHA256SUMS
+
+# 2. Verify the downloaded tarball (macOS)
+shasum -a 256 -c --ignore-missing SHA256SUMS
 ```
 
 ## Uninstallation
 
 Uninstall from the Software Center (runs `/koolshare/scripts/uninstall_bifrost.sh`):
 
-- Stops the daemon, removes the watchdog cron job, clears `BIFROST_*` firewall chains and dnsmasq config, deletes all installed binaries, scripts, web assets, `/tmp/bifrost-run/`, `/tmp/upload/bifrost_*`, and all `bifrost_*` and `softcenter_module_bifrost_*` dbus keys.
+- Stops the daemon (aborting and keeping existing scripts if the daemon cannot be stopped so you can retry), removes the `bifrost_watchdog` cron job, clears `BIFROST_*` firewall chains and dnsmasq config, deletes all installed binaries, scripts, web assets, `/tmp/bifrost-run/`, `/tmp/upload/bifrost_*`, and all `bifrost_*` and `softcenter_module_bifrost_*` dbus keys.
 - **State directory is preserved**: `/koolshare/configs/bifrost/` is kept so reinstalling does not require logging in again.
 - **Full cleanup**: Before uninstalling, open the **Diagnostics** tab and click **Clear login state** (or delete `/koolshare/configs/bifrost/` over SSH after uninstalling).
 - **Does not log out**: Uninstalling does not send `logout`; the router simply appears offline in your control plane until you remove it there.
@@ -152,4 +162,4 @@ See [docs/README.md](docs/README.md) for the design plan, development contract, 
 
 - Plugin scripts, UI, and build tooling: [MIT License](LICENSE).
 - Bundled Tailscale core: BSD-3-Clause License — see [packaging/LICENSE.tailscale](packaging/LICENSE.tailscale).
-- Third-party notices and attributions: [NOTICE.md](NOTICE.md).
+- Statically linked Go modules and frontend third-party notices: [NOTICE.md](NOTICE.md) and [packaging/THIRD_PARTY_NOTICES.core.md](packaging/THIRD_PARTY_NOTICES.core.md).

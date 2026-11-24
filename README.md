@@ -9,7 +9,7 @@
 
 ## 与原版插件的区别
 
-- **透明构建的核心**：从 Tailscale 官方稳定版源码交叉编译（当前配方 v1.104.7），编译脚本与省略功能清单全部公开，支持跨机器复现构建与哈希比对；默认不经 UPX 压缩，命令行调用延迟显著降低，离线安装包内使用 gzip 压缩存放核心以减小 JFFS 空间门槛。
+- **透明构建的核心**：从 Tailscale 官方稳定版源码交叉编译（当前配方 v1.104.7），编译脚本与省略功能清单全部公开，支持复现构建与哈希比对；默认不经 UPX 压缩，命令行启动耗时约 0.02 秒（对比 UPX 压缩版约 0.94 秒），离线安装包内使用 gzip 压缩存放核心以减小软件中心安装时的空间检查门槛。
 - **完全开源的脚本**：所有插件脚本均以 BusyBox POSIX `/bin/sh` 明文编写，不做编译或混淆，所有外部输入先经白名单校验，无 `eval`，状态变更操作统一加互斥锁。
 - **独立管理的防火墙规则**：`tailscaled` 运行在 `--netfilter-mode=off` 模式，由 Bifrost 独立维护 `BIFROST_*` 链，固件重建防火墙后仅刷新规则，不重启 daemon、不中断已有 tailnet 连接；「允许 tailnet 访问路由器本机」开关真实生效，且不误伤 WAN 口运营商级 NAT（`100.64.0.0/10`）。
 - **重新设计的管理页面**：采用 Shadow DOM 隔离固件外壳，完整展示设备列表、连接路径、路由批准状态、核心更新与诊断脱敏输出，支持中英文和深浅色切换并持久化在路由器配置中。
@@ -47,10 +47,13 @@
 
 ### 离线安装步骤
 
-1. 在 GitHub Releases 下载 `bifrost-<版本>-hnd.tar.gz`（可选：同时下载 `SHA256SUMS` 与 `SHA256SUMS.sig` 按下方「核心更新与签名」一节核对完整性与签名）。
+1. 在 GitHub Releases 下载离线包：
+   - `bifrost-<版本>-hnd.tar.gz`（默认 32 位 `arm` 核心，适用于全部 HND 机型，包含 64 位内核 / 32 位用户态机型）；
+   - 若该版本同时发布了 `arm64` 核心，也会提供 `bifrost-<版本>-hnd-arm64.tar.gz`（仅限 `aarch64` 内核机型；也可先装默认包后在「核心」页在线切换）。
+   - 可选：同时下载 `SHA256SUMS` 与 `SHA256SUMS.sig` 按下方「核心更新与签名」一节核对完整性与签名。
 2. 打开路由器管理后台 → **软件中心** → **离线安装**，选择下载的 `.tar.gz` 文件上传安装。
 3. **首次安装不会自动启动服务，也不会改动原版插件。** 安装完成后进入 Bifrost 页面按需启用或迁移。
-4. 升级安装直接上传新版离线包覆盖即可：已有设置与登录状态目录完整保留；升级前正在运行的服务会在升级完成后自动重启；若已在线更新到更新的核心版本，升级包不会将核心降级。
+4. 升级安装直接上传新版离线包覆盖即可：已有设置与登录状态目录完整保留；升级前正在运行的服务会在升级完成后自动重启（若升级中途失败也会尝试恢复原服务）；若已在线更新到更新的核心版本，升级包不会将核心降级。
 
 ## 从原版插件迁移
 
@@ -114,19 +117,26 @@ Bifrost 支持作为客户端接入自建控制服务器（当前容器测试验
 - 核心独立发布于 `core-<Tailscale 版本>-<revision>`，并同步更新 `channel-stable` 通道的 `core.json` 与 `core.json.sig`。
 - **签名算法**：ECDSA P-256 + SHA-256（兼容路由器 OpenSSL 1.1.1w）。公钥位于 `/koolshare/bifrost/keys/*.pub.pem`，支持多公钥平滑轮换。
 - **防降级与自动回滚**：清单中的 `serial` 单调递增，路由器拒绝安装不大于当前 `serial` 的核心；更新时先验清单签名 → 校验 `.gz` 与解压后 `raw_sha256` → 试运行 `--version` → 替换后 60 秒内验证服务恢复，失败则自动换回旧核心与状态快照；空间充足时保留 `bifrostd.prev.gz` 供手动回退。
-- **核对离线包签名**（在本地终端执行）：
+- **核对离线包签名与哈希**（在本地终端执行，支持仅下载单个包）：
 
 ```sh
-openssl dgst -sha256 -verify plugin/bifrost/keys/<公钥>.pub.pem \
+# 1. 验证 SHA256SUMS 签名
+pubkey=plugin/bifrost/keys/release-2026.pub.pem  # 改为发行方提供的可信公钥
+openssl dgst -sha256 -verify "$pubkey" \
   -signature SHA256SUMS.sig SHA256SUMS
-sha256sum -c SHA256SUMS
+
+# 2. 校验已下载的离线包（Linux）
+sha256sum -c --ignore-missing SHA256SUMS
+
+# 2. 校验已下载的离线包（macOS）
+shasum -a 256 -c --ignore-missing SHA256SUMS
 ```
 
 ## 卸载
 
 在 **软件中心** 点击卸载（实际执行 `/koolshare/scripts/uninstall_bifrost.sh`）：
 
-- 自动停止服务，清理定时守护任务、`BIFROST_*` 防火墙链、dnsmasq 配置、插件全部程序文件、脚本、页面资源、运行时目录 `/tmp/bifrost-run/`、临时上传文件与全部 `bifrost_*` / `softcenter_module_bifrost_*` dbus 键。
+- 自动停止服务（若服务无法停止则中止卸载并保留脚本以便重试），清理守护任务（`bifrost_watchdog`）、`BIFROST_*` 防火墙链、dnsmasq 配置、插件全部程序文件、脚本、页面资源、运行时目录 `/tmp/bifrost-run/`、临时上传文件与全部 `bifrost_*` / `softcenter_module_bifrost_*` dbus 键。
 - **默认保留登录状态目录**：`/koolshare/configs/bifrost/` 不会被删除，重新安装后无需再次登录。
 - **彻底清除登录状态**：如需彻底清除，请在卸载前先打开 Bifrost 的 **「诊断」** 页点击 **「清除登录状态」**（或卸载后通过 SSH 手动删除 `/koolshare/configs/bifrost/`）。
 - **卸载不自动退出登录**：不会向控制服务器发送 `logout`，设备在控制台中会显示为离线，如不再使用请在控制台中自行删除该设备。
@@ -152,4 +162,4 @@ sha256sum -c SHA256SUMS
 
 - 本仓库插件脚本、界面与构建工具采用 [MIT License](LICENSE)。
 - 打包内附的 Tailscale 核心遵循 BSD-3-Clause 许可证，见 [packaging/LICENSE.tailscale](packaging/LICENSE.tailscale)。
-- 第三方组件与改写来源声明见 [NOTICE.md](NOTICE.md)。
+- 核心静态链接的 Go 模块与前端第三方依赖声明见 [NOTICE.md](NOTICE.md) 及 [packaging/THIRD_PARTY_NOTICES.core.md](packaging/THIRD_PARTY_NOTICES.core.md)。

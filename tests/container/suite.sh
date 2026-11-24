@@ -67,12 +67,12 @@ wait_for 30 r_job_done /tmp/upload/bifrost_daemon.json || {
     fail_case "enable-job" "daemon job did not finish"
     exit 1
 }
-r_exec "/koolshare/scripts/bifrost_config.sh 2 login '$HS_URL' '$AUTHKEY'" >/dev/null
-wait_for 45 r_state_is running || {
-    r_exec 'cat /tmp/upload/bifrost_status.json /tmp/bifrost-run/bifrost.log /tmp/bifrost-run/bifrostd.log 2>/dev/null || true' >&2
+if ! r_exec "/koolshare/scripts/bifrost_config.sh 2 login '$HS_URL' '$AUTHKEY'" >/dev/null ||
+   ! wait_for 45 r_state_is running; then
+    sh "$(dirname "$0")/diagnostics.sh" "$HS_CTR" "$ROUTER_CTR" >&2 || true
     fail_case "headscale-login" "router did not reach running state"
     exit 1
-}
+fi
 pass "headscale-preauth-login-running"
 
 # Verify key status JSON fields (contract section 6.1).
@@ -168,6 +168,9 @@ r_exec "/koolshare/scripts/bifrost_config.sh 10 set local_access 1" >/dev/null
 
 # 5. fw_clear removes every BIFROST_* chain and jump rule.
 echo "==> [B5] Testing fw_clear..."
+if ! r_exec 'iptables-save | grep -q BIFROST_'; then
+    fail_case "fw-pre-present" "expected BIFROST_ chains before fw_clear"
+fi
 r_exec_stdin <<'EOF'
 . /koolshare/bifrost/lib/env.sh
 . /koolshare/bifrost/lib/validate.sh
@@ -175,7 +178,7 @@ r_exec_stdin <<'EOF'
 . /koolshare/bifrost/lib/fw.sh
 fw_clear
 EOF
-if r_exec 'iptables-save | grep -q BIFROST_'; then
+if r_exec 'iptables-save | grep -q BIFROST_ || ip6tables-save | grep -q BIFROST_'; then
     fail_case "fw-clear" "BIFROST_ chains still present after fw_clear"
 else
     pass "fw-clear-empty"
@@ -223,8 +226,8 @@ fi
 # 7b: valid signature, tampered gz -> hash_mismatch
 r_exec_stdin <<'EOF'
 arch=$(jq -r '.assets | keys[0]' /koolshare/bifrost/core.json)
-fname=$(jq -r --arg a "$arch" '.assets[$a].file' /koolshare/bifrost/core.json)
-jq '.serial = 99 | .tag = "core-1.104.7-99"' /koolshare/bifrost/core.json >/tmp/fake-rel/channel-stable/core.json
+fname="bifrost-core-1.104.7-99-linux-${arch}.gz"
+jq --arg a "$arch" --arg f "$fname" '.serial = 99 | .revision = 99 | .tag = "core-1.104.7-99" | .assets[$a].file = $f' /koolshare/bifrost/core.json >/tmp/fake-rel/channel-stable/core.json
 openssl dgst -sha256 -sign /tmp/fake-priv.pem -out /tmp/fake-rel/channel-stable/core.json.sig /tmp/fake-rel/channel-stable/core.json
 printf 'corrupted-core-archive\n' >/tmp/fake-rel/core-1.104.7-99/"$fname"
 BIFROST_RELEASE_BASE="http://127.0.0.1:18082" BIFROST_CHANNEL_URL="http://127.0.0.1:18082/channel-stable/core.json" \
@@ -265,7 +268,7 @@ BIFROST_RELEASE_BASE="http://127.0.0.1:18082" BIFROST_CHANNEL_URL="http://127.0.
 EOF
 wait_for 90 r_job_done /tmp/upload/bifrost_update.json
 code_7c=$(r_exec 'jq -r .code /tmp/upload/bifrost_update.json')
-r_exec '/koolshare/scripts/bifrost_status.sh 14 >/dev/null'
+wait_for 20 r_state_is running || true
 state_7c=$(r_exec 'jq -r .state /tmp/upload/bifrost_status.json')
 if [ "$code_7c" = update_verify_failed ] && [ "$state_7c" = running ]; then
     pass "update-broken-core-rolled-back"

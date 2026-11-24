@@ -1,22 +1,10 @@
 #!/bin/sh
 # Runs inside the BusyBox 1.25 test image (see tests/install/run.sh).
+# Uses the repository's shared mock bin directory (includes curl, df, iptables, etc.).
 set -u
 cd /src || exit 1
 
-# Add a minimal curl mock in a writable temp bin dir (router has curl; the
-# baseline shell image only installs jq and openssl; P1 owns mock/bin/curl).
-mock_extra=/tmp/install-mock-bin.$$
-trap 'rm -rf "$mock_extra"' EXIT
-mkdir -p "$mock_extra"
-cat >"$mock_extra/curl" <<'EOF'
-#!/bin/sh
-echo "mock curl: $*" >>"${MOCK_STATE:-/tmp}/curl.log"
-exit 0
-EOF
-chmod 755 "$mock_extra/curl"
-
-export INSTALL_MOCK_EXTRA="$mock_extra"
-export PATH="/src/tests/shell/mock/bin:$mock_extra:/opt/bb125/bin:/opt/tools/bin"
+export PATH="/src/tests/shell/mock/bin:/opt/bb125/bin:/opt/tools/bin"
 
 pkg=""
 if [ "${1:-}" = --package ] && [ -n "${2:-}" ]; then

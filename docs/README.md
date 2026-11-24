@@ -8,6 +8,7 @@
 - [dev/contract.md](dev/contract.md)：模块间接口约定（文件归属、shell 编写约定、错误码表、状态/任务 JSON 格式、跨包函数签名与质量门槛）。
 - [../AGENTS.md](../AGENTS.md)：项目硬规则（BusyBox 1.25 兼容性、禁止 UPX / `--extra-small`、禁止提交私密信息、路由器操作规程）。
 - [../NOTICE.md](../NOTICE.md)：第三方软件许可证与代码来源声明。
+- [../packaging/THIRD_PARTY_NOTICES.core.md](../packaging/THIRD_PARTY_NOTICES.core.md)：由 `go version -m` 生成的核心静态链接 Go 模块许可证清单。
 - [../CHANGELOG.md](../CHANGELOG.md)：版本变更记录。
 
 ## 本地检查与测试
@@ -24,22 +25,22 @@ tools/check-private.sh
 # 3. 路由器脚本单元测试（在断网的 BusyBox 1.25 容器中执行）
 tests/shell/run.sh
 
-# 4. 安装 / 升级 / 卸载 / 并发锁测试（BusyBox 1.25 容器）
+# 4. 安装 / 升级 / 卸载 / 并发锁测试（BusyBox 1.25 容器，使用真实 P1–P3 库）
 tests/install/run.sh
 
 # 5. 核心配方校验（需安装与 core/recipe.json 一致的 Go 版本）
 core/build.sh --check-recipe
 
-# 6. 前端类型检查、构建、体积校验与 Playwright 页面测试
-(cd web && npm ci && npm run check && npm run build && npm test)
+# 6. 前端类型检查、构建（由 pretest 自动触发含体积检查）与 Playwright 页面测试
+(cd web && npm ci --include=dev --no-audit --no-fund --ignore-scripts && npm run check && npm test)
 
-# 7. 可复现打包自测（假核心 + 签名校验 + BusyBox 安装冒烟）
+# 7. 可复现打包自测（真实前端构建 + 完整性与签名拒错 + BusyBox 安装冒烟）
 packaging/test-build.sh
 
-# 8. 容器集成测试（headscale v0.29.7 + 官方 tailscale v1.104.7 + 假软件中心）
+# 8. 容器集成测试（headscale v0.29.7 + 官方 tailscale v1.104.7 + 真实核心 + 真实脚本）
 #    需 Docker 支持 --cap-add=NET_ADMIN 与 /dev/net/tun
-tests/container/run.sh          # 自动判断：仅基础设施冒烟或完整套件
-tests/container/run.sh --full   # 强制执行完整真实核心 + 真实脚本测试
+tests/container/run.sh          # 自动运行 Stage A + Stage B
+tests/container/run.sh --full   # 强制执行完整 Stage B 真实核心测试
 ```
 
 ## 打包方法
@@ -50,7 +51,7 @@ tests/container/run.sh --full   # 强制执行完整真实核心 + 真实脚本�
 # 1. 编译核心到 core/out/
 core/build.sh
 
-# 2. 构建前端并打包到 dist/bifrost-<版本>-hnd.tar.gz（仅校验文件哈希）
+# 2. 构建前端并打包到 dist/bifrost-<版本>-hnd.tar.gz（校验文件哈希）
 packaging/build.sh --core-dir core/out --arch arm --out dist
 ```
 
@@ -62,8 +63,21 @@ packaging/build.sh --core-dir core/out --arch arm --out dist
 packaging/build.sh --core-release "$(cat packaging/core-tag)" --arch arm --out dist
 ```
 
-- 相同输入与相同 `SOURCE_DATE_EPOCH` 下，在 macOS 与 Linux 上均可复现打包出相同 SHA-256 的 `.tar.gz`。
+- 在 macOS 上，`packaging/test-build.sh` 使用相同输入、工具和固定时间戳打包两次并比对 SHA-256。Linux CI 使用同一测试在运行器内比对两个包。
+- 相对路径参数（`--core-dir`、`--out`、`--web-dist`、`--keys-dir`）均按调用者当前工作目录解析。
 - 若已预先构建前端，可附加 `--web-dist web/dist` 跳过重复构建。
+
+## 升级核心版本后更新第三方 Go 模块声明
+
+静态链接的 Tailscale 核心包含 wireguard-go、`golang.org/x/*` 等数十个 Go 模块。每次更新 `core/recipe.json` 后，请重新生成 `packaging/THIRD_PARTY_NOTICES.core.md`（会自动打进插件包并安装到 `/koolshare/bifrost/`）：
+
+```sh
+# 1. 编译一个本机可检查的测试核心（确保依赖已缓存在 GOMODCACHE）
+core/build.sh --test-arch arm64   # Linux x86_64 可改用 amd64
+
+# 2. 用 Python 3 读取 go version -m 和对应版本的模块缓存，收录许可证及 NOTICE 全文
+packaging/gen-core-notices.py core/out/test/bifrostd-linux-arm64
+```
 
 ## 正式签名密钥的生成与轮换
 
@@ -71,21 +85,21 @@ packaging/build.sh --core-release "$(cat packaging/core-tag)" --arch arm --out d
 
 ### 生成正式密钥对
 
-请在离线或受保护环境中生成密钥对，**私钥绝不提交到仓库**：
+请在离线或受保护环境中生成密钥对，**私钥绝不提交到仓库**（`.gitignore` 已忽略 `*.key.pem`）：
 
 ```sh
 # 生成 ECDSA P-256 私钥（权限 600）
 umask 077
-openssl ecparam -name prime256v1 -genkey -noout -out bifrost-release-key.pem
+openssl ecparam -name prime256v1 -genkey -noout -out bifrost-release.key.pem
 
 # 导出对应公钥，按年份或序号命名提交到仓库
-openssl ec -in bifrost-release-key.pem -pubout \
+openssl ec -in bifrost-release.key.pem -pubout \
   -out plugin/bifrost/keys/release-2026.pub.pem
 ```
 
 ### 配置 GitHub Actions Secret
 
-1. 将 `bifrost-release-key.pem` 的完整 PEM 文本存入仓库 Secrets，名称统一为 **`BIFROST_SIGNING_KEY`**（`core.yml` 与 `release.yml` 共用同一密钥）。
+1. 将 `bifrost-release.key.pem` 的完整 PEM 文本存入仓库 Secrets，名称统一为 **`BIFROST_SIGNING_KEY`**（`core.yml` 与 `release.yml` 共用同一密钥）。
 2. 将 `plugin/bifrost/keys/release-2026.pub.pem` 提交到 `main` 分支，并随插件包一起分发。
 3. 妥善离线备份私钥并删除本机临时私钥文件。
 
@@ -99,7 +113,7 @@ openssl ec -in bifrost-release-key.pem -pubout \
 
 ### 1. 发布核心（`core.yml`）
 
-1. 更新 `core/recipe.json` 中的 Tailscale 版本、提交哈希、Go 版本或 `revision`。
+1. 更新 `core/recipe.json` 中的 Tailscale 版本、提交哈希、Go 版本或 `revision`，并重新运行 `packaging/gen-core-notices.py` 更新 `packaging/THIRD_PARTY_NOTICES.core.md`。
 2. 合并到 `main` 后打 tag 并推送：`git tag core-<Tailscale版本>-<revision> && git push origin core-<Tailscale版本>-<revision>`。
 3. `core.yml` 会在两个独立 job 中分别编译比对哈希，运行容器冒烟测试，签名 `core.json` / `SHA256SUMS`，生成构建来源证明并发布，同时更新 `channel-stable`。
 
@@ -107,4 +121,7 @@ openssl ec -in bifrost-release-key.pem -pubout \
 
 1. 更新 `plugin/bifrost/version`、`packaging/core-tag` 和 `CHANGELOG.md`。
 2. 合并到 `main` 后打 tag 并推送：`git tag v<版本> && git push origin v<版本>`。
-3. `release.yml` 会校验 tag 位于 `main` 且与 `plugin/bifrost/version` 一致、确认无同名发布、构建前端、用 `packaging/core-tag` 打包（arm 及可用的 arm64）、用 `BIFROST_SIGNING_KEY` 生成并校验 `SHA256SUMS.sig`、附加构建来源证明并创建 GitHub Release（附带 `LICENSE` 与 `LICENSE.tailscale`）。
+3. `release.yml` 分三个权限隔离的 job 执行：
+   - `verify`（只读，`persist-credentials: false`）：校验 tag 位于 `origin/main`、与 `plugin/bifrost/version` 一致，并重跑 `check-sh.sh`、`check-private.sh`、`tests/shell/run.sh`、`tests/install/run.sh`。
+   - `build`（只读，`persist-credentials: false`）：以 `npm ci --ignore-scripts` 构建前端并打包 `arm` 与可用的 `arm64` 离线包，上传构件。
+   - `publish`（不运行任何 npm/node 代码）：检查同名发布不存在、生成并校验 `SHA256SUMS.sig`、附加构建来源证明并创建 GitHub Release（附带 `LICENSE` 与 `LICENSE.tailscale`）。
