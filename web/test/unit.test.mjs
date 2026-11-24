@@ -8,6 +8,7 @@ import {
   ApiError,
   dash,
   parseActionPayload,
+  parseScriptBody,
   pollJob,
   postScript,
   readJob,
@@ -214,8 +215,7 @@ describe("preview server contract compliance (valid_param and safe responses)", 
         headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
         body: JSON.stringify({ id: 1, method: "bifrost_config.sh", params, fields: {} }),
       });
-      const env = await res.json();
-      return JSON.parse(env.result);
+      return JSON.parse(parseScriptBody(await res.text()).result);
     };
 
     assert.deepEqual(await callApi(["BadAction"]), { ok: false, code: "invalid_param" });
@@ -347,6 +347,19 @@ describe("api.ts envelope parsing, request contract, and pollJob recovery", () =
       () => parseActionPayload({ result: "not-json" }),
       (err) => err instanceof ApiError && err.code === "invalid_response",
     );
+  });
+
+  it("reads the software center's unescaped script replies", () => {
+    // Body as returned by software center 1.9.61: the reply is not escaped.
+    assert.deepEqual(parseScriptBody('{"result": "{"ok":true}"}'), { result: '{"ok":true}' });
+    assert.deepEqual(
+      parseActionPayload(parseScriptBody('{"result": "{"ok":true,"msg":"a \\"b\\""}"}\n')),
+      { ok: true, msg: 'a "b"' },
+    );
+    assert.deepEqual(parseScriptBody(JSON.stringify({ result: '{"ok":true}' })), { result: '{"ok":true}' });
+    for (const bad of ["", "ok", '{"result": "x"', '<html>{"result": ""}</html>']) {
+      assert.throws(() => parseScriptBody(bad), (err) => err instanceof ApiError && err.code === "invalid_response");
+    }
   });
 
   it("sends POST /_api/ with empty fields, no-store cache, and form-urlencoded content-type", async () => {

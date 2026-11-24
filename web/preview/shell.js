@@ -10,6 +10,13 @@ function show_menu(hook) {
   document.getElementById("subMenu").textContent = "软件中心";
   document.getElementById("tabMenu").textContent = tabtitle.at(-1)[1];
   document.getElementById("footer").textContent = "ASUSWRT-Merlin";
+  // The firmware's state.js wraps everything beside #tabMenu in a new div after
+  // load. The move reconnects #bifrost-app, which reloads its stylesheet.
+  var cell = document.getElementById("tabMenu").parentNode;
+  var wrapper = document.createElement("div");
+  wrapper.className = "preview-moved";
+  wrapper.append(...cell.children);
+  cell.append(wrapper);
 }
 function reload_Soft_Center() {
   location.href = "/Module_Softcenter.asp";

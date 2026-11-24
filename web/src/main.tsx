@@ -48,7 +48,12 @@ if (host) {
     theme.append(root, overlays);
 
     // Render only after the local stylesheet is ready to avoid flashing unstyled controls.
+    // The firmware's state.js moves the page content after load, which reloads the
+    // stylesheet and fires its events again; act on the first event only.
+    let started = false;
     stylesheet.addEventListener("load", () => {
+      if (started) return;
+      started = true;
       createRoot(root).render(
         <KumoPortalProvider container={overlays}>
           <App themeRoot={theme} overlays={overlays} />
@@ -56,6 +61,8 @@ if (host) {
       );
     });
     stylesheet.addEventListener("error", () => {
+      if (started) return;
+      started = true;
       root.textContent = STYLE_ERROR_MESSAGE;
     });
     shadow.append(stylesheet, theme);

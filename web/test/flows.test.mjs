@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { parseScriptBody } from "../src/core/api.ts";
 import { choose, clickTab, openPreview, ready } from "./fixture.mjs";
 import { SAMPLE_LOGS_TEXT, SAMPLE_NETCHECK_REPORT, SAMPLE_NOW } from "./fixtures/index.mjs";
 
@@ -670,7 +671,7 @@ test("settings page: saves send requests and display server read-back values, va
     await off.page.getByRole("button", { name: "保存 监听端口", exact: true }).click();
     const response = off.page.waitForResponse((r) => r.request().postData()?.includes('"port","41642"'));
     await off.page.getByRole("alertdialog").getByRole("button", { name: "确认", exact: true }).click();
-    assert.deepEqual(JSON.parse((await (await response).json()).result), { ok: true, value: 41643 });
+    assert.deepEqual(JSON.parse(parseScriptBody(await (await response).text()).result), { ok: true, value: 41643 });
     await off.page.waitForFunction(() => document.getElementById("bifrost-app").shadowRoot
       .querySelector("#setting-port").value === "41643");
   });

@@ -78,6 +78,19 @@ function parseJson(text: string): unknown {
   }
 }
 
+// The software center (checked on 1.9.61) puts the script's reply into
+// {"result": "<reply>"} without escaping it, so a JSON reply makes the body
+// invalid JSON. Then take the reply text between the outer quotes.
+export function parseScriptBody(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    const raw = /^\s*\{\s*"result"\s*:\s*"([\s\S]*)"\s*\}\s*$/.exec(text)?.[1];
+    if (raw === undefined) throw new ApiError("invalid_response");
+    return { result: raw };
+  }
+}
+
 export function parseActionPayload<T extends object>(body: unknown): T {
   let inner: unknown = body;
   if (body && typeof body === "object" && "result" in body) {
@@ -119,8 +132,7 @@ export async function postScript<T extends object = Record<string, unknown>>(
     },
     signal,
   );
-  const body = parseJson(response);
-  return parseActionPayload<T>(body);
+  return parseActionPayload<T>(parseScriptBody(response));
 }
 
 export async function readUiConfig(signal?: AbortSignal): Promise<UiConfig> {

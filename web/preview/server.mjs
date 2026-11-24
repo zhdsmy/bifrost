@@ -54,6 +54,12 @@ export function sanitizeScriptResponse(payload) {
   return encoded;
 }
 
+// Like the software center: the reply text goes into the result string as is,
+// without escaping, so a JSON reply makes the body invalid JSON.
+function scriptReply(payload) {
+  return `{"result": "${sanitizeScriptResponse(payload)}"}`;
+}
+
 export function createPreviewServer({
   initialState = process.env.BIFROST_STATE || "running",
   lang,
@@ -686,20 +692,20 @@ export function createPreviewServer({
         if (fields && Object.keys(fields).length > 0) {
           return send(
             "application/json",
-            JSON.stringify({ id, result: sanitizeScriptResponse({ ok: false, code: "invalid_param" }) }),
+            scriptReply({ ok: false, code: "invalid_param" }),
           );
         }
         if (method === "bifrost_status.sh") {
           status.time = SAMPLE_NOW;
           return send(
             "application/json",
-            JSON.stringify({ id, result: sanitizeScriptResponse({ ok: true }) }),
+            scriptReply({ ok: true }),
           );
         }
         if (method !== "bifrost_config.sh" || !Array.isArray(params) || typeof params[0] !== "string") {
           return send(
             "application/json",
-            JSON.stringify({ id, result: sanitizeScriptResponse({ ok: false, code: "invalid_param" }) }),
+            scriptReply({ ok: false, code: "invalid_param" }),
           );
         }
         const [action, ...rest] = params;
@@ -708,7 +714,7 @@ export function createPreviewServer({
           : { ok: false, code: "invalid_param" };
         return send(
           "application/json",
-          JSON.stringify({ id, result: sanitizeScriptResponse(payload) }),
+          scriptReply(payload),
         );
       }
 

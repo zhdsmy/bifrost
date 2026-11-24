@@ -54,7 +54,10 @@ These add to PLAN section 14 and `AGENTS.md`.
 - Responses: an `act_*` function never calls `respond`. It returns 0 or 1. On
   success it may set `BIFROST_RESULT` to a compact JSON object whose fields are
   added to `{"ok":true}`. Response text must not contain `& + % =` (see PLAN 2.4
-  item 14); `respond` replaces such a response with `internal`.
+  item 14); `respond` replaces such a response with `internal`. The software
+  center returns the text to the page as `{"result": "<text>"}` without
+  escaping it, so the page reads the text between the outer quotes
+  (`parseScriptBody` in `web/src/core/api.ts`).
 - Anything that can take more than about 10 seconds is a job (section 6.2):
   the `act_*` function validates, then calls `job_start <job> [args]`.
 - Commands that can hang run through `run_timeout` (or `ts_cli`/`ts_cli_t`).

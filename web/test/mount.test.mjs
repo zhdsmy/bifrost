@@ -54,6 +54,21 @@ test("mount: shadow DOM, asset budgets, select popup, and dialog backdrop/focus/
   assert.equal(mountInfo.bodyId, "app");
   assert.equal(mountInfo.skinAttr, "ASUSWRT");
 
+  // The firmware moves the page content after load (preview shell.js does the
+  // same), which fires the stylesheet's load event again. Mount only once.
+  // A moved <link> drops its sheet and loads again; wait for that load, then
+  // give a second render time to appear.
+  await page.waitForFunction(() => {
+    const host = document.getElementById("bifrost-app");
+    return host.closest(".preview-moved") && host.shadowRoot.querySelector("link").sheet;
+  });
+  await page.waitForTimeout(500);
+  const mounts = await page.evaluate(() => {
+    const host = document.getElementById("bifrost-app");
+    return { moved: Boolean(host.closest(".preview-moved")), mains: host.shadowRoot.querySelectorAll("main").length };
+  });
+  assert.deepEqual(mounts, { moved: true, mains: 1 });
+
   // Select popup stays in shadow root with dark styling regardless of browser light media.
   const modePicker = page.getByRole("combobox", { name: "外观", exact: true });
   await modePicker.click();
