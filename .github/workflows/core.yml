@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - 'core-*'
+  # upstream-follow.yml starts this workflow on a new core-* tag: tags pushed
+  # with GITHUB_TOKEN do not trigger push workflows.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -108,26 +111,14 @@ jobs:
             LC_ALL=C sha256sum bifrost-core-*.gz core.json LICENSE.tailscale >SHA256SUMS
           )
 
-      - name: Smoke test arm and arm64 normal and UPX cores
+      - name: Run arm and arm64, normal and UPX cores under qemu-user
+        env:
+          WANT_VERSION: ${{ needs.validate.outputs.tailscale_version }}
         run: |
           set -eu
-          run_version() {
-            platform=$1
-            asset=$2
-            gzip -cd "core/out/$asset" |
-              docker run --rm -i --platform "$platform" alpine:3.21 /bin/sh -c \
-                'cat >/tmp/bifrostd && chmod 755 /tmp/bifrostd && /tmp/bifrostd --version | head -n 1'
-          }
-          revision=$(jq -r .revision core/out/core.json)
-          for variant in normal upx; do
-            if [ "$variant" = normal ]; then
-              suffix=""
-            else
-              suffix="-upx"
-            fi
-            run_version linux/arm/v7 "bifrost-core-${{ needs.validate.outputs.tailscale_version }}-${revision}${suffix}-linux-arm.gz"
-            run_version linux/arm64 "bifrost-core-${{ needs.validate.outputs.tailscale_version }}-${revision}${suffix}-linux-arm64.gz"
-          done
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static >/dev/null
+          core/tests/cross-run.sh core/out "$WANT_VERSION"
 
       - name: Upload build A artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -342,3 +333,27 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.validate.outputs.tag }}
         run: core/release.sh publish "$TAG" dist/release
+
+  report-failure:
+    name: Report a failed dispatched release
+    needs: [validate, build-a, build-b, smoke, release]
+    if: failure() && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          printf 'The core release workflow failed for %s. The stable channel was not changed unless the publish step had finished.\n\nRun: %s/%s/actions/runs/%s\n' \
+            "$REF_TAG" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >"$RUNNER_TEMP/body.md"
+          tools/report-issue.sh "Core release ${REF_TAG} failed" "$RUNNER_TEMP/body.md"

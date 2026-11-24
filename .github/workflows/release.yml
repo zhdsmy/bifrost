@@ -83,14 +83,18 @@ jobs:
           set -eu
           core_tag="$(tr -d ' \t\r\n' < packaging/core-tag)"
           echo "Packaging with core release: ${core_tag}"
-          packaging/build.sh --core-release "${core_tag}" --arch arm --web-dist web/dist --out dist
-          rc=0
-          packaging/build.sh --core-release "${core_tag}" --arch arm64 --web-dist web/dist --out dist || rc=$?
-          if [ "$rc" -eq 3 ]; then
-            echo "Core release ${core_tag} has no arm64 asset; shipping arm package only."
-          elif [ "$rc" -ne 0 ]; then
-            exit "$rc"
-          fi
+          for variant in normal upx; do
+            packaging/build.sh --core-release "${core_tag}" --arch arm --variant "$variant" \
+              --web-dist web/dist --out dist
+            rc=0
+            packaging/build.sh --core-release "${core_tag}" --arch arm64 --variant "$variant" \
+              --web-dist web/dist --out dist || rc=$?
+            if [ "$rc" -eq 3 ]; then
+              echo "Core release ${core_tag} has no arm64 ${variant} asset; shipping arm ${variant} package only."
+            elif [ "$rc" -ne 0 ]; then
+              exit "$rc"
+            fi
+          done
           for package in dist/bifrost-*.tar.gz; do
             python3 packaging/gen-core-notices.py --check-package "$package"
           done
@@ -156,18 +160,26 @@ jobs:
             exit 1
           fi
           (cd dist && LC_ALL=C sha256sum bifrost-*.tar.gz > SHA256SUMS)
+          version="$(tr -d ' \t\r\n' < plugin/bifrost/version)"
+          jq -n --arg v "$version" --arg t "v${version}" \
+            --arg u "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/v${version}" \
+            '{schema:1,version:$v,tag:$t,url:$u}' > dist/plugin.json
           key_file="$(mktemp)"
           trap 'rm -f "$key_file"' EXIT
           (
             umask 077
             printf '%s\n' "${BIFROST_SIGNING_KEY}" > "$key_file"
           )
-          tools/sign.sh "$key_file" dist/SHA256SUMS
+          tools/sign.sh "$key_file" dist/SHA256SUMS dist/plugin.json
           rm -f "$key_file"
           verified=0
           for pub in plugin/bifrost/keys/*.pub.pem; do
             [ -r "$pub" ] || continue
             if openssl dgst -sha256 -verify "$pub" -signature dist/SHA256SUMS.sig dist/SHA256SUMS >/dev/null 2>&1; then
+              openssl dgst -sha256 -verify "$pub" -signature dist/plugin.json.sig dist/plugin.json >/dev/null 2>&1 || {
+                echo "error: plugin.json.sig failed verification against $pub" >&2
+                exit 1
+              }
               echo "public_key=$pub" >> "$GITHUB_OUTPUT"
               verified=1
               break
@@ -222,3 +234,11 @@ jobs:
             dist/LICENSE.tailscale \
             --title "Bifrost v${version}" \
             --notes "${notes}"
+          # core.yml creates channel-stable with the first core release. Like
+          # core.json, withdraw plugin.json before replacing its signature so
+          # routers never read a mismatched pair.
+          if gh release view channel-stable --json assets --jq '.assets[].name' | grep -qx plugin.json; then
+            gh release delete-asset channel-stable plugin.json --yes
+          fi
+          gh release upload channel-stable dist/plugin.json.sig --clobber
+          gh release upload channel-stable dist/plugin.json

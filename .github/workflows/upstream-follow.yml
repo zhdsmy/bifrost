@@ -1,0 +1,217 @@
+name: Follow Tailscale stable
+
+# Once a day: when Tailscale publishes a newer stable release, update the
+# recipe, run the checks, commit to main and start core.yml for the new
+# core-* tag. Failed checks and new feature tags open an issue instead.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Run every check, but do not commit, release or open issues
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Shared with core.yml so a follow-up and a core release never overlap.
+concurrency:
+  group: core-release
+
+jobs:
+  follow:
+    name: Check and follow upstream stable
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+      issues: write
+      actions: write
+    env:
+      DRY_RUN: ${{ inputs.dry_run == true }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Find a newer upstream stable release
+        id: discover
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -eu
+          current=$(jq -r .tailscale.version core/recipe.json)
+          tag=$(gh api repos/tailscale/tailscale/releases/latest --jq .tag_name)
+          upstream=${tag#v}
+          # Tailscale stable releases have an even minor version.
+          if ! printf '%s\n' "$upstream" | grep -Eq '^[0-9]+\.[0-9]*[02468]\.[0-9]+$'; then
+            echo "Latest upstream release $tag is not a stable x.even.y version." >&2
+            exit 1
+          fi
+          newest=$(printf '%s\n%s\n' "$current" "$upstream" | sort -V | tail -n 1)
+          if [ "$upstream" = "$current" ] || [ "$newest" != "$upstream" ]; then
+            echo "Tailscale $current is current (latest stable $upstream)." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "updated=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          title="Tailscale ${upstream} failed the follow-up checks"
+          if [ "$EVENT" = schedule ] &&
+            gh issue list -R "$GITHUB_REPOSITORY" --state all --limit 100 \
+              --search "\"$title\" in:title" --json title |
+              jq -e --arg t "$title" 'any(.[]; .title == $t)' >/dev/null; then
+            echo "Tailscale $upstream already failed the checks; see the issue. Run this workflow by hand to retry." |
+              tee -a "$GITHUB_STEP_SUMMARY"
+            echo "updated=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          src="$RUNNER_TEMP/tailscale"
+          git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$tag" \
+            https://github.com/tailscale/tailscale.git "$src"
+          commit=$(git -C "$src" rev-parse 'HEAD^{commit}')
+          # core/build.sh requires the recipe's Go to equal upstream go.mod.
+          go_version=$(awk '$1 == "go" { print $2; exit }' "$src/go.mod")
+          [ -n "$go_version" ] || { echo "upstream go.mod has no go directive" >&2; exit 1; }
+          {
+            echo "updated=true"
+            echo "upstream=$upstream"
+            echo "commit=$commit"
+            echo "go_version=$go_version"
+            echo "src=$src"
+            echo "issue_title=$title"
+          } >>"$GITHUB_OUTPUT"
+          echo "Tailscale $current -> $upstream (commit $commit, Go $go_version)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Go
+        if: steps.discover.outputs.updated == 'true'
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: ${{ steps.discover.outputs.go_version }}
+          cache: false
+
+      - name: Set up Node.js
+        if: steps.discover.outputs.updated == 'true'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Update the recipe and compare feature tags
+        id: recipe
+        if: steps.discover.outputs.updated == 'true'
+        env:
+          UPSTREAM: ${{ steps.discover.outputs.upstream }}
+          COMMIT: ${{ steps.discover.outputs.commit }}
+          GO_VERSION: ${{ steps.discover.outputs.go_version }}
+          SRC: ${{ steps.discover.outputs.src }}
+        run: |
+          set -eu
+          jq -r '.featuretags[]' core/recipe.json | LC_ALL=C sort -u >"$RUNNER_TEMP/reviewed.txt"
+          (cd "$SRC" && go run ./cmd/featuretags --list) |
+            awk -F: 'NF >= 2 { gsub(/^ +| +$/, "", $1); print $1 }' |
+            LC_ALL=C sort -u >"$RUNNER_TEMP/upstream.txt"
+          [ -s "$RUNNER_TEMP/upstream.txt" ] || { echo "upstream feature tag list is empty" >&2; exit 1; }
+          jq -nR '[inputs]' <"$RUNNER_TEMP/upstream.txt" >"$RUNNER_TEMP/upstream.json"
+          jq --arg v "$UPSTREAM" --arg c "$COMMIT" --arg g "$GO_VERSION" \
+            --slurpfile tags "$RUNNER_TEMP/upstream.json" \
+            '.tailscale.version = $v | .tailscale.commit = $c | .go = $g |
+             .revision = 1 | .featuretags = $tags[0]' \
+            core/recipe.json >"$RUNNER_TEMP/recipe.json"
+          mv "$RUNNER_TEMP/recipe.json" core/recipe.json
+          printf 'core-%s-1\n' "$UPSTREAM" >packaging/core-tag
+          comm -23 "$RUNNER_TEMP/upstream.txt" "$RUNNER_TEMP/reviewed.txt" >"$RUNNER_TEMP/new-featuretags.txt"
+          if [ -s "$RUNNER_TEMP/new-featuretags.txt" ]; then
+            echo "new_featuretags=true" >>"$GITHUB_OUTPUT"
+            {
+              echo "New upstream feature tags:"
+              sed 's/^/- /' "$RUNNER_TEMP/new-featuretags.txt"
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "new_featuretags=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Check the recipe, build the cores and run them under qemu-user
+        if: steps.discover.outputs.updated == 'true'
+        env:
+          UPSTREAM: ${{ steps.discover.outputs.upstream }}
+          SRC: ${{ steps.discover.outputs.src }}
+        run: |
+          set -eu
+          core/build.sh --check-recipe --src "$SRC"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static >/dev/null
+          core/build.sh --serial 1 --src "$SRC" --out "$RUNNER_TEMP/cores"
+          core/tests/cross-run.sh "$RUNNER_TEMP/cores" "$UPSTREAM"
+          gzip -cd "$RUNNER_TEMP/cores/bifrost-core-${UPSTREAM}-1-linux-arm.gz" >"$RUNNER_TEMP/bifrostd-arm"
+          python3 packaging/gen-core-notices.py "$RUNNER_TEMP/bifrostd-arm" packaging/THIRD_PARTY_NOTICES.core.md
+
+      # The router image uses legacy iptables, like the firmware (see ci.yml).
+      - name: Load legacy netfilter tables on the host
+        if: steps.discover.outputs.updated == 'true'
+        run: >-
+          sudo modprobe -a iptable_filter iptable_nat iptable_mangle
+          ip6table_filter ip6table_nat ip6table_mangle
+          xt_mark xt_MASQUERADE xt_nat xt_state xt_conntrack xt_TCPMSS
+
+      # Runs the plugin scripts against the new core and headscale, which
+      # covers the CLI flags and JSON fields the scripts use.
+      - name: Run the container integration suite
+        if: steps.discover.outputs.updated == 'true'
+        run: tests/container/run.sh --full
+
+      - name: Report failed checks
+        if: failure() && steps.discover.outputs.updated == 'true' && env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM: ${{ steps.discover.outputs.upstream }}
+          TITLE: ${{ steps.discover.outputs.issue_title }}
+        run: |
+          set -eu
+          printf 'Tailscale %s did not pass the follow-up checks, so no core was released. Scheduled runs skip this version from now on; run the workflow by hand to retry.\n\nRun: %s/%s/actions/runs/%s\n' \
+            "$UPSTREAM" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >"$RUNNER_TEMP/failed.md"
+          tools/report-issue.sh "$TITLE" "$RUNNER_TEMP/failed.md"
+
+      - name: Commit, push and start the core release
+        if: steps.discover.outputs.updated == 'true' && env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM: ${{ steps.discover.outputs.upstream }}
+        run: |
+          set -eu
+          tag="core-${UPSTREAM}-1"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add core/recipe.json packaging/core-tag packaging/THIRD_PARTY_NOTICES.core.md
+          git commit -q -m "Follow Tailscale ${UPSTREAM}"
+          old_main=$(git rev-parse HEAD^)
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push -q "$remote" HEAD:refs/heads/main
+          # Move dev too when it has nothing of its own.
+          if [ "$(git ls-remote "$remote" refs/heads/dev | cut -f1)" = "$old_main" ]; then
+            git push -q "$remote" HEAD:refs/heads/dev
+          fi
+          git tag -a "$tag" -m "Bifrost core: Tailscale ${UPSTREAM}, revision 1"
+          git push -q "$remote" "refs/tags/$tag"
+          # Tags pushed with GITHUB_TOKEN do not start push workflows.
+          gh workflow run core.yml -R "$GITHUB_REPOSITORY" --ref "$tag"
+          echo "Committed $(git rev-parse --short HEAD) and started core.yml for $tag." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Open a feature review issue
+        if: steps.discover.outputs.updated == 'true' && steps.recipe.outputs.new_featuretags == 'true' && env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM: ${{ steps.discover.outputs.upstream }}
+        run: |
+          set -eu
+          {
+            printf 'Tailscale %s has feature tags that are not in the reviewed list (featuretags in core/recipe.json):\n\n' "$UPSTREAM"
+            sed 's/^/- /' "$RUNNER_TEMP/new-featuretags.txt"
+            printf '\nThe core was released with these features kept, as upstream builds them. To remove one, add it to omit in core/recipe.json and release a new revision.\n\nRun: %s/%s/actions/runs/%s\n' \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          } >"$RUNNER_TEMP/features.md"
+          tools/report-issue.sh "Tailscale ${UPSTREAM} adds feature tags to review" "$RUNNER_TEMP/features.md"
