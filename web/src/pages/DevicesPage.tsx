@@ -21,7 +21,7 @@ interface RowPingState {
 }
 
 export function DevicesPage() {
-  const { lang, status, t, tError, initializing } = useApp();
+  const { status, t, tError, initializing } = useApp();
   const [filter, setFilter] = useState("");
   const [pings, setPings] = useState<Record<string, RowPingState>>({});
 
@@ -44,8 +44,6 @@ export function DevicesPage() {
   const visible = filtered.slice(0, MAX_RENDERED_PEERS);
   const truncated = filtered.length > MAX_RENDERED_PEERS;
   const nowSec = status?.time ?? Math.floor(Date.now() / 1000);
-  const tableCellClass = lang === "en" ? "!px-1.5 !py-1.5" : "px-2.5 py-2";
-  const tableHeadClass = `${tableCellClass} whitespace-nowrap${lang === "en" ? " !text-xs" : ""}`;
 
   function renderPath(path: PeerInfo["path"], relay: string) {
     if (path === "direct") return t("devices.path.direct");
@@ -111,15 +109,15 @@ export function DevicesPage() {
             <Table className="text-xs">
               <Table.Header>
                 <Table.Row>
-                  <Table.Head className={tableHeadClass}>{t("devices.col.name")}</Table.Head>
-                  <Table.Head className={tableHeadClass}>{t("devices.col.ip")}</Table.Head>
-                  <Table.Head className={tableHeadClass}>{t("devices.col.os")}</Table.Head>
-                  <Table.Head className={tableHeadClass}>{t("devices.col.status")}</Table.Head>
-                  <Table.Head className={tableHeadClass}>{t("devices.col.path")}</Table.Head>
-                  <Table.Head className={tableHeadClass}>{t("devices.col.handshake")}</Table.Head>
-                  <Table.Head className={tableHeadClass}>{t("devices.col.traffic")}</Table.Head>
-                  <Table.Head className={tableHeadClass}>{t("devices.col.routes")}</Table.Head>
-                  <Table.Head className={tableHeadClass} sticky="right">
+                  <Table.Head className="px-2.5 py-2 whitespace-nowrap">{t("devices.col.name")}</Table.Head>
+                  <Table.Head className="px-2.5 py-2 whitespace-nowrap">{t("devices.col.ip")}</Table.Head>
+                  <Table.Head className="px-2.5 py-2 whitespace-nowrap">{t("devices.col.os")}</Table.Head>
+                  <Table.Head className="px-2.5 py-2 whitespace-nowrap">{t("devices.col.status")}</Table.Head>
+                  <Table.Head className="px-2.5 py-2 whitespace-nowrap">{t("devices.col.path")}</Table.Head>
+                  <Table.Head className="px-2.5 py-2 whitespace-nowrap">{t("devices.col.handshake")}</Table.Head>
+                  <Table.Head className="px-2.5 py-2 whitespace-nowrap">{t("devices.col.traffic")}</Table.Head>
+                  <Table.Head className="px-2.5 py-2 whitespace-nowrap">{t("devices.col.routes")}</Table.Head>
+                  <Table.Head className="px-2.5 py-2 whitespace-nowrap" sticky="right">
                     {t("devices.col.action")}
                   </Table.Head>
                 </Table.Row>
@@ -129,7 +127,7 @@ export function DevicesPage() {
                   const ping = pings[peer.ip];
                   return (
                     <Table.Row key={peer.ip} className="group">
-                      <Table.Cell className={tableCellClass}>
+                      <Table.Cell className="px-2.5 py-2">
                         <div className="grid min-w-0 gap-0.5">
                           <span data-raw-value="true" className="font-medium text-kumo-strong">
                             {peer.name}
@@ -144,38 +142,38 @@ export function DevicesPage() {
                           )}
                         </div>
                       </Table.Cell>
-                      <Table.Cell className={`${tableCellClass} whitespace-nowrap`}>
+                      <Table.Cell className="px-2.5 py-2 whitespace-nowrap">
                         <CopyInline value={peer.ip} />
                       </Table.Cell>
-                      <Table.Cell className={`${tableCellClass} whitespace-nowrap`}>
+                      <Table.Cell className="px-2.5 py-2 whitespace-nowrap">
                         <span data-raw-value="true">{peer.os || "—"}</span>
                       </Table.Cell>
-                      <Table.Cell className={`${tableCellClass} whitespace-nowrap`}>
+                      <Table.Cell className="px-2.5 py-2 whitespace-nowrap">
                         <Badge appearance="dot" variant={peer.online ? "success" : "secondary"}>
                           {peer.online ? t("devices.status.online") : t("devices.status.offline")}
                         </Badge>
                       </Table.Cell>
-                      <Table.Cell className={`${tableCellClass} whitespace-nowrap`}>
+                      <Table.Cell className="px-2.5 py-2 whitespace-nowrap">
                         <Badge variant={peer.path === "direct" ? "info" : "outline"}>
                           {renderPath(peer.path, peer.relay)}
                         </Badge>
                       </Table.Cell>
-                      <Table.Cell className={`${tableCellClass} whitespace-nowrap tabular-nums`}>
+                      <Table.Cell className="px-2.5 py-2 whitespace-nowrap tabular-nums">
                         {formatHandshakeAge(peer.last_handshake, nowSec, t)}
                       </Table.Cell>
-                      <Table.Cell className={`${tableCellClass} whitespace-nowrap tabular-nums`}>
+                      <Table.Cell className="px-2.5 py-2 whitespace-nowrap tabular-nums">
                         <div className="grid leading-tight">
                           <span>↓ {formatBytes(peer.rx)}</span>
                           <span className="text-kumo-subtle">↑ {formatBytes(peer.tx)}</span>
                         </div>
                       </Table.Cell>
-                      <Table.Cell className={`${tableCellClass}${lang === "en" ? " text-[10px]" : ""}`}>
+                      <Table.Cell className="px-2.5 py-2">
                         <div className="flex flex-wrap gap-1">
                           {peer.exit_node_option && (
                             <Badge variant="info">{t("devices.exitNodeBadge")}</Badge>
                           )}
                           {peer.routes.map((cidr) => (
-                            <Badge key={cidr} variant="outline" className={lang === "en" ? "!px-0 text-[9px]" : undefined}>
+                            <Badge key={cidr} variant="outline">
                               {cidr}
                             </Badge>
                           ))}
@@ -184,7 +182,7 @@ export function DevicesPage() {
                           )}
                         </div>
                       </Table.Cell>
-                      <Table.Cell className={tableCellClass} sticky="right">
+                      <Table.Cell className="px-2.5 py-2" sticky="right">
                         <div className="grid gap-1">
                           <Button
                             size="sm"

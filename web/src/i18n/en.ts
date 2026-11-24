@@ -173,7 +173,7 @@ export const en: Record<MessageKey, string> = {
 
   // Devices page (PLAN 13.4)
   "devices.title": "Tailnet Devices",
-  "devices.filterPlaceholder": "Filter by device name or IP…",
+  "devices.filterPlaceholder": "Filter by name or IP…",
   "devices.count": "{total} devices ({online} online)",
   "devices.limitNotice": "Showing first {shown} of {total} devices. Use the filter to locate others.",
   "devices.emptyTitle": "No devices",
