@@ -131,5 +131,9 @@ for _un_file in "$BIFROST_RUN"/* "$BIFROST_RUN"/.[!.]* "$BIFROST_RUN"/..?*; do
 done
 rm -f "$BIFROST_SCRIPTS/uninstall_bifrost.sh" || exit 1
 _un_done=1
-echo_date "Bifrost 卸载完成（登录状态目录 $BIFROST_STATE 已保留）"
+if [ -d "$BIFROST_STATE" ]; then
+    echo_date "Bifrost 卸载完成（登录状态目录 $BIFROST_STATE 已保留）"
+else
+    echo_date "Bifrost 卸载完成"
+fi
 exit 0

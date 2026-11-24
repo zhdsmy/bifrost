@@ -769,6 +769,7 @@ ok uninst-watchdog-removed-by-entry grep -Fxq 'CRU d bifrost_watchdog' "$MOCK_ST
 out=$(sh "$BIFROST_SCRIPTS/uninstall_bifrost.sh" 2>&1)
 eq uninst-rc 0 "$?"
 has uninst-done "卸载完成" "$out"
+has uninst-done-state-kept "已保留" "$out"
 ok uninst-pkgdir-untouched test -f "$T/pkgs/vu/version"
 
 # Item 11: exact before/after sandbox snapshot equality (proves zero leftover files/symlinks/dirs!)
@@ -783,5 +784,16 @@ eq uninst-dbus-sc "" "$(dbus list softcenter_module_bifrost_)"
 no uninst-no-command-v test -e "$MOCK_STATE/used-command"
 eq uninst-state-kept "preserve-me" "$(cat "$BIFROST_STATE/tailscaled.state")"
 eq uninst-other-dbus 1 "$(dbus get other_plugin_enable)"
+
+# Without a state directory the message does not claim one was kept.
+rm -rf "$BIFROST_STATE"
+out=$(sh "$T/pkgs/vu/install.sh" 2>&1)
+eq uninst-nostate-prep-rc 0 "$?"
+out=$(sh "$BIFROST_SCRIPTS/uninstall_bifrost.sh" 2>&1)
+eq uninst-nostate-rc 0 "$?"
+has uninst-nostate-done "卸载完成" "$out"
+no uninst-nostate-msg grep -q "已保留" <<EOF2
+$out
+EOF2
 
 t_done
