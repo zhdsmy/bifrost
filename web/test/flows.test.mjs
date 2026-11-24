@@ -391,6 +391,47 @@ test("initialization reads existing job files: resumes running update and restor
   await page.getByText("28 ms", { exact: true }).waitFor();
 });
 
+test("diagnostics page: the DERP table shows at most ten rows and scrolls the rest under its header", async (t) => {
+  const derp = Array.from({ length: 25 }, (_, i) => ({ code: `r${String(i).padStart(2, "0")}`, latency_ms: 10 + i }));
+  const { page, url } = await openPreview(t, {
+    initialState: "running",
+    initialJobs: {
+      netcheck: {
+        schema: 1, job: "netcheck", running: false, phase: "done", progress: 100, ok: true, code: null,
+        started: SAMPLE_NOW - 120, finished: SAMPLE_NOW - 115, pid: 4310,
+        data: { report: { ...SAMPLE_NETCHECK_REPORT, derp } },
+      },
+    },
+  });
+  await page.goto(url);
+  await ready(page);
+  await clickTab(page, "诊断");
+  const first = page.getByText("r00", { exact: true });
+  await first.waitFor();
+
+  const view = await first.evaluate((el) => {
+    const box = el.closest("table").parentElement;
+    const rows = box.querySelectorAll("tbody tr");
+    const top = box.getBoundingClientRect().top + box.clientTop;
+    const bottom = top + box.clientHeight;
+    const tenthEnd = rows[9].getBoundingClientRect().bottom - bottom;
+    const eleventhStart = rows[10].getBoundingClientRect().top - bottom;
+    box.scrollTop = box.scrollHeight;
+    return {
+      rows: rows.length,
+      scrolls: box.scrollHeight > box.clientHeight,
+      tenthEnd,
+      eleventhStart,
+      headAfterScroll: box.querySelector("thead th").getBoundingClientRect().top - top,
+    };
+  });
+  assert.equal(view.rows, 25);
+  assert.ok(view.scrolls, "the DERP table does not scroll");
+  // The tenth row ends at the bottom edge; scrolled to the end, the header stays on top.
+  assert.ok(Math.abs(view.tenthEnd) <= 1 && view.eleventhStart >= -1, JSON.stringify(view));
+  assert.ok(Math.abs(view.headAfterScroll) <= 1, JSON.stringify(view));
+});
+
 test("a fresh page omits finished daemon, migration and update mutation results", async (t) => {
   const finished = {
     schema: 1, running: false, phase: "done", progress: 100, ok: true, code: null,

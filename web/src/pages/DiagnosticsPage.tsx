@@ -127,9 +127,11 @@ export function DiagnosticsPage() {
                 <h3 className="text-xs font-medium text-kumo-subtle">
                   {t("diag.netcheck.derpTable")}
                 </h3>
-                <div className="overflow-x-auto rounded-lg border border-kumo-line">
-                  <Table>
-                    <Table.Header>
+                {/* At most ten rows show; the rest scroll under the header. Each row is
+                    2.75rem (Kumo's p-3 plus leading-5); the header adds a 1px border. */}
+                <div className="max-h-[calc(11*2.75rem+3px)] overflow-auto rounded-lg border border-kumo-line">
+                  <Table className="[&_td]:leading-5 [&_th]:leading-5">
+                    <Table.Header sticky>
                       <Table.Row>
                         <Table.Head>{t("diag.netcheck.derpCode")}</Table.Head>
                         <Table.Head>{t("diag.netcheck.derpLatency")}</Table.Head>

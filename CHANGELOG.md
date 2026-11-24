@@ -10,6 +10,7 @@ plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 ### Changed
 
 - Devices tab: columns have set widths per language, smaller headers, and long device names stay on one line with an ellipsis (hover shows the full name). Drag a column edge in the header, or focus it and use the arrow keys, to change a width. Double-click an edge to reset that column. The widths are kept in the browser; "Reset column widths" restores the defaults.
+- Diagnostics tab: the DERP latency table shows at most 10 rows. The rest scroll inside the table under a fixed header.
 
 ## [0.2.1] - 2026-11-25
 
