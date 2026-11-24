@@ -102,7 +102,8 @@ calls the function below through `run_act`, which sends exactly one response.
 | `core-check` | — | `act_core_check` (P1) | job | `update` |
 | `core-update` | — | `act_core_update` (P1) | job | `update` |
 | `core-rollback` | — | `act_core_rollback` (P1) | job | `update` |
-| `core-arch` | `arm` or `arm64` | `act_core_arch` (P1) | job | `update` |
+| `core-arch` | `arm` or `arm64` | `act_core_arch` (P1), keeps the installed core type | job | `update` |
+| `core-type` | `normal` or `upx` | `act_core_type` (P1), keeps the installed architecture | job | `update` |
 | `netcheck` | — | `act_netcheck` (P3) | job | `netcheck` |
 | `ping` | tailnet IP | `act_ping` (P3) | sync, result fields | — |
 | `logs` | — | `act_logs` (P3) | sync, writes `bifrost_logs.txt` and `bifrost_diag.json` | — |
@@ -193,11 +194,13 @@ All in `$BIFROST_UPLOAD` (`/tmp/upload`), written with `json_write` or
   "time": 1795430000,
   "state": "running",
   "error": null,
-  "plugin": { "version": "0.1.0", "enabled": true },
+  "plugin": { "version": "0.1.0", "enabled": true, "update": null },
   "core": {
     "tailscale": "1.104.7", "revision": 1, "serial": 7, "arch": "arm",
+    "variant": "normal",
     "kernel_arch": "aarch64", "size": 25100448, "installed": 1795000000,
     "prev": true, "update": null,
+    "check": { "checked": 1795429000, "status": "ok", "error": null },
     "build": { "go": "1.27.4", "commit": "cbc74fe4...", "omit": ["aws", "..."] }
   },
   "daemon": { "running": true, "pid": 1234, "restarts": 0 },
@@ -243,8 +246,17 @@ All in `$BIFROST_UPLOAD` (`/tmp/upload`), written with `json_write` or
   `stopped`, `Running` → `running`.
 - `self`, `prefs` are `null` when the daemon does not answer. `peers` is `[]`.
 - `control` is `""` for Tailscale's own server; `official` is true then.
-- `core.update` is `null` or `{"tailscale","revision","serial","tag"}` from
-  `$BIFROST_RUN/core_latest.json` (P1 writes it) when its serial is larger.
+- `core.update` is `null` or `{"tailscale","revision","serial","tag","variant"}`
+  when the latest known serial is larger than the installed one. The latest
+  is `core.latest` of `core-check.json` (6.3), else
+  `$BIFROST_RUN/core_latest.json` (P1 writes both). `variant` is the type the
+  update would install (the installed type).
+- `core.variant`: the installed manifest's `variant`, `normal` when missing.
+- `core.check`: from `core-check.json`; `{"checked":0,"status":"unknown","error":null}`
+  when the file is missing. The page starts a silent `core-check` when
+  `checked` is more than 86,400 s old and no locking job runs.
+- `plugin.update`: `core-check.json`'s `plugin.update` (`{"version","tag","url"}`)
+  only while its version is newer than the installed plugin, else `null`.
 - `core.installed` comes from the installed core file (`date -r`).
   `core.size` is the installed manifest's `.assets[.arch].raw_size` and
   `core.build` its `build` object (`null` when missing), so a refresh never
@@ -281,7 +293,7 @@ own time limit, as long as it keeps refreshing status.
 | `daemon` | `queued start precheck starting waiting prefs firewall dns stopping cleanup purge done` | `{"action":"start"\|"stop"\|"restart"\|"purge"}` |
 | `login` | `queued start running done` | `{"action":"login"\|"relogin","official":bool}` |
 | `migrate` | `queued start precheck record backup stop_original wait_original copy starting verify rollback done` | `{"manual_stop":bool,"rolled_back":bool,"cleanup_error":"<code>","backup_cleanup_pending":bool}`. `cleanup_error` (may be absent): the daemon stopped during rollback but `fw_clear` or `dns_clear` failed; the rollback still finished. `backup_cleanup_pending:true`: the pre-migration backup (it holds the old private key) could not be deleted; the job result is unchanged and the next migration, purge, or uninstall retries |
-| `update` | `queued start manifest verify_manifest space download verify unpack test snapshot swap verify_running finalize rollback done` | `{"action":"check"\|"update"\|"rollback"\|"arch","latest":{tailscale,revision,serial,tag}\|null,"up_to_date":bool,"kept_prev":bool}`. `check` ends `ok` both with and without an update; `up_to_date:true` means the channel serial equals the installed one (the page then shows the `up_to_date` text). A lower channel serial fails with `old_serial` |
+| `update` | `queued start manifest verify_manifest space download verify unpack test snapshot swap verify_running finalize rollback done` | `{"action":"check"\|"update"\|"rollback"\|"arch"\|"type","latest":{tailscale,revision,serial,tag,variant}\|null,"up_to_date":bool,"kept_prev":bool}`, plus `"variant":"normal"\|"upx"` for `update`, `arch` and `type`, and `"plugin_update":{version,tag,url}\|null` for `check`. `arch` and `type` accept a channel serial equal to the installed one when the architecture or type changes. `check` ends `ok` both with and without an update; `up_to_date:true` means the channel serial equals the installed one (the page then shows the `up_to_date` text). A lower channel serial fails with `old_serial` |
 | `netcheck` | `queued start running done` | `{"report":{...}}` (below) |
 
 `netcheck` report: `{"udp":bool,"ipv4":bool,"ipv6":bool,"mapping_varies":bool|null,"portmap":"<string>","preferred_derp":"<code>","derp":[{"code":"tok","latency_ms":30}]}`.
@@ -298,6 +310,12 @@ own time limit, as long as it keeps refreshing status.
   4. `== bifrostd.log ==` and its last 200 lines;
   5. `== crash records ==`: each file in `$BIFROST_CRASH_DIR`, oldest
      first, under a `-- <name> --` line, or `(none)`.
+- `$BIFROST_HOME/core-check.json` (P1, every `core-check`; on JFFS so it
+  survives a reboot; the page reads it through `bifrost_status.json`):
+  `{"schema":1,"checked":<unix>,"core":{"status":"ok"|"error","error":"<code>"|null,"latest":{tailscale,revision,serial,tag,variant}|null},"plugin":{"status":"ok"|"unknown","error":"<code>"|null,"update":{version,tag,url}|null}}`.
+  A failed core check also records `checked`, so the page waits another day
+  before its next silent check. A missing or unverified `plugin.json` leaves
+  the core result alone and sets `plugin.status` to `unknown`.
 - `bifrost_diag.json` (P3, `logs`): the environment checks for the
   diagnostics page (PLAN 13.4):
   `{"schema":1,"time":<unix>,"tun":bool,"fw_complete":bool|null,"conflict":bool,"wan_cgnat":bool|null,"jffs_free_kb":<int>|null,"time_synced":bool|null,"dnsmasq_conf_dir":bool}`.
@@ -345,8 +363,13 @@ PLAN 12.2 plus a `build` object (for the core page):
 }
 ```
 
+- From `core-1.104.7-2` the manifest also has `"upx":{"version","flags"}`
+  and a top-level `upx_assets` with the same entry shape, for UPX files named
+  `bifrost-core-<v>-<rev>-upx-linux-<arch>.gz`. `assets` keeps only the
+  uncompressed files, so the v0.1.0 parser still reads it.
 - Installed copy: `$BIFROST_MANIFEST`. It adds a top-level `"arch":"arm"|"arm64"`
-  (the installed core's architecture) and keeps only that entry in `assets`.
+  (the installed core's architecture) and `"variant":"normal"|"upx"`, keeps
+  only the installed file's entry in `assets`, and drops `upx_assets`.
   Readers use `.assets[.arch]`. The package copy: `bin/core.json`
   next to `bin/bifrostd.gz` (unsigned in the package; it is checked against
   the file hashes only).
@@ -354,6 +377,9 @@ PLAN 12.2 plus a `build` object (for the core page):
   ships no production key until the owner creates one; tests make their own
   keys under `/tmp`.
 - `$BIFROST_RUN/core_latest.json`: the last verified channel manifest.
+- Plugin notice: `plugin.json` next to `core.json` on the channel,
+  `{"schema":1,"version":"0.2.0","tag":"v0.2.0","url":"https://..."}`, with
+  `plugin.json.sig` from the same keys. `release.yml` publishes it.
 
 ## 9. Tests
 

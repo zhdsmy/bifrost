@@ -44,7 +44,7 @@ Bifrost 是一个给 KoolCenter / Koolshare 软件中心（华硕梅林 386/388 
 | 不做的事 | 原因 |
 |---|---|
 | Tailscale SSH、Taildrop、Taildrive、web client | 编译时去掉。路由器上用不到，去掉后攻击面和体积都更小。 |
-| 核心自动更新，以及 Tailscale 自带的 `tailscale update` | 只提供「检查更新」和「更新核心」两个按钮，由用户手动触发。自带更新会用官方包覆盖本插件的核心（见 2.6），编译时去掉。 |
+| 核心自动安装，以及 Tailscale 自带的 `tailscale update` | 页面每天最多后台检查一次，安装仍由用户手动触发。自带更新会用官方包覆盖本插件的核心（见 2.6），编译时去掉。 |
 | 路由器「使用出口节点」 | 它会改写全屋流量的默认路由，配错会让局域网进不了路由器后台。开发机是家里在用的路由器，无法安全测试。v1 只做「作为出口节点」。命令行仍然可以自己设置。 |
 | 接受 tailnet 的 DNS 设置（`--accept-dns`） | 打开后 tailscaled 会改写路由器的 `/etc/resolv.conf`，和固件互相覆盖。固定为关，MagicDNS 用 dnsmasq 转发提供（第 10 节）。 |
 | IPv6 的子网路由和地址转换 | v1 只保证 IPv6 直连（放行 UDP 端口）和路由器自己的 tailnet IPv6 地址。 |
@@ -142,6 +142,8 @@ RT-AX86U，固件 388.12，软件中心 1.9.61，路由模式，PPPoE。
   | 不压缩（1.104.7） | 0.02 秒 | 0.02 秒 |
   | 原版 UPX（1.94.2） | 0.94 秒 | 0.95 秒 |
 
+- 本项目的 UPX 核心（1.104.7，`upx 5.3.0 --best --no-lzma`）：arm 文件 8,602,612 字节，arm64 8,513,356 字节；`gzip -9` 后 8.4 MB 和 8.3 MB。在 RT-AX86U 上每次命令行调用约 0.39 秒，不压缩版 0.02 秒。原版插件的 UPX 用 LZMA，所以更慢。
+
 ### 2.6 上游行为【已核实】
 
 来源是 Tailscale 1.104.7 源码，以及开发机上运行中的 1.94.2。
@@ -182,7 +184,7 @@ RT-AX86U，固件 388.12，软件中心 1.9.61，路由模式，PPPoE。
 | 省略的功能沿用原版 12 项 | 这份清单在 1.104.7 上通不过 featuretags 的依赖校验 | 标签由 featuretags 生成，清单扩到 25 项（5.2 节） |
 | 用自己的链放行端口和转发，「本机访问」做成开关 | 没写 tailscaled 自己的防火墙模式。默认模式下它已经放行 `tailscale0` 的全部入站，开关不起作用；固件重建防火墙后它的链会消失，上游不恢复 | tailscaled 的防火墙模式设为 `off`，规则全部由 Bifrost 管（第 9 节） |
 | 安装时发现原版在运行就停掉它 | 这时 Bifrost 还没登录。远程用户会断开，而且连不回来 | 安装不动原版。页面提供「迁移并切换」，失败自动回滚（第 11 节） |
-| 默认不用 UPX；文件大，小 JFFS 以后再考虑 | 软件中心按解压后的大小检查空间；RT-AX86U 内置 JFFS 只有 47 MB | 包里的核心用 gzip 存放，安装时解开（5.5 节） |
+| 默认不用 UPX；文件大时提供可选 UPX 资产 | 软件中心按解压后的大小检查空间；UPX 启动慢且每个进程独立解压 | 默认包和在线更新保持不压缩版，另提供 UPX 包和页面切换（5.5 节） |
 | arm64 核心占的内存会多一些 | 文件反而略小。运行内存没测 | M1 实测后按 5.3 节的规则决定 |
 | 设置页有 accept-dns | 路由器上打开会改写 `/etc/resolv.conf` | 固定为关，用 dnsmasq 转发代替（第 10 节） |
 | 设置页有「出口节点（宣告或使用）」 | 「使用」的影响面是全屋流量，无法安全测试 | v1 只做「宣告」 |
@@ -335,6 +337,7 @@ nezha-kumo-theme 是独立网站，做法不同：用 Vite、`i18next`、Inter �
 ```
 
 - `revision` 是同一个 Tailscale 版本的重新编译序号，对应核心 tag 的最后一段。
+- `featuretags` 记录当前上游 `featuretags --list` 的完整集合。跟随上游时把新标签列入集合并单独提醒是否需要裁剪。
 - `build.sh` 的步骤：
   1. 检查本机 Go 版本等于 `go`，并且等于源码 `go.mod` 里的版本。不相等就停止。
   2. 按 tag 克隆 Tailscale 源码，检查 `HEAD` 等于 `commit`。不相等就停止。
@@ -362,7 +365,7 @@ nezha-kumo-theme 是独立网站，做法不同：用 Vite、`i18next`、Inter �
 
 明确保留的功能：`advertiseroutes`、`useroutes`、`advertiseexitnode`、`useexitnode`、`osrouter`、`iptables`、`dns`、`netstack`、`portmapper`、`peerapiserver`、`peerapiclient`、`health`、`logtail`、`debug`（`debug prefs` 要用）、`serve` 和 `acme`（给命令行用户）、`qrcodes`、`cachenetmap`、`tailnetlock`。
 
-每次升级 Tailscale 版本时，重新运行 `featuretags --list`，检查有没有新增的、路由器用不到的功能。
+每次升级 Tailscale 版本时，自动跟随工作流重新运行 `featuretags --list`。新标签默认保留并开 issue 提醒审阅，不能因为提醒而阻止发布。
 
 ### 5.3 架构
 
@@ -377,15 +380,16 @@ nezha-kumo-theme 是独立网站，做法不同：用 Vite、`i18next`、Inter �
 
 数据见 2.5 节。
 
-### 5.5 不用 UPX
+### 5.5 可选 UPX
 
-- 不压缩的核心每次命令行调用 0.02 秒，UPX 版 0.94 秒。页面每 3 秒查一次状态，UPX 版每次都要占一秒 CPU。
+- 不压缩的核心每次命令行调用 0.02 秒。本项目的 UPX 版在 RT-AX86U 上约 0.39 秒，原版插件的 UPX 版 0.94 秒（2.5 节）。页面每 3 秒查一次状态，UPX 版每次多占约 0.4 秒 CPU。
 - UPX 版每个进程都要把整个程序解压进自己的匿名内存，不能共享，也不能被系统回收。
-- 代价是占的空间更大。应对办法：
+- 默认核心不压缩。代价是占的空间更大。应对办法：
   - **包里的核心用 gzip 存放**（`bin/bifrostd.gz`，约 9.6 MB）。软件中心按解压后的大小检查空间，这样新装只要求约 12 MB 剩余空间，而不是 27 MB。
   - `install.sh` 把它解到 JFFS 上。JFFS2 和 UBIFS 会透明压缩，实际占用估算约 11 MB【待实测】。
   - 写入失败（空间不足）时不影响已安装的旧版本（15.1 节）。
-- M1 在开发机的内置 JFFS2 分区上实测实际占用。如果在常见机型上仍然装不下，再出 UPX 版；v1 不预先做。
+- 空间仍然不够时，可以选 UPX 版：可选的离线包和在线资产，固定使用 `upx 5.3.0 --best --no-lzma`，构建前校验下载的 UPX 压缩包的 SHA-256。arm 核心文件 8.6 MB，不压缩版 25.1 MB。JFFS 会透明压缩不压缩版，实际节省小于两者之差。
+- 页面显示当前核心类型，切换复用架构更新的下载、验签、试运行、替换和回滚流程。默认值始终是不压缩版。
 
 ### 5.6 可复现
 
@@ -698,11 +702,12 @@ tailscaled 的防火墙模式固定为 `off`，所有规则由 Bifrost 自己的
 - 插件包里带 arm 核心，离线安装后马上能用。
 - 核心单独发布，tag 是 `core-<Tailscale 版本>-<revision>`。附件：
   - `bifrost-core-<版本>-<revision>-linux-arm.gz`，发布 arm64 时还有对应的 `arm64` 文件；
+  - UPX 版 `bifrost-core-<版本>-<revision>-upx-linux-arm.gz` 和对应的 `arm64` 文件（从 `core-1.104.7-2` 起）；
   - `core.json`、`core.json.sig`；
   - `SHA256SUMS`、`SHA256SUMS.sig`；
   - `LICENSE.tailscale`；
   - GitHub 的构建来源证明。
-- 另有一个固定的发布 `channel-stable`，CI 每次发布核心后覆盖它的 `core.json` 和 `core.json.sig`。路由器检查更新时读这个固定地址：`https://github.com/<owner>/bifrost/releases/download/channel-stable/core.json`。
+- 另有一个固定的发布 `channel-stable`，CI 每次发布核心后覆盖它的 `core.json` 和 `core.json.sig`，每次发布插件后覆盖 `plugin.json` 和 `plugin.json.sig`。路由器检查更新时读这个固定地址：`https://github.com/<owner>/bifrost/releases/download/channel-stable/core.json`。
 
 ### 12.2 清单格式
 
@@ -714,6 +719,7 @@ tailscaled 的防火墙模式固定为 `off`，所有规则由 Bifrost 自己的
   "revision": 1,
   "tag": "core-1.104.7-1",
   "min_plugin": "0.1.0",
+  "upx": { "version": "5.3.0", "flags": ["--best", "--no-lzma"] },
   "assets": {
     "arm": {
       "file": "bifrost-core-1.104.7-1-linux-arm.gz",
@@ -722,12 +728,16 @@ tailscaled 的防火墙模式固定为 `off`，所有规则由 Bifrost 自己的
       "raw_size": 25100448,
       "raw_sha256": "<解压后的 sha256>"
     }
+  },
+  "upx_assets": {
+    "arm": { "file": "bifrost-core-1.104.7-1-upx-linux-arm.gz", "size": 8365234, "sha256": "<gz>", "raw_size": 8602612, "raw_sha256": "<解压后的 sha256>" }
   }
 }
 ```
 
 - `serial` 每次发布加 1。路由器拒绝安装 `serial` 不大于已安装版本的清单，防止有人拿旧的、签名有效的清单让用户降级到有漏洞的版本。
 - `min_plugin` 是这个核心要求的最低插件版本。插件版本低于它时，提示先更新插件。
+- `.assets` 保持只有不压缩版，供 v0.1.0 解析。`upx_assets` 是新增的顶层字段，旧插件会忽略它。
 - 文件的下载地址由 `tag` 和 `file` 拼出来，清单里不写完整地址。
 
 ### 12.3 签名
@@ -743,14 +753,14 @@ tailscaled 的防火墙模式固定为 `off`，所有规则由 Bifrost 自己的
 
 ### 12.4 更新流程
 
-1. 下载 `core.json` 和 `core.json.sig` 到 `/tmp/bifrost-run/update/`。
+1. 下载 `core.json`、`core.json.sig`、`plugin.json` 和 `plugin.json.sig` 到 `/tmp/bifrost-run/update/`。用户点「检查更新」时运行；页面打开时，如果上次检查已超过 24 小时、也没有其他任务在运行，后台自动运行一次，失败不弹错误。检查结果和时间原子写入 JFFS 的 `core-check.json`，重启后仍在。
 2. 验签名。检查 `schema`、`serial`、`min_plugin`，以及有没有本机架构的文件。
 3. 检查空间（12.6 节）。
 4. 下载 `.gz` 到 `/tmp`，核对大小和 `sha256`。
 5. 解压到 `/koolshare/bifrost/bin/bifrostd.new`，核对 `raw_sha256`。写入失败就删掉这个文件并停止，已安装的核心不受影响。
 6. 试运行：`bifrostd.new --version` 输出的版本要和清单一致。
 7. 把 `tailscaled.state` 复制一份作为快照。
-8. 停止 daemon；把 `bifrostd` 改名为 `bifrostd.old`，把 `bifrostd.new` 改名为 `bifrostd`；启动。
+8. 停止 daemon；把 `bifrostd` 改名为 `bifrostd.old`，把当前类型的 `bifrostd.new` 改名为 `bifrostd`；启动。架构切换和类型切换共用这条流程。
 9. 60 秒内检查：进程在，`status --json` 有回应，`BackendState` 和更新前相同。
 10. **通过**：把新清单存为已安装清单。空间够时把 `bifrostd.old` 压成 `bifrostd.prev.gz`，然后删掉 `bifrostd.old`。
 11. **不通过**：停止，把 `bifrostd.old` 改回 `bifrostd`，恢复 state 快照，启动，报告失败原因。
@@ -778,6 +788,7 @@ tailscaled 的防火墙模式固定为 `off`，所有规则由 Bifrost 自己的
 - 下载用 `curl -fsSL --connect-timeout 10 --max-time 300 --retry 2`。
 - 镜像不可信也没关系，签名和哈希会挡住被改过的文件。
 - 检查更新不调用 GitHub API，避免未登录的频率限制。
+- `plugin.json` 使用同一套签名，包含插件版本、tag 和发布页链接。缺少或无法验证时插件更新状态为未知，不影响核心检查。
 
 ## 13. 页面
 
@@ -1156,18 +1167,19 @@ tests/
   shell/                   脚本测试和假命令
   container/               容器测试环境
 packaging/build.sh         打包脚本
-.github/workflows/         ci.yml、core.yml、release.yml
+.github/workflows/         ci.yml、core.yml、release.yml、upstream-follow.yml
 docs/                      方案和开发说明
 NOTICE.md                  第三方声明
 ```
 
 ### 16.2 包
 
-- 文件名：`bifrost-<版本>-hnd.tar.gz`。顶层目录是 `bifrost/`。
+- 文件名：`bifrost-<版本>-hnd.tar.gz`、`bifrost-<版本>-hnd-arm64.tar.gz`、`bifrost-<版本>-hnd-upx.tar.gz`、`bifrost-<版本>-hnd-arm64-upx.tar.gz`。缺少 arm64 资产时只发布对应的 arm 包。顶层目录是 `bifrost/`。
 - `.valid` 的内容是 `hnd`。以后支持其他平台时，在这个文件里加平台名，或者按平台分包。
 - `bin/` 里是 `bifrostd.gz` 和它的 `core.json`。
 - 打包脚本从指定的核心发布下载核心，验签名和哈希后才放进包里。
 - 包里带 `LICENSE`（MIT）、`LICENSE.tailscale`（BSD-3-Clause）和第三方声明 `NOTICE.md`。
+- 默认包使用不压缩核心。UPX 包只适用于需要节省核心文件空间的设备，页面会说明启动耗时和内存代价。
 - 打包前先构建页面应用，包里用构建生成的 `Module_bifrost.asp` 和对应的一对资源。构建结果不进仓库。
 
 ### 16.3 版本号
@@ -1181,8 +1193,9 @@ NOTICE.md                  第三方声明
 | 工作流 | 触发 | 内容 |
 |---|---|---|
 | `ci.yml` | 每次推送和 PR | 脚本语法检查、`shellcheck`、禁用清单；脚本测试；页面的类型检查、单元测试、构建、体积检查、页面测试和安装测试；用 featuretags 校验配方；检查仓库里没有私人信息（地址、tailnet 名、绝对路径的常见形式） |
-| `core.yml` | 推送 `core-*` tag | 两个独立的 job 各编译一次并比对哈希；用编出来的核心跑容器冒烟测试；生成清单；签名；生成构建来源证明；发布；更新 `channel-stable` |
-| `release.yml` | 推送 `v*` tag | 构建页面；打包；生成 `SHA256SUMS` 并签名；生成构建来源证明；发布。tag 已有发布时拒绝覆盖 |
+| `core.yml` | 推送 `core-*` tag，或对已有 tag 手动触发 | 两个独立的 job 各编译一次并比对哈希；在 qemu-user 下运行四个核心；用编出来的核心跑容器冒烟测试；生成清单；签名；生成构建来源证明；发布；更新 `channel-stable` |
+| `release.yml` | 推送 `v*` tag | 构建页面；打包；生成 `SHA256SUMS` 和 `plugin.json` 并签名；生成构建来源证明；发布；更新 `channel-stable` 的 `plugin.json`。tag 已有发布时拒绝覆盖 |
+| `upstream-follow.yml` | 每日定时或手动运行 | 查询上游稳定版，更新配方、featuretags、核心 tag 和第三方声明；编译一次，在 qemu-user 下运行四个核心，再跑容器测试。通过后提交 `main`、推送核心 tag 并手动触发 `core.yml`（双编译、签名、发布）。失败时为该版本开 issue，定时运行之后跳过它；有新 featuretags 时另开 issue 提醒审阅；`dry_run` 不写 GitHub |
 
 ## 17. 测试
 

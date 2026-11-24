@@ -16,7 +16,7 @@ combined binary (`bifrostd`) used by Bifrost. Local builds and GitHub Actions
 
 ### 1. Build release cores and manifest
 
-Builds every target in `core/recipe.json` twice, checks embedded tags and
+Builds every target in `core/recipe.json` once, checks embedded tags and
 version metadata, and writes uncompressed and optional UPX assets to
 `core/out/`. Normal assets are named
 `bifrost-core-<version>-<revision>-linux-<target>.gz`. UPX assets add `-upx`

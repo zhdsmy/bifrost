@@ -19,3 +19,5 @@ software center. Read `docs/PLAN.md` before changing the design.
   `AGENTS.local.md` (gitignored). If it is missing, ask the user.
 - Before changing a router, back up the files you replace and state the
   rollback. Stop plugins through their own scripts, not by killing processes.
+- Before pushing a release change, synchronize `origin/main` and verify the
+  local branch contains the current main tip.

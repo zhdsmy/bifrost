@@ -5,6 +5,22 @@ All notable changes to Bifrost will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - Unreleased
+
+### Added
+
+- Optional UPX core (`upx 5.3.0 --best --no-lzma`) for `arm` and `arm64`, as online assets from `core-1.104.7-2` and as `hnd-upx` / `hnd-arm64-upx` offline packages. The uncompressed core stays the default: the UPX core file is about a third of the size, but each CLI call takes about 0.39 s instead of 0.02 s on an RT-AX86U.
+- Core type switching on the Core tab, through the signed update transaction with automatic rollback.
+- A silent background update check when the page opens and the last check is more than 24 hours old. The result is kept on JFFS. The Core tab shows a new core and a new plugin version (with a release-page link); installing stays manual.
+- A signed `plugin.json` on the `channel-stable` release, published by `release.yml`.
+- `upstream-follow.yml`: once a day, when Tailscale publishes a new stable release, it updates the recipe and the full feature-tag list, builds the cores, runs them under qemu-user, runs the container tests, commits to `main`, and starts `core.yml`. Failed checks and new feature tags open issues.
+- `core.yml` runs all four cores under qemu-user, can be started by hand for an existing tag, and opens an issue when a manual run fails.
+
+### Changed
+
+- Core manifests keep the v0.1.0 `.assets` shape and list UPX files in a new top-level `upx_assets` field, which v0.1.0 ignores.
+- An offline package now replaces an installed core with the same serial, so the package's architecture and core type apply. An identical core is not written again.
+
 ## [0.1.0] - 2026-11-24
 
 ### Added

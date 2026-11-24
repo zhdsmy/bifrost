@@ -65,6 +65,7 @@ packaging/build.sh --core-release "$(cat packaging/core-tag)" --arch arm --out d
 ```
 
 - 在 macOS 上，`packaging/test-build.sh` 用相同输入、工具和固定时间戳打包两次，并比对 SHA-256。Linux CI 用同一测试在运行器内比对两个包。
+- 发布包有四种组合：默认 `hnd`、`hnd-arm64`，以及可选的 `hnd-upx`、`hnd-arm64-upx`（附加 `--variant upx`）。默认包和默认核心类型都是不压缩版。UPX 版每次启动需要独立解压，命令行响应更慢且内存不能共享。
 - 相对路径参数（`--core-dir`、`--out`、`--web-dist`、`--keys-dir`）均按调用者当前工作目录解析。
 - 已提前构建前端时，可附加 `--web-dist web/dist` 跳过重复构建。
 
@@ -115,14 +116,28 @@ openssl ec -in bifrost-release.key.pem -pubout \
 ### 1. 发布核心（`core.yml`）
 
 1. 更新 `core/recipe.json` 中的 Tailscale 版本、提交哈希、Go 版本或 `revision`，并运行 `packaging/gen-core-notices.py` 更新 `packaging/THIRD_PARTY_NOTICES.core.md`。
-2. 合并到 `main` 后打 tag 并推送：`git tag core-<Tailscale版本>-<revision> && git push origin core-<Tailscale版本>-<revision>`。
-3. `core.yml` 在两个独立 job 中分别编译并比对哈希，在 runner 上以 `--tun=userspace-networking` 运行冒烟测试，签名 `core.json` 和 `SHA256SUMS`，生成构建来源证明并发布，最后更新 `channel-stable`。
+2. 先执行 `git fetch origin main`，确认本地分支包含 `origin/main` 的最新提交，再合并到 `main`，打 tag 并推送：`git tag core-<Tailscale版本>-<revision> && git push origin core-<Tailscale版本>-<revision>`。
+3. `core.yml` 在两个独立 job 中分别编译并比对哈希，在 qemu-user 下运行四个核心的 `--version`，在 runner 上以 `--tun=userspace-networking` 运行冒烟测试，签名 `core.json` 和 `SHA256SUMS`，生成构建来源证明并发布，最后更新 `channel-stable`。对已有的核心 tag 也可以手动触发 `core.yml`；手动触发失败时，工作流开一个 issue。
 
 ### 2. 发布插件（`release.yml`）
 
 1. 更新 `plugin/bifrost/version`、`packaging/core-tag` 和 `CHANGELOG.md`，并新增 `release-notes/v<版本>.md`（发布工作流会直接读取该文件作为发布说明）。
-2. 合并到 `main` 后打 tag 并推送：`git tag v<版本> && git push origin v<版本>`。
+2. 先执行 `git fetch origin main`，确认本地分支包含 `origin/main` 的最新提交，再合并到 `main`，打 tag 并推送：`git tag v<版本> && git push origin v<版本>`。
 3. `release.yml` 分三个权限隔离的 job 执行：
    - `verify`（只读，`persist-credentials: false`）：校验 tag 位于 `origin/main` 且与 `plugin/bifrost/version` 一致，然后重跑 `check-sh.sh`、`check-private.sh`、`tests/shell/run.sh` 和 `tests/install/run.sh`。
-   - `build`（只读，`persist-credentials: false`）：用 `npm ci --ignore-scripts` 构建前端，打包 `arm` 及可用的 `arm64` 离线包，并上传构件。
-   - `publish`（不运行任何 npm/node 代码）：确认同名发布不存在，生成并校验 `SHA256SUMS.sig`，附加构建来源证明，然后创建 GitHub Release（附带 `LICENSE` 与 `LICENSE.tailscale`）。
+   - `build`（只读，`persist-credentials: false`）：用 `npm ci --ignore-scripts` 构建前端，打包 `arm` 和 `arm64` 的不压缩版与 UPX 版离线包（核心发布缺少某个 `arm64` 资产时跳过对应的包），并上传构件。
+   - `publish`（不运行任何 npm/node 代码）：确认同名发布不存在，生成 `SHA256SUMS` 和 `plugin.json` 并签名、校验，附加构建来源证明，然后创建 GitHub Release（附带 `LICENSE` 与 `LICENSE.tailscale`），最后更新 `channel-stable` 上的 `plugin.json` 和 `plugin.json.sig`，供路由器提示新插件版本。
+
+### 3. 自动跟随上游
+
+`.github/workflows/upstream-follow.yml` 每天 03:17 UTC 在 `main` 上查询 Tailscale 最新稳定版（次版本号为偶数）。也可以手动运行；传入 `dry_run=true` 时只跑检查，不提交、不发布、不开 issue。
+
+发现新版本时，工作流按以下顺序执行：
+
+1. 更新 `core/recipe.json`（版本、提交、Go 版本取上游 `go.mod`、完整 featuretags 集合，`revision` 归 1）和 `packaging/core-tag`。
+2. 检查配方，编译一次，在 qemu-user 下运行四个核心的 `--version`，重新生成核心第三方声明。
+3. 运行容器集成测试，覆盖插件脚本用到的命令行参数和 JSON 字段。
+4. 检查通过后提交到 `main`。`dev` 与旧 `main` 相同时一并快进。
+5. 推送 `core-<版本>-1` tag，再手动触发 `core.yml` 完成双编译、签名和发布。用 `GITHUB_TOKEN` 推送的 tag 不会自动触发工作流。
+
+检查失败时，工作流为这个上游版本开一个 issue（已有同名 issue 时追加评论），之后的定时运行跳过这个版本。修好后手动运行工作流重试。上游出现配方里没有的 featuretags 时，核心照常发布（保留这些功能），另开 issue 提醒审阅是否加入 `omit`。

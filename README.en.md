@@ -9,7 +9,7 @@ English | [简体中文](README.md)
 
 ## How Bifrost Differs from the Original Plugin
 
-- **Transparent, reproducible core builds**: Cross-compiled from official Tailscale stable releases (currently v1.104.7) using a public recipe (`core/recipe.json`), build script, and omitted-feature list, so anyone can rebuild and compare hashes. Binaries are installed uncompressed on JFFS (no UPX) for ~0.02 s CLI startup latency (vs ~0.94 s with UPX), and stored gzipped inside offline packages to keep software-center free-space checks low.
+- **Transparent, reproducible core builds**: Cross-compiled from official Tailscale stable releases (currently v1.104.7) using a public recipe (`core/recipe.json`), build script, complete feature-tag inventory, and omitted-feature list, so anyone can rebuild and compare hashes. The default core is installed uncompressed on JFFS with ~0.02 s CLI startup latency. An optional UPX core shrinks the arm core file from 25.1 MB to 8.6 MB (JFFS already compresses files, so the real saving is smaller), but each CLI call takes ~0.39 s on an RT-AX86U and each process decompresses its own copy without sharing memory. Core files are stored gzipped inside offline packages to keep software-center free-space checks low.
 - **Open-source router scripts**: Every script is plain BusyBox POSIX `/bin/sh` with no obfuscation or `shc` wrapping. External inputs pass whitelist validation, `eval` is not used, and state-mutating operations run under an exclusive lock.
 - **Bifrost-managed firewall chains**: `tailscaled` runs with `--netfilter-mode=off`, while Bifrost maintains its own `BIFROST_*` chains. Firmware firewall rebuilds reapply rules without restarting the daemon or dropping tailnet sessions. The local router access toggle works as expected, and CGNAT WAN traffic (`100.64.0.0/10`) is not dropped.
 - **Rebuilt web UI**: Runs inside a Shadow DOM so firmware chrome stays intact. Displays device tables, path and relay indicators, route approval status, signed core updates, and redacted diagnostics. Supports Chinese / English and dark / light switching persisted in router config.
@@ -50,6 +50,7 @@ English | [简体中文](README.md)
 1. Download the offline tarball from GitHub Releases:
    - `bifrost-<version>-hnd.tar.gz` (default 32-bit `arm` core; works on all HND routers, including 64-bit kernel / 32-bit userland models).
    - When the matching core release includes `arm64`, `bifrost-<version>-hnd-arm64.tar.gz` is also provided (`aarch64` kernels only; you can also install the default package and switch online from the **Core** tab).
+   - Optional compressed packages are `bifrost-<version>-hnd-upx.tar.gz` and `bifrost-<version>-hnd-arm64-upx.tar.gz`. Choose them when core file space matters. The **Core** tab can also switch the installed core type online.
    - Optional: download `SHA256SUMS` and `SHA256SUMS.sig` and verify the signature and hash using **Core Updates & Signatures** below before uploading.
 2. In the router web UI, go to **Software Center** → **Offline Install** and upload the `.tar.gz` package.
 3. **A fresh install does not auto-start the service and never modifies the original plugin.** Open Bifrost after installation to enable it or migrate from the original plugin.
@@ -127,6 +128,7 @@ Bifrost supports connecting as a client to self-hosted control servers (containe
 ## Core Updates & Signatures
 
 - Core binaries are released separately under `core-<tailscale-version>-<revision>` tags and update `core.json` and `core.json.sig` in the `channel-stable` release.
+- When the page opens, it performs at most one background check after 24 hours without a check and when no other job is running. Failures stay silent and the result and timestamp are kept on JFFS. A new core is only offered for manual installation. A new plugin version includes a release-page link and is still installed through a Software Center offline package.
 - **Signing algorithm**: ECDSA P-256 with SHA-256 (verified by the router's OpenSSL 1.1.1w). Public keys live in `/koolshare/bifrost/keys/*.pub.pem` with multi-key rotation support.
 - **Anti-downgrade & rollback**: Monotonic `serial` numbers block replay and downgrade attacks; the router rejects cores whose `serial` is not greater than the current one. Updates verify the manifest signature, check `.gz` and unpacked `raw_sha256`, test `--version`, then swap and verify that the service recovers within 60 s. On failure, Bifrost automatically restores the previous core and state snapshot. When JFFS space permits, `bifrostd.prev.gz` is kept for manual rollback.
 - **Verifying offline release tarballs**: Verify the `SHA256SUMS` signature first, then check the tarball hash (works even if you downloaded only one architecture tarball). Take the public key from `plugin/bifrost/keys/` in this repository at the release tag:
@@ -158,7 +160,7 @@ Uninstall from the **Software Center** (runs `/koolshare/scripts/uninstall_bifro
 | Feature | Reason |
 |---|---|
 | Tailscale SSH, Taildrop, Taildrive, web client | Omitted at compile time to reduce binary size and attack surface. |
-| Auto-updates & `tailscale update` | Updates are strictly manual; upstream self-update would overwrite Bifrost's core. |
+| Automatic core installation & `tailscale update` | Checks run in the background, but installation remains manual. Upstream self-update would overwrite Bifrost's core and is removed at build time. |
 | Using an exit node on the router | Rewriting whole-LAN default routes is high-risk; v1 only supports advertising as an exit node (CLI remains available). |
 | `--accept-dns` | Kept off to avoid fighting firmware `/etc/resolv.conf`; MagicDNS is provided via dnsmasq forwarding. |
 | IPv6 subnet routing & NAT | v1 covers IPv6 direct UDP connectivity and the router's own tailnet IPv6 address only. |
