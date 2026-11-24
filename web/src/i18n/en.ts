@@ -320,8 +320,7 @@ export const en: Record<MessageKey, string> = {
   "diag.netcheck.portmap": "Port Mapping",
   "diag.netcheck.preferred": "Preferred DERP",
   "diag.netcheck.derpTable": "DERP Relay Latencies",
-  "diag.netcheck.derpCode": "Region",
-  "diag.netcheck.derpLatency": "Latency",
+  "diag.netcheck.derpPreferredMark": " (preferred)",
   "diag.netcheck.empty": "No network check results yet. Click above to run one.",
 
   "diag.section.env": "Environment Checks",

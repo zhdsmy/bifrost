@@ -391,45 +391,46 @@ test("initialization reads existing job files: resumes running update and restor
   await page.getByText("28 ms", { exact: true }).waitFor();
 });
 
-test("diagnostics page: the DERP table shows at most ten rows and scrolls the rest under its header", async (t) => {
-  const derp = Array.from({ length: 25 }, (_, i) => ({ code: `r${String(i).padStart(2, "0")}`, latency_ms: 10 + i }));
+test("diagnostics page: the DERP list shows at most ten rows, scrolls the rest, and marks the preferred region", async (t) => {
+  const derp = Array.from({ length: 40 }, (_, i) => ({ code: `r${String(i).padStart(2, "0")}`, latency_ms: 10 + i * 7 }));
   const { page, url } = await openPreview(t, {
     initialState: "running",
     initialJobs: {
       netcheck: {
         schema: 1, job: "netcheck", running: false, phase: "done", progress: 100, ok: true, code: null,
         started: SAMPLE_NOW - 120, finished: SAMPLE_NOW - 115, pid: 4310,
-        data: { report: { ...SAMPLE_NETCHECK_REPORT, derp } },
+        data: { report: { ...SAMPLE_NETCHECK_REPORT, preferred_derp: "r01", derp } },
       },
     },
   });
   await page.goto(url);
   await ready(page);
   await clickTab(page, "诊断");
-  const first = page.getByText("r00", { exact: true });
-  await first.waitFor();
+  const list = page.locator("main ol");
+  await list.getByText("r00", { exact: true }).waitFor();
 
-  const view = await first.evaluate((el) => {
-    const box = el.closest("table").parentElement;
-    const rows = box.querySelectorAll("tbody tr");
-    const top = box.getBoundingClientRect().top + box.clientTop;
-    const bottom = top + box.clientHeight;
-    const tenthEnd = rows[9].getBoundingClientRect().bottom - bottom;
-    const eleventhStart = rows[10].getBoundingClientRect().top - bottom;
-    box.scrollTop = box.scrollHeight;
+  const view = await list.evaluate((box) => {
+    const items = [...box.querySelectorAll("li")];
+    const top = (el) => Math.round(el.getBoundingClientRect().top);
+    const rowTops = [...new Set(items.map(top))];
+    const inner = box.getBoundingClientRect().top + box.clientTop;
+    const bottom = inner + box.clientHeight - parseFloat(getComputedStyle(box).paddingBottom);
+    const rowOf = (n) => items.find((li) => top(li) === rowTops[n]).getBoundingClientRect();
+    const bars = items.slice(0, 2).map((li) => li.querySelector("[aria-hidden] > span").getBoundingClientRect().width);
     return {
-      rows: rows.length,
+      rows: rowTops.length,
       scrolls: box.scrollHeight > box.clientHeight,
-      tenthEnd,
-      eleventhStart,
-      headAfterScroll: box.querySelector("thead th").getBoundingClientRect().top - top,
+      tenthEnd: rowOf(9).bottom - bottom,
+      eleventhStart: rowOf(10).top - bottom,
+      barRatio: bars[1] / bars[0],
     };
   });
-  assert.equal(view.rows, 25);
-  assert.ok(view.scrolls, "the DERP table does not scroll");
-  // The tenth row ends at the bottom edge; scrolled to the end, the header stays on top.
+  assert.ok(view.rows > 10 && view.scrolls, JSON.stringify(view));
   assert.ok(Math.abs(view.tenthEnd) <= 1 && view.eleventhStart >= -1, JSON.stringify(view));
-  assert.ok(Math.abs(view.headAfterScroll) <= 1, JSON.stringify(view));
+  // One linear scale: 17 ms draws 1.7 times as long as 10 ms.
+  assert.ok(Math.abs(view.barRatio - 1.7) < 0.1, JSON.stringify(view));
+  assert.equal(await list.locator("li").filter({ hasText: "（首选）" }).getByText("r01", { exact: true }).count(), 1);
+  assert.equal(await list.getByText("（首选）").count(), 1);
 });
 
 test("a fresh page omits finished daemon, migration and update mutation results", async (t) => {

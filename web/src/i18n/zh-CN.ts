@@ -318,8 +318,7 @@ export const zhCN = {
   "diag.netcheck.portmap": "端口映射方式",
   "diag.netcheck.preferred": "首选 DERP",
   "diag.netcheck.derpTable": "DERP 中继延迟",
-  "diag.netcheck.derpCode": "区域代号",
-  "diag.netcheck.derpLatency": "延迟",
+  "diag.netcheck.derpPreferredMark": "（首选）",
   "diag.netcheck.empty": "尚未运行网络检测，点击上方按钮开始。",
 
   "diag.section.env": "环境检查",

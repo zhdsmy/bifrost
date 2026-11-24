@@ -6,7 +6,6 @@ import { Badge } from "@cloudflare/kumo/components/badge";
 import { Banner } from "@cloudflare/kumo/components/banner";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Empty } from "@cloudflare/kumo/components/empty";
-import { Table } from "@cloudflare/kumo/components/table";
 import { useApp } from "../app/context";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { JobProgress } from "../components/JobProgress";
@@ -27,6 +26,7 @@ export function DiagnosticsPage() {
 
   const netcheckJob = jobs.netcheck as JobProgressState<NetcheckJobData> | undefined;
   const report = netcheckJob?.data?.report ?? null;
+  const maxDerpLatency = Math.max(1, ...(report?.derp ?? []).map((d) => d.latency_ms));
 
   const fetchLogsAndDiag = useCallback(async () => {
     setLogsLoading(true);
@@ -127,28 +127,37 @@ export function DiagnosticsPage() {
                 <h3 className="text-xs font-medium text-kumo-subtle">
                   {t("diag.netcheck.derpTable")}
                 </h3>
-                {/* At most ten rows show; the rest scroll under the header. Each row is
-                    2.75rem (Kumo's p-3 plus leading-5); the header adds a 1px border. */}
-                <div className="max-h-[calc(11*2.75rem+3px)] overflow-auto rounded-lg border border-kumo-line">
-                  <Table className="[&_td]:leading-5 [&_th]:leading-5">
-                    <Table.Header sticky>
-                      <Table.Row>
-                        <Table.Head>{t("diag.netcheck.derpCode")}</Table.Head>
-                        <Table.Head>{t("diag.netcheck.derpLatency")}</Table.Head>
-                      </Table.Row>
-                    </Table.Header>
-                    <Table.Body>
-                      {report.derp.map((d) => (
-                        <Table.Row key={d.code}>
-                          <Table.Cell className="font-mono">
-                            <span data-raw-value="true">{d.code}</span>
-                          </Table.Cell>
-                          <Table.Cell className="tabular-nums">{t("common.latency", { ms: d.latency_ms })}</Table.Cell>
-                        </Table.Row>
-                      ))}
-                    </Table.Body>
-                  </Table>
-                </div>
+                {/* Up to ten 2rem rows show; the rest scroll. All bars share one
+                    linear scale, from 0 to the slowest region. */}
+                <ol className="grid max-h-[calc(20.5rem+2px)] grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-x-6 overflow-y-auto rounded-lg border border-kumo-line px-3 py-1 text-sm">
+                  {report.derp.map((d) => {
+                    const preferred = d.code === report.preferred_derp;
+                    return (
+                      <li
+                        key={d.code}
+                        className={`flex h-8 min-w-0 items-center gap-2 ${preferred ? "-mx-2 rounded-md bg-kumo-tint px-2" : ""}`}
+                      >
+                        <span
+                          data-raw-value="true"
+                          title={d.code}
+                          className={`w-12 shrink-0 truncate font-mono ${preferred ? "font-semibold text-kumo-strong" : "text-kumo-default"}`}
+                        >
+                          {d.code}
+                        </span>
+                        {preferred && <span className="sr-only">{t("diag.netcheck.derpPreferredMark")}</span>}
+                        <span aria-hidden="true" className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-kumo-fill">
+                          <span
+                            className={`block h-full rounded-full ${preferred ? "bg-kumo-brand" : "bg-current text-kumo-subtle"}`}
+                            style={{ width: `${Math.max(2, (d.latency_ms / maxDerpLatency) * 100)}%` }}
+                          />
+                        </span>
+                        <span className="w-14 shrink-0 text-right text-kumo-subtle tabular-nums">
+                          {t("common.latency", { ms: d.latency_ms })}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ol>
               </div>
             )}
           </div>
