@@ -13,6 +13,8 @@
 : "${BIFROST_WATCHDOG_MAX:=3}"
 : "${BIFROST_LOG_MAX_BYTES:=1048576}"
 : "${BIFROST_LOG_KEEP_BYTES:=204800}"
+: "${BIFROST_CRASH_KEEP:=3}"
+: "${BIFROST_CRASH_LINES:=50}"
 
 # Internal phase hook set only while job_daemon runs daemon_start/daemon_stop.
 _BIFROST_DAEMON_JOB=""
@@ -345,6 +347,91 @@ daemon_trim_logs() {
     daemon_trim_file "$BIFROST_LOG"
 }
 
+# Seconds since boot. Event lines use it to tell a boot from a WAN reconnect.
+daemon_sys_up() {
+    if read -r _dsu_up _ 2>/dev/null </proc/uptime; then
+        echo "${_dsu_up%%.*}"
+    else
+        echo "?"
+    fi
+}
+
+daemon_nat_age() {
+    _dna_t=$(cat "$BIFROST_RUN/nat_start.last" 2>/dev/null)
+    if valid_uint "$_dna_t"; then
+        echo "last nat-start $(($(now) - _dna_t)) s ago"
+    else
+        echo "no nat-start since boot"
+    fi
+}
+
+# Read bifrostd output on stdin. From the last start marker on, print whether
+# Go panicked, the first panic or fatal error with the lines after it, and
+# the last lines.
+_daemon_crash_out() {
+    awk -v n="$BIFROST_CRASH_LINES" '
+        /^==== .* bifrost: starting bifrostd ====$/ { c = 0; pn = 0; next }
+        {
+            buf[c % n] = $0
+            c++
+            if (pn == 0 && $0 ~ /^(panic: |fatal error: )/) pn = 1
+            if (pn > 0 && pn <= 40) { pbuf[pn] = $0; pn++ }
+        }
+        END {
+            print "go_panic: " (pn > 0 ? "yes" : "no")
+            print "== first panic or fatal error =="
+            if (pn == 0) print "(none)"
+            for (i = 1; i < pn; i++) print pbuf[i]
+            print "== last " n " lines of bifrostd output =="
+            for (i = (c > n ? c - n : 0); i < c; i++) print buf[i % n]
+        }'
+}
+
+# daemon_crash_note: bifrostd is gone without a stop. Keep a redacted record
+# in $BIFROST_CRASH_DIR (the newest $BIFROST_CRASH_KEEP) and report the exit
+# in the system log. Never fails.
+daemon_crash_note() {
+    _dcn_pid=$(cat "$BIFROST_PIDFILE" 2>/dev/null)
+    valid_uint "$_dcn_pid" || _dcn_pid=""
+    _dcn_ran=unknown
+    _dcn_t0=$(cat "$BIFROST_RUN/bifrostd.started" 2>/dev/null)
+    if valid_uint "$_dcn_t0" && [ "$(now)" -ge "$_dcn_t0" ]; then
+        _dcn_ran="$(($(now) - _dcn_t0)) s"
+    fi
+    _dcn_kern=$(dmesg 2>/dev/null | grep -E 'bifrostd|Out of memory' | tail -n 10)
+    _dcn_oom=no
+    if printf '%s\n' "$_dcn_kern" | grep -Eq "Kill(ed)? process ${_dcn_pid:-[0-9]+} \\(bifrostd\\)"; then
+        _dcn_oom=yes
+    fi
+    _dcn_out=$(cat "$BIFROST_DLOG" 2>/dev/null | _daemon_crash_out)
+    case "$_dcn_out" in "go_panic: yes"*) _dcn_panic=yes ;; *) _dcn_panic=no ;; esac
+
+    _dcn_name=""
+    if has_cmd redact && has_cmd _diag_collect_redact_hints && mkdir -p "$BIFROST_CRASH_DIR" 2>/dev/null; then
+        chmod 700 "$BIFROST_CRASH_DIR" 2>/dev/null
+        _dcn_name="crash-$(date '+%Y%m%d-%H%M%S').txt"
+        {
+            printf 'time: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+            printf 'pid: %s\n' "${_dcn_pid:-unknown}"
+            printf 'run_time: %s\n' "$_dcn_ran"
+            printf 'system_uptime: %s s\n' "$(daemon_sys_up)"
+            printf 'oom_killed: %s\n' "$_dcn_oom"
+            printf '== kernel log (bifrostd, out of memory) ==\n'
+            printf '%s\n' "${_dcn_kern:-(none)}"
+            printf '%s\n' "$_dcn_out"
+        } | redact "$(_diag_collect_redact_hints "")" |
+            atomic_write "$BIFROST_CRASH_DIR/$_dcn_name" 600 || _dcn_name=""
+        # Names sort by time; drop the oldest.
+        set -- "$BIFROST_CRASH_DIR"/crash-*.txt
+        [ -e "$1" ] || set --
+        while [ "$#" -gt "$BIFROST_CRASH_KEEP" ]; do
+            rm -f "$1"
+            shift
+        done
+    fi
+    event watchdog "bifrostd exited (pid ${_dcn_pid:-unknown}, ran $_dcn_ran, oom killed: $_dcn_oom, go panic: $_dcn_panic); record: ${_dcn_name:-none}"
+}
+
 # Launch and read the active profile under the caller's state lock.
 daemon_start_ready() {
     daemon_phase precheck 15
@@ -374,6 +461,9 @@ daemon_start_ready() {
             set -- "$@" --no-logs-no-support
         fi
         log daemon "starting bifrostd on port $_dst_port"
+        # A crash record reads the output after the last marker only.
+        printf '==== %s bifrost: starting bifrostd ====\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>"$BIFROST_DLOG" 2>/dev/null
+        now >"$BIFROST_RUN/bifrostd.started" 2>/dev/null
         TS_LOGS_DIR="$BIFROST_TS_LOGS" \
             nohup "$BIFROST_CORE" "$@" </dev/null >>"$BIFROST_DLOG" 2>&1 &
         _dst_pid=$!
@@ -513,10 +603,16 @@ hook_start() {
     if has_cmd migrate_recover; then migrate_recover || return 1; fi
     [ "$(cfg bifrost_enable)" = 1 ] || return 0
     if daemon_running; then
+        event hook "start: bifrostd already running (pid $(daemon_pid)); not restarted"
         daemon_watchdog_register
         return $?
     fi
-    daemon_start
+    if daemon_start; then
+        event hook "start: bifrostd started (system up $(daemon_sys_up) s)"
+        return 0
+    fi
+    event hook "start: bifrostd failed to start (${BIFROST_ERR:-internal})"
+    return 1
 }
 
 # Remove supervision only once the daemon has stopped. A network-clear
@@ -541,11 +637,29 @@ daemon_unschedule() {
     daemon_watchdog_remove
 }
 
-hook_stop() { daemon_deactivate hook; }
+hook_stop() {
+    _hs_pid=$(daemon_pid)
+    if daemon_deactivate hook; then
+        [ -z "$_hs_pid" ] || event hook "stop: bifrostd stopped (pid $_hs_pid)"
+        return 0
+    fi
+    event hook "stop: failed (${BIFROST_ERR:-internal})"
+    return 1
+}
 
+# The dispatcher records the time of every nat-start before it takes the lock.
 hook_start_nat() {
-    daemon_running || return 0
-    fw_apply
+    if ! daemon_running; then
+        [ "$(cfg bifrost_enable)" != 1 ] || event hook "nat-start: bifrostd not running; no rules applied"
+        return 0
+    fi
+    _hn_t0=$(now)
+    if fw_apply; then
+        event hook "nat-start: firewall re-applied in $(($(now) - _hn_t0)) s"
+        return 0
+    fi
+    event hook "nat-start: firewall apply failed (${BIFROST_ERR:-fw_failed}) after $(($(now) - _hn_t0)) s"
+    return 1
 }
 
 # watchdog_run: 6-point health check (PLAN 6.5). Called under state lock (wait 0).
@@ -562,10 +676,10 @@ watchdog_run() {
 
     _wd_healthy=1
     if ! daemon_running; then
-        log watchdog "daemon process missing"
+        daemon_crash_note
         _wd_healthy=0
     elif ! ts_cli status --json >/dev/null 2>&1; then
-        log watchdog "daemon status unresponsive"
+        event watchdog "bifrostd unresponsive (pid $(daemon_pid)): no status within 10 s"
         _wd_healthy=0
     fi
 
@@ -595,7 +709,7 @@ $_wd_ts"
             if [ -n "$_wd_kept" ]; then
                 printf '%s\n' "$_wd_kept" | atomic_write "$_wd_rf" 644
             fi
-            log watchdog "restart limit reached ($_wd_cnt/$BIFROST_WATCHDOG_MAX); giving up"
+            event watchdog "restart limit reached ($_wd_cnt in $((BIFROST_WATCHDOG_WINDOW / 60)) min); gave up until the user acts"
             daemon_err_set watchdog_gave_up
             status_refresh || true
             return 1
@@ -607,9 +721,14 @@ $_wd_ts"
         else
             printf '%s\n' "$_wd_now" | atomic_write "$_wd_rf" 644
         fi
-        log watchdog "restarting daemon ($((_wd_cnt + 1))/$BIFROST_WATCHDOG_MAX)"
-        daemon_restart
-        return $?
+        _wd_n="$((_wd_cnt + 1))/$BIFROST_WATCHDOG_MAX"
+        log watchdog "restarting daemon ($_wd_n)"
+        if daemon_restart; then
+            event watchdog "restart $_wd_n ok"
+            return 0
+        fi
+        event watchdog "restart $_wd_n failed (${BIFROST_ERR:-internal})"
+        return 1
     fi
 
     _wd_changed=0
@@ -623,8 +742,24 @@ $_wd_ts"
     elif [ -n "$_df_flags" ]; then
         _wd_changed=1
     fi
-    if [ "$_wd_error" = fw_failed ] || ! fw_check; then
-        fw_apply || _wd_problem=${_wd_problem:-fw_failed}
+    # One event when rules go missing and one when a failed apply recovers;
+    # repeated retries of a failing apply only go to bifrost.log.
+    if [ "$_wd_error" = fw_failed ]; then
+        if fw_apply; then
+            event fw "firewall re-applied after an earlier failure"
+        else
+            log fw "firewall re-apply still failing"
+            _wd_problem=${_wd_problem:-fw_failed}
+        fi
+        _wd_changed=1
+    elif ! fw_check; then
+        _wd_fw="firewall rules missing ($(fw_why)); $(daemon_nat_age)"
+        if fw_apply; then
+            event fw "$_wd_fw; re-applied"
+        else
+            event fw "$_wd_fw; re-apply failed"
+            _wd_problem=${_wd_problem:-fw_failed}
+        fi
         _wd_changed=1
     fi
     # dns_check reports stale files. A policy error can still exist while
@@ -655,7 +790,25 @@ act_disable() { job_start daemon stop; }
 act_purge() { job_start daemon purge; }
 
 # job_daemon <start|stop|restart|purge>: background job body (contract 6.2).
+# Each action leaves one line in the system log.
 job_daemon() {
+    _job_daemon "$@"
+    _jdm_rc=$?
+    case "${1:-}" in
+        start) _jdm_what=enable ;;
+        stop) _jdm_what=disable ;;
+        restart | purge) _jdm_what=$1 ;;
+        *) return "$_jdm_rc" ;;
+    esac
+    if [ "$_jdm_rc" -eq 0 ]; then
+        event page "$_jdm_what: done"
+    else
+        event page "$_jdm_what: failed (${BIFROST_ERR:-internal})"
+    fi
+    return "$_jdm_rc"
+}
+
+_job_daemon() {
     _jdm_act=${1:-}
     case "$_jdm_act" in
         start)

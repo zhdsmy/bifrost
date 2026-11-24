@@ -14,7 +14,7 @@ not edit baseline files; they report needed changes instead.
 |---|---|
 | baseline | `plugin/bifrost/lib/{env,validate,common}.sh`, `plugin/bifrost/scripts/{bifrost_config,bifrost_status}.sh`, `plugin/bifrost/version`, `tests/shell/{Dockerfile,run.sh,inner.sh,lib.sh,router-applets.txt}`, `tests/shell/mock/{base.sh,bifrostd}`, `tests/shell/mock/bin/{dbus,nvram,cru,logger,service,pidof,ip,uname}`, `tests/shell/t_{validate,common,dispatch}.sh`, `tools/check-sh.sh`, `tools/check-private.sh`, `.shellcheckrc`, `docs/dev/contract.md`, `docs/PLAN.md` |
 | P1 core | `core/**`, `plugin/bifrost/lib/update.sh`, `plugin/bifrost/keys/**`, `tools/sign.sh`, `tools/dev-keys.sh`, `.github/workflows/core.yml`, `tests/shell/t_update*.sh`, `tests/shell/fixtures/update/**`, `tests/shell/mock/bin/{curl,df}` |
-| P2 runtime | `plugin/bifrost/lib/{daemon,login,settings,migrate}.sh`, `plugin/bifrost/bin/bifrost`, `tests/shell/t_{daemon,login,settings,migrate}*.sh`, `tests/shell/fixtures/runtime/**` |
+| P2 runtime | `plugin/bifrost/lib/{daemon,login,settings,migrate}.sh`, `plugin/bifrost/bin/bifrost`, `tests/shell/t_{daemon,login,settings,migrate}*.sh`, `tests/shell/fixtures/runtime/**`, `tests/shell/mock/bin/dmesg` |
 | P3 net | `plugin/bifrost/lib/{fw,dns,status,diag}.sh`, `tests/shell/t_{fw,dns,status,diag}*.sh`, `tests/shell/fixtures/net/**`, `tests/shell/mock/bin/{iptables,ip6tables}` |
 | P4 web | `web/**`, `plugin/bifrost/webs/Module_bifrost.asp`, `plugin/bifrost/res/icon-bifrost.png`, `docs/images/**` |
 | P5 release | `plugin/bifrost/{install.sh,uninstall.sh,.valid}`, `packaging/**`, `tests/container/**`, `tests/install/**`, `.github/workflows/{ci,release}.yml`, `NOTICE.md`, `CHANGELOG.md`, `README.md`, `README.en.md`, `docs/README.md`, `.gitignore` (append only) |
@@ -295,7 +295,9 @@ own time limit, as long as it keeps refreshing status.
   2. `== summary ==`: plugin and core versions, state, `BackendState`,
      settings, prefs, environment checks (one `key: value` per line);
   3. `== bifrost.log ==` and its last 200 lines;
-  4. `== bifrostd.log ==` and its last 200 lines.
+  4. `== bifrostd.log ==` and its last 200 lines;
+  5. `== crash records ==`: each file in `$BIFROST_CRASH_DIR`, oldest
+     first, under a `-- <name> --` line, or `(none)`.
 - `bifrost_diag.json` (P3, `logs`): the environment checks for the
   diagnostics page (PLAN 13.4):
   `{"schema":1,"time":<unix>,"tun":bool,"fw_complete":bool|null,"conflict":bool,"wan_cgnat":bool|null,"jffs_free_kb":<int>|null,"time_synced":bool|null,"dnsmasq_conf_dir":bool}`.

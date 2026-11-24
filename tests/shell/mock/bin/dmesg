@@ -1,0 +1,4 @@
+#!/bin/sh
+# Mock of dmesg: prints $MOCK_STATE/dmesg.out when it exists.
+[ -f "$MOCK_STATE/dmesg.out" ] || exit 0
+cat "$MOCK_STATE/dmesg.out"

@@ -552,4 +552,142 @@ ok boot-custom-first t_call start
 ok boot-custom-immediate-flag daemon_running_has_nologs
 eq boot-custom-one-restart 2 "$(grep -c '^started ' "$MOCK_STATE/daemon.log")"
 daemon_stop
+
+# --- 10. System log events and crash records (PLAN 6.6) ---
+
+syslog() { cat "$MOCK_STATE/syslog.log" 2>/dev/null; }
+
+unset BIFROST_LOG_MAX_BYTES BIFROST_LOG_KEEP_BYTES
+fresh
+dbus_seed bifrost_enable=1
+mkdir -p "$BIFROST_RUN"
+printf 'panic: from an earlier run\n' >"$BIFROST_DLOG"
+ok ev-hook-start hook_start
+has ev-hook-started "SYSLOG -t bifrost hook: start: bifrostd started (system up " "$(syslog)"
+ev_pid=$(daemon_pid)
+: >"$MOCK_STATE/syslog.log"
+ok ev-hook-start-again hook_start
+has ev-hook-running "hook: start: bifrostd already running (pid $ev_pid); not restarted" "$(syslog)"
+
+# A healthy watchdog run writes nothing to the system log.
+: >"$MOCK_STATE/syslog.log"
+ok ev-healthy watchdog_run
+eq ev-healthy-quiet "" "$(syslog)"
+
+# The daemon dies after a Go panic and an out-of-memory kill. The record keeps
+# only this run's output, redacted, and the oldest of four records goes.
+mkdir -p "$BIFROST_CRASH_DIR"
+for n in 1 2 3; do echo old >"$BIFROST_CRASH_DIR/crash-20000101-00000$n.txt"; done
+ev_key="tskey-auth-12345678""-abcdef90"
+printf 'peer 203.0.113.7\npanic: assignment to entry in nil map %s\ngoroutine 1 [running]:\n' "$ev_key" >>"$BIFROST_DLOG"
+printf 'Out of memory: Kill process %s (bifrostd) score 900 or sacrifice child\n' "$ev_pid" >"$MOCK_STATE/dmesg.out"
+kill -KILL "$ev_pid"
+ok ev-crash-dead wait_until_dead "$ev_pid"
+: >"$MOCK_STATE/syslog.log"
+ok ev-crash-restart watchdog_run
+eq ev-crash-kept 3 "$(find "$BIFROST_CRASH_DIR" -name 'crash-*.txt' | wc -l | tr -d ' ')"
+no ev-crash-oldest-gone [ -e "$BIFROST_CRASH_DIR/crash-20000101-000001.txt" ]
+ev_rec=$(find "$BIFROST_CRASH_DIR" -name 'crash-*.txt' ! -name 'crash-20000101-*')
+ok ev-crash-new [ -f "$ev_rec" ]
+eq ev-crash-mode "$ev_rec" "$(find "$ev_rec" -perm 600)"
+ev_body=$(cat "$ev_rec")
+has ev-crash-pid "pid: $ev_pid" "$ev_body"
+has ev-crash-oom "oom_killed: yes" "$ev_body"
+has ev-crash-go "go_panic: yes" "$ev_body"
+has ev-crash-panic "panic: assignment to entry in nil map <key>" "$ev_body"
+has ev-crash-kernel "Kill process $ev_pid (bifrostd)" "$ev_body"
+has ev-crash-ip "peer <ipv4>" "$ev_body"
+no ev-crash-no-ip grep -Fq 203.0.113.7 "$ev_rec"
+no ev-crash-no-key grep -Fq "$ev_key" "$ev_rec"
+no ev-crash-this-run-only grep -Fq "earlier run" "$ev_rec"
+has ev-sys-exit "watchdog: bifrostd exited (pid $ev_pid, ran " "$(syslog)"
+has ev-sys-flags "oom killed: yes, go panic: yes); record: ${ev_rec##*/}" "$(syslog)"
+has ev-sys-restart "watchdog: restart 1/3 ok" "$(syslog)"
+no ev-sys-no-key grep -Fq "$ev_key" "$MOCK_STATE/syslog.log"
+
+# No redactor: no record, but the exit is still reported.
+ev_pid=$(daemon_pid)
+kill -KILL "$ev_pid"
+ok ev-noredact-dead wait_until_dead "$ev_pid"
+: >"$MOCK_STATE/syslog.log"
+unset -f redact
+ok ev-noredact-restart watchdog_run
+has ev-noredact-line "oom killed: no, go panic: no); record: none" "$(syslog)"
+eq ev-noredact-files 3 "$(find "$BIFROST_CRASH_DIR" -name 'crash-*.txt' | wc -l | tr -d ' ')"
+. "$BIFROST_LIB/diag.sh"
+
+# Unresponsive, then the restart limit.
+ts_rc status 1
+: >"$MOCK_STATE/syslog.log"
+no ev-unresponsive watchdog_run
+has ev-unresponsive-line "watchdog: bifrostd unresponsive (pid " "$(syslog)"
+has ev-unresponsive-restart "watchdog: restart 3/3 failed (" "$(syslog)"
+rm -f "$MOCK_STATE/ts/status.rc"
+daemon_err_clear
+ok ev-limit-start daemon_start
+ev_pid=$(daemon_pid)
+kill -KILL "$ev_pid"
+ok ev-limit-dead wait_until_dead "$ev_pid"
+: >"$MOCK_STATE/syslog.log"
+no ev-limit watchdog_run
+has ev-limit-line "watchdog: restart limit reached (3 in 30 min); gave up until the user acts" "$(syslog)"
+rm -f "$BIFROST_RUN/watchdog.restarts"
+daemon_err_clear
+ok ev-fw-start daemon_start
+
+# Missing and displaced jumps name the chain and the last nat-start.
+echo $(($(now) - 100)) >"$BIFROST_RUN/nat_start.last"
+iptables -t filter -D INPUT -j BIFROST_INPUT
+iptables -t filter -I FORWARD 1 -j ACCEPT
+: >"$MOCK_STATE/syslog.log"
+ok ev-fw-repair watchdog_run
+has ev-fw-line "fw: firewall rules missing (v4 filter/INPUT jump missing, v4 filter/FORWARD jump not first or repeated); last nat-start 10" "$(syslog)"
+has ev-fw-reapplied "s ago; re-applied" "$(syslog)"
+rm -f "$BIFROST_RUN/nat_start.last"
+iptables -t filter -D INPUT -j BIFROST_INPUT
+echo 1000 >"$MOCK_STATE/iptables.fail_count"
+: >"$MOCK_STATE/syslog.log"
+ok ev-fw-fail watchdog_run
+has ev-fw-fail-line "no nat-start since boot; re-apply failed" "$(syslog)"
+: >"$MOCK_STATE/syslog.log"
+ok ev-fw-retry watchdog_run
+eq ev-fw-retry-quiet "" "$(syslog)"
+rm -f "$MOCK_STATE/iptables.fail_count"
+ok ev-fw-recover watchdog_run
+has ev-fw-recover-line "fw: firewall re-applied after an earlier failure" "$(syslog)"
+
+# nat-start: the dispatcher records the time; the hook reports its duration.
+: >"$MOCK_STATE/syslog.log"
+ok ev-nat t_call start_nat
+ok ev-nat-time valid_uint "$(cat "$BIFROST_RUN/nat_start.last")"
+has ev-nat-line "hook: nat-start: firewall re-applied in " "$(syslog)"
+with_lock() { fail busy; }
+: >"$MOCK_STATE/syslog.log"
+no ev-busy hook start_nat
+has ev-busy-line "hook: start_nat: state lock busy for 30 s; skipped" "$(syslog)"
+. "$BIFROST_LIB/common.sh"
+ev_pid=$(daemon_pid)
+: >"$MOCK_STATE/syslog.log"
+ok ev-stop hook_stop
+has ev-stop-line "hook: stop: bifrostd stopped (pid $ev_pid)" "$(syslog)"
+: >"$MOCK_STATE/syslog.log"
+ok ev-nat-stopped hook_start_nat
+has ev-nat-stopped-line "hook: nat-start: bifrostd not running; no rules applied" "$(syslog)"
+: >"$MOCK_STATE/syslog.log"
+ok ev-stop-again hook_stop
+eq ev-stop-again-quiet "" "$(syslog)"
+
+# Page actions leave one line each.
+: >"$MOCK_STATE/syslog.log"
+ok ev-enable act_enable
+bg_drain
+ok ev-disable act_disable
+bg_drain
+pidof_set tailscaled 8888
+ok ev-enable-conflict act_enable
+bg_drain
+rm -f "$MOCK_STATE/pidof/tailscaled"
+eq ev-page-lines "page: enable: done
+page: disable: done
+page: enable: failed (conflict)" "$(sed -n 's/^SYSLOG -t bifrost //p' "$MOCK_STATE/syslog.log")"
 t_done

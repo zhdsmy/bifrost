@@ -24,6 +24,16 @@ log() {
     return 0
 }
 
+# event <tag> <message...>: log() plus one line in the system log, which the
+# firmware keeps across reboots (PLAN 6.6). Only for rare events, never for a
+# routine watchdog run. Messages hold no addresses, names or keys.
+event() {
+    log "$@"
+    _ev_tag=$1
+    shift
+    logger -t bifrost "$_ev_tag: $*" 2>/dev/null || :
+}
+
 # cfg <key>: dbus value of a Bifrost key, or its default when unset or invalid.
 cfg() {
     _cf_v=$(dbus get "$1" 2>/dev/null)

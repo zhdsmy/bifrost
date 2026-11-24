@@ -18,6 +18,8 @@
 : "${BIFROST_INITD:=$BIFROST_KSROOT/init.d}"
 : "${BIFROST_KSBIN:=$BIFROST_KSROOT/bin}"
 : "${BIFROST_STATE:=$BIFROST_KSROOT/configs/bifrost}"
+# Redacted records of daemon exits; kept across reboots (PLAN 6.6).
+: "${BIFROST_CRASH_DIR:=$BIFROST_HOME/crash}"
 
 : "${BIFROST_RUN:=/tmp/bifrost-run}"
 : "${BIFROST_LOG:=$BIFROST_RUN/bifrost.log}"

@@ -131,11 +131,20 @@ page() {
 
 hook() {
     log hook "$1"
+    # The watchdog reports how long ago the firewall was last rebuilt.
+    if [ "$1" = start_nat ] && mkdir -p "$BIFROST_RUN" 2>/dev/null; then
+        now >"$BIFROST_RUN/nat_start.last"
+    fi
     case "$1" in
         start) with_lock state 30 hook_start ;;
         stop) with_lock state 30 hook_stop ;;
         start_nat) with_lock state 30 hook_start_nat ;;
     esac
+    _hk_rc=$?
+    if [ "$_hk_rc" -ne 0 ] && [ "$BIFROST_ERR" = busy ]; then
+        event hook "$1: state lock busy for 30 s; skipped"
+    fi
+    return "$_hk_rc"
 }
 
 internal() {

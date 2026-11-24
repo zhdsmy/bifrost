@@ -440,3 +440,29 @@ fw_check() {
         _fw_matches ip6tables "$BIFROST_RUN/fw6.rules" "$_fw_v6"
     fi
 }
+
+# fw_why: after fw_check failed, print why in a few words for the watchdog's
+# event line. Read only.
+fw_why() {
+    _fwy_out=$(
+        _fw_chains iptables _fw_why_jump
+        if has_cmd ip6tables && ! _fw_v6_deferred; then _fw_chains ip6tables _fw_why_jump; fi
+    )
+    if [ -n "$_fwy_out" ]; then
+        printf '%s\n' "${_fwy_out#, }"
+    elif [ ! -s "$BIFROST_RUN/fw.rules" ]; then
+        echo "no rule record"
+    else
+        echo "rules or settings changed"
+    fi
+}
+
+_fw_why_jump() {
+    _fw_jump_is_first "$@" && return 0
+    case "$1" in iptables) _fwj_v=v4 ;; *) _fwj_v=v6 ;; esac
+    if "$1" -t "$2" -C "$3" -j "$4" >/dev/null 2>&1; then
+        printf ', %s %s/%s jump not first or repeated' "$_fwj_v" "$2" "$3"
+    else
+        printf ', %s %s/%s jump missing' "$_fwj_v" "$2" "$3"
+    fi
+}

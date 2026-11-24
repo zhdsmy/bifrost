@@ -359,7 +359,7 @@ migrate_apply_locked() {
     # the nat-start hook adds ours back.
     service restart_firewall >/dev/null 2>&1 || log migrate "firewall rebuild request failed"
     status_refresh || true
-    log migrate "migration succeeded"
+    event migrate "migration succeeded"
     return 0
 }
 
@@ -370,7 +370,12 @@ migrate_transaction() {
     _mt_err=""
     migrate_apply_locked || _mt_err=${BIFROST_ERR:-internal}
     if [ -n "$_mt_err" ]; then
-        migrate_recover || _mt_err=${BIFROST_ERR:-migrate_rollback_failed}
+        if migrate_recover; then
+            event migrate "migration failed ($_mt_err); rolled back"
+        else
+            event migrate "migration failed ($_mt_err); rollback failed (${BIFROST_ERR:-migrate_rollback_failed})"
+            _mt_err=${BIFROST_ERR:-migrate_rollback_failed}
+        fi
     fi
     trap - HUP INT TERM
     [ -z "$_mt_err" ] || { fail "$_mt_err"; return 1; }

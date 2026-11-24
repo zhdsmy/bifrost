@@ -275,6 +275,8 @@ while [ "$_i" -le 260 ]; do
     _i=$((_i + 1))
 done
 printf 'daemon-secret fqdn=router.%s auth=https://login.tailscale.com/a/deadbeef1234 mac=aa:bb:cc:dd:ee:ff v6=2001:db8::99 keep=100.64.0.1\n' "$_fake_tn" >>"$BIFROST_DLOG"
+mkdir -p "$BIFROST_CRASH_DIR"
+printf 'crash-body-line peer 198.51.100.23\n' >"$BIFROST_CRASH_DIR/crash-20261124-160000.txt"
 
 ok act-logs-ok act_logs
 
@@ -294,6 +296,9 @@ ok logs-sec-summary grep -Fqx "== summary ==" "$LF"
 ok logs-sec-script grep -Fqx "== bifrost.log ==" "$LF"
 ok logs-sec-daemon grep -Fqx "== bifrostd.log ==" "$LF"
 ok logs-has-backend grep -Fq "backend_state: Running" "$LF"
+ok logs-sec-crash grep -Fqx "== crash records ==" "$LF"
+ok logs-crash-name grep -Fqx -- "-- crash-20261124-160000.txt --" "$LF"
+ok logs-crash-body grep -Fqx "crash-body-line peer <ipv4>" "$LF"
 
 # Only last 200 lines of each log are kept (early lines 001..050 must be absent, 250/260 present)
 no logs-trimmed-script-early grep -Fq "script-line-001" "$LF"

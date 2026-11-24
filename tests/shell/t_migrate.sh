@@ -288,6 +288,7 @@ has mig-auto-stopped-orig "ORIG_CFG stop" "$(cat "$MOCK_STATE/orig_cfg.log")"
 eq mig-auto-orig-disabled 0 "$(dbus get tailscale_enable)"
 # The original's leftover nat rules go away with a firewall rebuild.
 has mig-auto-fw-rebuild restart_firewall "$(cat "$MOCK_STATE/service.log" 2>/dev/null)"
+has mig-auto-syslog "SYSLOG -t bifrost migrate: migration succeeded" "$(cat "$MOCK_STATE/syslog.log" 2>/dev/null)"
 ok mig-auto-running daemon_running
 dbus_seed bifrost_enable=0
 daemon_stop
@@ -336,6 +337,7 @@ eq mig-auto-rb-job "false migrate_verify_failed true" \
     "$(jq -r '"\(.ok) \(.code) \(.data.rolled_back)"' "$jf")"
 has mig-auto-rb-restarted "ORIG_CFG start" "$(cat "$MOCK_STATE/orig_cfg.log")"
 no mig-auto-rb-no-fw-rebuild grep -q restart_firewall "$MOCK_STATE/service.log"
+has mig-auto-rb-syslog "migrate: migration failed (migrate_verify_failed); rolled back" "$(cat "$MOCK_STATE/syslog.log" 2>/dev/null)"
 eq mig-auto-rb-orig-enabled 0 "$(dbus get tailscale_enable)"
 ok mig-auto-rb-orig-running orig_running
 eq mig-auto-rb-restored "PREV_STATE" "$(cat "$BIFROST_STATE/prev.txt")"
@@ -353,6 +355,8 @@ ok mig-rb-fail-start act_migrate
 bg_drain
 eq mig-rb-fail-job "false migrate_rollback_failed false" \
     "$(jq -r '"\(.ok) \(.code) \(.data.rolled_back)"' "$jf")"
+has mig-rb-fail-syslog "migrate: migration failed (migrate_verify_failed); rollback failed (migrate_rollback_failed)" \
+    "$(cat "$MOCK_STATE/syslog.log" 2>/dev/null)"
 
 # --- 9. Busy when migrate job already running ---
 

@@ -740,6 +740,15 @@ act_logs() {
             else
                 printf '(empty)\n'
             fi
+            printf '== crash records ==\n'
+            _al_crash=0
+            for _al_cf in "$BIFROST_CRASH_DIR"/crash-*.txt; do
+                [ -f "$_al_cf" ] || continue
+                _al_crash=1
+                printf '%s\n' "-- ${_al_cf##*/} --"
+                cat "$_al_cf"
+            done
+            [ "$_al_crash" = 1 ] || printf '(none)\n'
         } | redact "$_al_hints"
     ) && atomic_write "$BIFROST_UPLOAD/bifrost_logs.txt" 644 <"$_al_tmp"; then
         rm -f "$_al_tmp"
