@@ -20,15 +20,16 @@ if [ ! -f "$BIFROST_SCRIPTS/base.sh" ]; then
     echo "未检测到 Koolshare 软件中心环境（缺少 base.sh），退出安装"
     exit 1
 fi
+# base.sh on the router defines echo_date as an alias. ash expands aliases
+# while parsing, so a fallback function defined after it is a syntax error.
+# Define the fallback first; the alias then takes precedence.
+echo_date() { echo "$@"; }
 # shellcheck disable=SC1091
 . "$BIFROST_SCRIPTS/base.sh"
 # shellcheck source=plugin/bifrost/lib/validate.sh
 . "$_in_dir/lib/validate.sh"
 # shellcheck source=plugin/bifrost/lib/common.sh
 . "$_in_dir/lib/common.sh"
-if ! has_cmd echo_date; then
-    echo_date() { echo "$@"; }
-fi
 
 for _in_m in daemon fw dns status login settings migrate update diag; do
     # shellcheck disable=SC1090

@@ -15,12 +15,13 @@ if ! type lock_acquire >/dev/null 2>&1; then
         . "$_un_source/$_un_m.sh" || exit 1
     done
 fi
+# base.sh on the router defines echo_date as an alias. ash expands aliases
+# while parsing, so a fallback function defined after it is a syntax error.
+# Define the fallback first; the alias then takes precedence.
+echo_date() { echo "$@"; }
 if [ -f "$BIFROST_SCRIPTS/base.sh" ]; then
     # shellcheck disable=SC1091
     . "$BIFROST_SCRIPTS/base.sh"
-fi
-if ! has_cmd echo_date; then
-    echo_date() { echo "$@"; }
 fi
 
 _un_lock_held=0
