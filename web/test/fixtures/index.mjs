@@ -30,7 +30,7 @@ export const SAMPLE_PEERS = [
     rx: 4_194_304,
     tx: 2_097_152,
     exit_node_option: true,
-    routes: ["198.51.100.0/24"],
+    routes: ["192.0.2.0/24"],
   },
   {
     name: "relay-box",
@@ -45,7 +45,7 @@ export const SAMPLE_PEERS = [
     rx: 1_048_576,
     tx: 524_288,
     exit_node_option: false,
-    routes: ["203.0.113.0/24"],
+    routes: ["192.0.2.0/24"],
   },
   {
     name: "workstation",

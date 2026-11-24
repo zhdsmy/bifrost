@@ -24,11 +24,13 @@ async function capture({
   tab,
   afterReady,
   fullPage = false,
+  shellLang,
 }) {
   const server = createPreviewServer({ initialState, lang, mode, fastJobPoll: true, jobStepMs: 20 });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
-  const url = `http://127.0.0.1:${server.address().port}/Module_bifrost.asp`;
+  const shellQuery = shellLang ? `?preview_shell_lang=${encodeURIComponent(shellLang)}` : "";
+  const url = `http://127.0.0.1:${server.address().port}/Module_bifrost.asp${shellQuery}`;
   const context = await browser.newContext({ viewport, colorScheme: mode === "light" ? "light" : "dark", reducedMotion: "reduce" });
   const page = await context.newPage();
   try {
@@ -38,6 +40,12 @@ async function capture({
       await page.getByRole("tab", { name: tab, exact: true }).click();
     }
     if (afterReady) await afterReady(page);
+    if (shellLang === "en") {
+      const bodyText = await page.locator("body").innerText();
+      if (/[\u3400-\u9fff]/u.test(bodyText)) {
+        throw new Error("English screenshot contains CJK text");
+      }
+    }
     await page.waitForTimeout(150);
     await page.screenshot({ path: outPath, animations: "disabled", fullPage });
   } finally {
@@ -67,6 +75,36 @@ try {
   ];
 
   for (const item of readmeTargets) {
+    const outPath = resolve(DOCS_IMAGES, item.file);
+    await capture({ ...item, outPath });
+    const info = await stat(outPath);
+    console.log(`${item.file}: ${info.size} bytes`);
+    if (info.size > MAX_README_BYTES) {
+      throw new Error(`${item.file} is ${info.size} bytes (exceeds ${MAX_README_BYTES} bytes)`);
+    }
+  }
+
+  // English README screenshots mirror the seven distinct Chinese views.
+  const englishTargets = [
+    { file: "overview-en.png", lang: "en", shellLang: "en", tab: "Overview", fullPage: true },
+    { file: "devices-en.png", lang: "en", shellLang: "en", tab: "Devices", fullPage: true },
+    { file: "settings-en.png", lang: "en", shellLang: "en", tab: "Settings", fullPage: true },
+    { file: "core-en.png", lang: "en", shellLang: "en", tab: "Core", fullPage: true },
+    {
+      file: "diagnostics-en.png",
+      lang: "en",
+      shellLang: "en",
+      tab: "Diagnostics",
+      fullPage: true,
+      afterReady: async (page) => {
+        await page.getByRole("log").getByText(/== bifrost\.log ==/).waitFor();
+      },
+    },
+    { file: "overview-light-en.png", lang: "en", shellLang: "en", mode: "light", tab: "Overview", fullPage: true },
+    { file: "narrow-en.png", lang: "en", shellLang: "en", viewport: { width: 420, height: 860 }, tab: "Overview", fullPage: true },
+  ];
+
+  for (const item of englishTargets) {
     const outPath = resolve(DOCS_IMAGES, item.file);
     await capture({ ...item, outPath });
     const info = await stat(outPath);

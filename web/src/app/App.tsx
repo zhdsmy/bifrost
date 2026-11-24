@@ -142,6 +142,7 @@ function AppShell() {
       <div className="border-b border-kumo-line px-4 pt-2 @md:px-6">
         <Tabs
           variant="underline"
+          size={lang === "en" ? "sm" : "base"}
           tabs={tabItems}
           value={tab}
           onValueChange={(v) => setTab(v as TabId)}

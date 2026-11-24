@@ -19,19 +19,19 @@ English | [简体中文](README.md)
 
 | Overview (Dark) | Overview (Light) |
 |---|---|
-| ![Overview (Dark)](docs/images/overview.png) | ![Overview (Light)](docs/images/overview-light.png) |
+| ![Overview (Dark)](docs/images/overview-en.png) | ![Overview (Light)](docs/images/overview-light-en.png) |
 
 | Devices | Settings |
 |---|---|
-| ![Devices](docs/images/devices.png) | ![Settings](docs/images/settings.png) |
+| ![Devices](docs/images/devices-en.png) | ![Settings](docs/images/settings-en.png) |
 
 | Core | Diagnostics |
 |---|---|
-| ![Core](docs/images/core.png) | ![Diagnostics](docs/images/diagnostics.png) |
+| ![Core](docs/images/core-en.png) | ![Diagnostics](docs/images/diagnostics-en.png) |
 
 | English UI | Narrow Viewport (420 px) |
 |---|---|
-| ![English UI](docs/images/overview-en.png) | ![Narrow Viewport](docs/images/narrow.png) |
+| ![English UI](docs/images/overview-en.png) | ![Narrow Viewport](docs/images/narrow-en.png) |
 
 > [!NOTE]
 > Developed for the `ASUSWRT` firmware skin. The `ROG`, `TUF`, and `TS` skins have not been tested on physical hardware; because the UI renders inside a Shadow DOM, its styling is isolated from firmware skins.
