@@ -17,7 +17,8 @@ plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 - The previous core is no longer kept on internal flash (jffs2, ubifs, yaffs, or an mtd/ubi device). Internal flash is small and shared with the firmware and other plugins. A failed update still restores the current core automatically; only the manual rollback is unavailable there. Upgrading the plugin removes a previous core that an older release left on internal flash.
 - On other storage, the previous core is kept only when the free space left afterwards still holds one more copy of the current core (the next update unpacks beside it) plus 2 MB, the minimum the software center requires for upgrades.
 - The UPX hint on the Core tab depends on the storage: on jffs2 or ubifs, the filesystem already compresses the uncompressed core, so UPX saves less than the file sizes suggest; on external storage, UPX is not needed to save space.
-- Core tab layout: Update Core is the main button only when a newer core is known, and it is disabled when the last check found the core up to date. The type and architecture switches have their own group. Field pairs, badges, and the folded list of omitted features are tidier.
+- Core tab layout: Update Core is the main button only when a newer core is known, and it is disabled when the last check found the core up to date. The type and architecture switches have their own group. Field pairs are tidier, and the list of omitted features is folded.
+- Core tab values (architecture, core type, filesystem, previous backup) are plain text instead of badges. Outline badges (header version, advertised routes, path, omitted features) use the `kumo-line` border, the same as secondary buttons, so they stay visible in dark and light mode.
 - Sizes use decimal units (1 MB = 1,000,000 bytes), as in the docs. They used 1024-based values with MB and GB labels before.
 
 ### Fixed

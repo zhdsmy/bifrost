@@ -84,7 +84,7 @@ function AppShell() {
                 </Badge>
               )}
               {status?.plugin.version && (
-                <Badge variant="outline">{status.plugin.version}</Badge>
+                <Badge variant="outline" className="border-kumo-line">{status.plugin.version}</Badge>
               )}
             </div>
             <p className="text-sm text-kumo-subtle">{t("app.subtitle")}</p>

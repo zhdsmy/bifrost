@@ -840,7 +840,7 @@ test("core page: core.build display, null build fallback, update flow, up_to_dat
   await page.getByText("arm64", { exact: true }).waitFor();
 
   // The backup is now the arm core that the switch replaced; the confirmation names it.
-  await page.getByText("1.106.0 r1", { exact: true }).waitFor();
+  await page.getByText("1.106.0 r1 · 不压缩 · arm · 7.6 MB", { exact: true }).waitFor();
   await page.getByRole("button", { name: "回退到上一版", exact: true }).click();
   await page.getByRole("alertdialog").getByText(/将换回本地保留的上一版核心 1\.106\.0 r1（不压缩，arm）/).waitFor();
   await page.getByRole("alertdialog").getByRole("button", { name: "确认", exact: true }).click();
@@ -1148,11 +1148,10 @@ test("core page: storage details, deleting the previous backup, and external sto
   await ready(page);
   await clickTab(page, "核心");
 
-  await page.getByText("外置 USB 存储", { exact: true }).waitFor();
+  await page.getByText("外置 USB 存储 · ext4", { exact: true }).waitFor();
   await page.getByText("ext4", { exact: true }).waitFor();
   await page.getByText("剩余 28.7 GB，共 32.0 GB", { exact: true }).waitFor();
-  await page.getByText("1.104.6 r1", { exact: true }).waitFor();
-  await page.getByText("7.6 MB", { exact: true }).waitFor();
+  await page.getByText("1.104.6 r1 · 不压缩 · arm · 7.6 MB", { exact: true }).waitFor();
   // The storage hint follows the UPX cost as one paragraph, without a space after "。".
   await page.getByText(/内存不能共享。核心在外置存储上/).waitFor();
   await page.getByText(/不需要为了省空间换成 UPX/).waitFor();
@@ -1188,7 +1187,7 @@ test("core page: internal flash explains the missing backup and does not alert a
   await ready(page);
   await clickTab(page, "核心");
 
-  await page.getByText("路由器内置闪存", { exact: true }).waitFor();
+  await page.getByText("路由器内置闪存 · jffs2", { exact: true }).waitFor();
   await page.getByText("jffs2", { exact: true }).waitFor();
   await page.getByText("剩余 20.0 MB，共 64.0 MB", { exact: true }).waitFor();
   await page.getByText(/更新后不保留上一版，无法回退/).waitFor();

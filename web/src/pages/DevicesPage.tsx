@@ -312,7 +312,7 @@ export function DevicesPage() {
                         </Badge>
                       </Table.Cell>
                       <Table.Cell className="overflow-hidden whitespace-nowrap">
-                        <Badge variant={peer.path === "direct" ? "info" : "outline"}>
+                        <Badge variant={peer.path === "direct" ? "info" : "outline"} className="border-kumo-line">
                           {renderPath(peer.path, peer.relay)}
                         </Badge>
                       </Table.Cell>
@@ -331,7 +331,7 @@ export function DevicesPage() {
                             <Badge variant="info">{t("devices.exitNodeBadge")}</Badge>
                           )}
                           {peer.routes.map((cidr) => (
-                            <Badge key={cidr} variant="outline">
+                            <Badge key={cidr} variant="outline" className="border-kumo-line">
                               {cidr}
                             </Badge>
                           ))}

@@ -119,15 +119,9 @@ export function CorePage() {
           <DetailItem label={t("core.field.revision")}>
             {core.revision ? `r${core.revision} (#${core.serial})` : "—"}
           </DetailItem>
-          <DetailItem label={t("core.field.arch")}>
-            <Badge variant="outline">{core.arch || "—"}</Badge>
-          </DetailItem>
-          <DetailItem label={t("core.field.kernelArch")}>
-            <Badge variant="outline">{core.kernel_arch || "—"}</Badge>
-          </DetailItem>
-          <DetailItem label={t("core.field.variant")}>
-            <Badge variant="outline">{variantLabel(currentVariant)}</Badge>
-          </DetailItem>
+          <DetailItem label={t("core.field.arch")}>{core.arch || "—"}</DetailItem>
+          <DetailItem label={t("core.field.kernelArch")}>{core.kernel_arch || "—"}</DetailItem>
+          <DetailItem label={t("core.field.variant")}>{variantLabel(currentVariant)}</DetailItem>
           <DetailItem label={t("core.field.size")}>
             {core.size > 0 ? formatBytes(core.size) : "—"}
           </DetailItem>
@@ -137,10 +131,16 @@ export function CorePage() {
           <DetailItem label={t("core.field.prev")}>
             {core.prev ? (
               <div className="flex flex-wrap items-center gap-2">
-                <span>{prevVersion ?? t("core.prev.available")}</span>
-                {prevInfo && <Badge variant="outline">{variantLabel(prevInfo.variant)}</Badge>}
-                {prevInfo?.arch && <Badge variant="outline">{prevInfo.arch}</Badge>}
-                {prevSize > 0 && <span className="text-kumo-subtle">{formatBytes(prevSize)}</span>}
+                <span>
+                  {[
+                    prevVersion ?? t("core.prev.available"),
+                    prevInfo ? variantLabel(prevInfo.variant) : "",
+                    prevInfo?.arch ?? "",
+                    prevSize > 0 ? formatBytes(prevSize) : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </span>
                 <Button
                   size="sm"
                   variant="secondary"
@@ -156,14 +156,13 @@ export function CorePage() {
             )}
           </DetailItem>
           <DetailItem label={t("core.field.storage")}>
-            <div className="flex flex-wrap items-center gap-2">
-              <span>{storageKind}</span>
-              {storage?.fs && (
-                <Badge variant="outline">
-                  <span data-raw-value="true">{storage.fs}</span>
-                </Badge>
-              )}
-            </div>
+            {storageKind}
+            {storage?.fs && (
+              <>
+                {" · "}
+                <span data-raw-value="true">{storage.fs}</span>
+              </>
+            )}
           </DetailItem>
           <DetailItem label={t("core.field.free")}>
             {storage?.free != null && storage.total != null
@@ -312,7 +311,7 @@ export function CorePage() {
             <Collapsible.DefaultPanel className="pt-3 pb-2">
               <div data-raw-value="true" className="flex flex-wrap gap-1.5">
                 {omit.map((tag) => (
-                  <Badge key={tag} variant="outline">
+                  <Badge key={tag} variant="outline" className="border-kumo-line">
                     {tag}
                   </Badge>
                 ))}
