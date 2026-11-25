@@ -167,7 +167,7 @@ export function AdvertiseRoutesField({
             value: readBackRoutes === null ? t("common.unknown") : readBackRoutes.join(", ") || t("common.none"),
           })}
         </span>
-        <Button variant="primary" size="sm" loading={saving} disabled={disabled} onClick={onSave}>
+        <Button variant="primary" loading={saving} disabled={disabled} onClick={onSave}>
           {t("common.save")}
         </Button>
       </div>

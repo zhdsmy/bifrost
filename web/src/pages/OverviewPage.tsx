@@ -111,7 +111,6 @@ export function OverviewPage() {
         return (
           <Button
             variant="primary"
-            size="sm"
             disabled={actionDisabled}
             loading={jobs.daemon?.running}
             onClick={() => {
@@ -125,7 +124,6 @@ export function OverviewPage() {
         return (
           <Button
             variant="primary"
-            size="sm"
             disabled={actionDisabled}
             onClick={(e) => setConfirmState({ kind: "migrate", anchor: e.currentTarget })}
           >
@@ -134,7 +132,7 @@ export function OverviewPage() {
         );
       case "goto_core":
         return (
-          <Button variant="primary" size="sm" onClick={() => setTab("core")}>
+          <Button variant="primary" onClick={() => setTab("core")}>
             {t("overview.action.gotoCore")}
           </Button>
         );
@@ -142,7 +140,6 @@ export function OverviewPage() {
         return (
           <Button
             variant="primary"
-            size="sm"
             disabled={actionDisabled}
             loading={syncActionBusy}
             onClick={() => {
@@ -156,7 +153,6 @@ export function OverviewPage() {
         return (
           <Button
             variant="secondary"
-            size="sm"
             disabled={actionDisabled}
             loading={jobs.daemon?.running}
             onClick={(e) => setConfirmState({ kind: "disable", anchor: e.currentTarget })}
@@ -231,7 +227,6 @@ export function OverviewPage() {
               <>
                 <Button
                   variant="secondary"
-                  size="sm"
                   disabled={actionDisabled || jobs.login?.running}
                   onClick={(e) => setConfirmState({ kind: "relogin", anchor: e.currentTarget })}
                 >
@@ -239,7 +234,6 @@ export function OverviewPage() {
                 </Button>
                 <Button
                   variant="secondary"
-                  size="sm"
                   disabled={actionDisabled}
                   onClick={(e) => setConfirmState({ kind: "logout", anchor: e.currentTarget })}
                 >

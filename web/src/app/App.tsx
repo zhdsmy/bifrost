@@ -65,7 +65,7 @@ function AppShell() {
   return (
     <main className="@container rounded-xl border border-kumo-line bg-kumo-base text-kumo-default">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-kumo-line px-6 py-5">
-        <div className="flex min-w-0 items-center gap-3">
+        <div className="flex min-w-0 items-start gap-3">
           <img
             src="/res/icon-bifrost.png"
             width={44}

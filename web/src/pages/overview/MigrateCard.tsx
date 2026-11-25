@@ -25,7 +25,6 @@ export function MigrateCard({
         showAction && (
           <Button
             variant="primary"
-            size="sm"
             disabled={disabled}
             loading={migrateJob?.running}
             onClick={(e) => onRequestMigrate(e.currentTarget)}
