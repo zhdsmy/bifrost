@@ -5,6 +5,14 @@ All notable changes to Bifrost will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-11-25
+
+### Changed
+
+- Buttons are sized by their role, the same way as in po0fw. Main actions use the default size: the overview status card actions (Enable, Connect, Disable, Re-authenticate, Log out, Migrate & Switch, Open Core tab), the migrate card button, and the advertised-routes save button, which were small before. Helper actions (refresh and copy logs, jump to another tab, reset column widths), device-table actions, and confirmation popovers stay small.
+- Card headers center their actions against the title and description instead of aligning them to the top.
+- On narrow widths, the header icon stays next to the first line of the title instead of moving to the middle of a wrapped description.
+
 ## [0.2.3] - 2026-11-25
 
 ### Changed
