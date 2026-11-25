@@ -102,6 +102,7 @@ calls the function below through `run_act`, which sends exactly one response.
 | `core-check` | — | `act_core_check` (P1) | job | `update` |
 | `core-update` | — | `act_core_update` (P1) | job | `update` |
 | `core-rollback` | — | `act_core_rollback` (P1) | job | `update` |
+| `core-drop-prev` | — | `act_core_drop_prev` (P1), deletes the previous-core archive under the state lock; `ok` also when none exists | sync | — |
 | `core-arch` | `arm` or `arm64` | `act_core_arch` (P1), keeps the installed core type | job | `update` |
 | `core-type` | `normal` or `upx` | `act_core_type` (P1), keeps the installed architecture | job | `update` |
 | `netcheck` | — | `act_netcheck` (P3) | job | `netcheck` |
@@ -199,7 +200,9 @@ All in `$BIFROST_UPLOAD` (`/tmp/upload`), written with `json_write` or
     "tailscale": "1.104.7", "revision": 1, "serial": 7, "arch": "arm",
     "variant": "normal",
     "kernel_arch": "aarch64", "size": 25100448, "installed": 1795000000,
-    "prev": true, "update": null,
+    "prev": true, "prev_size": 7595963,
+    "storage": { "kind": "external", "fs": "ext4", "total": 64000000000, "free": 61440000000 },
+    "update": null,
     "check": { "checked": 1795429000, "status": "ok", "error": null },
     "build": { "go": "1.27.4", "commit": "cbc74fe4...", "omit": ["aws", "..."] }
   },
@@ -262,7 +265,14 @@ All in `$BIFROST_UPLOAD` (`/tmp/upload`), written with `json_write` or
 - `core.installed` comes from the installed core file (`date -r`).
   `core.size` is the installed manifest's `.assets[.arch].raw_size` and
   `core.build` its `build` object (`null` when missing), so a refresh never
-  reads the 25 MB core. `core.prev`: `bifrostd.prev.gz` exists.
+  reads the 25 MB core. `core.prev`: `bifrostd.prev.gz` exists;
+  `core.prev_size` is its size in bytes (0 without one).
+- `core.storage` (`core_storage`) describes the filesystem that holds
+  `$BIFROST_BIN`: `kind` is `internal` for router flash (`jffs2`, `ubifs`,
+  `yaffs`, or an mtd/ubi device), `external` for a USB disk (`/dev/sd*`, also
+  when USB2JFFS mounts it on `/jffs`), otherwise `unknown`. `fs` is the type
+  from `$BIFROST_MOUNTS` or `null`; `total` and `free` are bytes from `df` or
+  `null`.
 - `daemon.restarts`: watchdog restarts in the last 30 minutes
   (`$BIFROST_RUN/watchdog.restarts`, one Unix time per line, P2 writes).
 - `routes[].approved`: the CIDR is in `Self.PrimaryRoutes` (or `AllowedIPs`)
@@ -345,6 +355,8 @@ own time limit, as long as it keeps refreshing status.
 | `lan_cidr` | P3 | P3, P2 | Prints the LAN prefix from `nvram get lan_ipaddr`/`lan_netmask` |
 | `core_version` | P1 | P3, P5 | Prints the installed core's Tailscale version (`$BIFROST_CORE --version` first line) |
 | `core_install_file <gz> <manifest json> <arch>` | P1 | P5 | Unpack, check `raw_sha256`, test `--version`, swap in (PLAN 15.1 step 4). Daemon must be stopped |
+| `core_storage` | P1 | P3, P5 | Sets `_CS_KIND`, `_CS_FS`, `_CS_TOTAL_KB`, `_CS_FREE_KB` for the filesystem holding `$BIFROST_BIN` (see `core.storage` in 6.1). Returns 1 when `df` gives no free space |
+| `core_prev_drop` | P1 | P1, P5 | Removes `bifrostd.prev.gz`, then `bifrostd.prev.json`. Caller holds the state lock and no core journal is pending |
 | `manifest_verify <json> <sig>` | P1 | P1, P5 (packaging) | 0 when any key in `$BIFROST_KEYS` verifies |
 
 A package that needs another package's function before it exists stubs it in

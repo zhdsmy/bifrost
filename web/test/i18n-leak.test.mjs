@@ -25,6 +25,7 @@ const ALLOWED_TOKENS = new Set([
   "lan",
   "jffs",
   "usb2jffs",
+  "usb",
   "ssh",
   "upx",
   "ping",

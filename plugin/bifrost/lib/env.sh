@@ -32,6 +32,7 @@
 : "${BIFROST_UPLOAD:=/tmp/upload}"
 : "${BIFROST_DNSMASQ_DIR:=/jffs/configs/dnsmasq.d}"
 : "${BIFROST_DNSMASQ_CONF:=$BIFROST_DNSMASQ_DIR/bifrost.conf}"
+: "${BIFROST_MOUNTS:=/proc/mounts}"
 
 : "${BIFROST_TUN:=tailscale0}"
 : "${BIFROST_TUN_DEV:=/dev/net/tun}"

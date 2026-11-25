@@ -258,7 +258,7 @@ nezha-kumo-theme 是独立网站，做法不同：用 Vite、`i18next`、Inter �
 | 核心 | `/koolshare/bifrost/bin/bifrostd` |
 | 命令行入口 | `/koolshare/bifrost/bin/tailscale`（指向 `bifrostd` 的符号链接） |
 | 给 SSH 用户的命令 | `/koolshare/bin/bifrost`（脚本：带上 socket 参数执行上面的 `tailscale`） |
-| 上一版核心 | `/koolshare/bifrost/bin/bifrostd.prev.gz`（空间够时才保留） |
+| 上一版核心 | `/koolshare/bifrost/bin/bifrostd.prev.gz`（只在外置存储或无法识别的存储上、空间够时保留；12.6 节） |
 | 已安装核心的清单 | `/koolshare/bifrost/core.json` |
 | 签名公钥 | `/koolshare/bifrost/keys/*.pub.pem` |
 | 脚本库 | `/koolshare/bifrost/lib/*.sh` |
@@ -777,9 +777,16 @@ tailscaled 的防火墙模式固定为 `off`，所有规则由 Bifrost 自己的
 
 - 平时占用：一个不压缩的核心，加一个可选的 `prev.gz`。
 - 更新时的峰值：当前核心加新核心，再加可选的 `prev.gz`。
+- 核心所在的存储按 `$BIFROST_BIN` 所在的文件系统判断（`core_storage`），不看机型：
+  - 内置闪存：文件系统是 `jffs2`、`ubifs`、`yaffs`，或设备是 mtd/ubi。
+  - 外置存储：设备是 `/dev/sd*`（USB 盘，包括 USB2JFFS 挂到 `/jffs` 的情况）。
+  - 其余是「无法识别」，按外置存储的规则处理。
 - 规则：
   - 解压新核心前，剩余空间少于新核心的 `raw_size` 时，先删 `prev.gz`；还不够就停止，提示清理空间或使用 USB2JFFS。
-  - 更新成功后，剩余空间放不下 `prev.gz` 时就不保留，并在页面上说明「没有保留上一版」。
+  - 内置闪存上不保留 `prev.gz`。内置闪存一般只有几十 MB，固件和其他插件也要用。更新失败时的自动换回靠更新过程中的硬链接 `bifrostd.old`，不依赖 `prev.gz`。
+  - 其他存储上，更新成功后剩余空间放得下 `prev.gz`、再放一份当前核心（下一次更新要在旁边解压新核心）、再留 2 MB（软件中心升级要求的最小剩余空间）时才保留。不保留时页面说明原因。
+  - 升级插件时，内置闪存上已有的 `prev.gz` 会被删除（旧版本留下的）。
+  - 页面上可以随时删除 `prev.gz`（`core-drop-prev`）。
 - JFFS2 和 UBIFS 会压缩，`df` 的数字偏保守。以解压是否成功为准，不提前拒绝。
 
 ### 12.7 镜像
@@ -906,7 +913,7 @@ tailscaled 的防火墙模式固定为 `off`，所有规则由 Bifrost 自己的
 - 当前核心：Tailscale 版本、revision、架构、文件大小、安装时间。
 - 「检查更新」：显示最新版本和发布说明链接。
 - 「更新核心」：带进度。
-- 「回退到上一版」。
+- 「回退到上一版」；上一版备份的大小和「删除」按钮；核心所在的存储类型和剩余空间。
 - 内核是 `aarch64` 并且发布了 arm64 核心时，显示「切换到 arm64 核心」。
 - 编译配方的摘要（省略的功能、Go 版本）和核对哈希的方法。
 

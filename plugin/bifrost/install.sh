@@ -329,6 +329,17 @@ fi
 
 if [ "$_in_core_ok" = 1 ]; then
     ln -sf bifrostd "$BIFROST_CLI" || exit 1
+    # Core updates no longer keep a rollback archive on internal flash; remove
+    # one left by an older release. A pending journal still needs it.
+    if [ -e "$BIFROST_BIN/bifrostd.prev.gz" ] && [ ! -d "$BIFROST_HOME/.core-update" ] &&
+        core_storage && [ "$_CS_KIND" = internal ]; then
+        if core_prev_drop; then
+            echo_date "核心安装在路由器内置闪存上，已删除上一版核心备份以节省空间"
+            log install "previous core removed from internal flash"
+        else
+            log install "failed to remove previous core from internal flash"
+        fi
+    fi
 else
     if [ "$_in_upgrade" = 1 ]; then
         # core_install_file may fail after replacing the binary but before writing its manifest.

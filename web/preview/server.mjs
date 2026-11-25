@@ -7,6 +7,7 @@ import {
   SAMPLE_LOGS_TEXT,
   SAMPLE_NETCHECK_REPORT,
   SAMPLE_NOW,
+  SAMPLE_PREV_SIZE,
   createStatusFixture,
 } from "../test/fixtures/index.mjs";
 import {
@@ -563,9 +564,11 @@ export function createPreviewServer({
 
       case "core-update": {
         if (args.length !== 0) return { ok: false, code: "invalid_param" };
+        // Like update.sh: internal flash never keeps the previous core.
+        const keepPrev = status.core.storage?.kind !== "internal";
         const ok = scheduleJob(
           "update",
-          { action: "update", latest: SAMPLE_LATEST_CORE, up_to_date: false, kept_prev: true },
+          { action: "update", latest: SAMPLE_LATEST_CORE, up_to_date: false, kept_prev: keepPrev },
           [
             { phase: "manifest", progress: 15 },
             { phase: "verify_manifest", progress: 30 },
@@ -580,12 +583,23 @@ export function createPreviewServer({
             status.core.revision = SAMPLE_LATEST_CORE.revision;
             status.core.serial = SAMPLE_LATEST_CORE.serial;
             status.core.installed = SAMPLE_NOW;
-            status.core.prev = true;
+            status.core.prev = keepPrev;
+            status.core.prev_size = keepPrev ? SAMPLE_PREV_SIZE : 0;
             status.core.update = null;
             return { ok: true };
           },
         );
         return ok ? { ok: true, job: "update" } : { ok: false, code: "busy" };
+      }
+
+      case "core-drop-prev": {
+        if (args.length !== 0) return { ok: false, code: "invalid_param" };
+        if (jobs.get("update")?.running) return { ok: false, code: "busy" };
+        const storage = status.core.storage;
+        if (status.core.prev && storage?.free != null) storage.free += status.core.prev_size ?? 0;
+        status.core.prev = false;
+        status.core.prev_size = 0;
+        return { ok: true };
       }
 
       case "core-rollback": {
@@ -604,6 +618,7 @@ export function createPreviewServer({
             status.core.revision = 1;
             status.core.serial = 7;
             status.core.prev = false;
+            status.core.prev_size = 0;
             // Like status.sh: a kept check that saw a newer core offers it again.
             if (status.core.check?.status === "ok") status.core.update = { ...SAMPLE_LATEST_CORE };
             return { ok: true };

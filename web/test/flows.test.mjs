@@ -1117,3 +1117,59 @@ test("a setting saved during a status read is followed by a fresh status snapsho
   assert.equal(await setting.isChecked(), false);
   assert.equal(nextReads.length, 2);
 });
+
+test("core page: storage details, deleting the previous backup, and external storage hints", async (t) => {
+  const { page, url } = await openPreview(t, { initialState: "running" });
+  await page.goto(url);
+  await ready(page);
+  await clickTab(page, "核心");
+
+  await page.getByText("外置 USB 存储", { exact: true }).waitFor();
+  await page.getByText("ext4", { exact: true }).waitFor();
+  await page.getByText("剩余 26.7 GB，共 29.8 GB", { exact: true }).waitFor();
+  await page.getByText("7.2 MB", { exact: true }).waitFor();
+  await page.getByText(/不需要为了省空间换成 UPX/).waitFor();
+  assert.equal(await page.getByText(/文件系统会自动压缩/).count(), 0);
+
+  await page.getByRole("button", { name: "删除", exact: true }).click();
+  const dialog = page.getByRole("alertdialog");
+  await dialog.getByText("删除后无法回退到上一版核心。当前核心和服务不受影响。", { exact: true }).waitFor();
+  // Deleting a file does not restart the service, so no interruption notice.
+  assert.equal(await dialog.getByText(/中断/).count(), 0);
+  await dialog.getByRole("button", { name: "确认", exact: true }).click();
+
+  await page.getByText("未保留", { exact: true }).waitFor();
+  await page.getByText(/当前没有上一版核心备份，无法回退/).waitFor();
+  assert.equal(await page.getByRole("button", { name: "删除", exact: true }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "回退到上一版", exact: true }).isDisabled(), true);
+  await page.getByText("剩余 26.7 GB，共 29.8 GB", { exact: true }).waitFor();
+});
+
+test("core page: internal flash explains the missing backup and does not alert after an update", async (t) => {
+  const { page, url } = await openPreview(t, {
+    initialState: "running",
+    fastJobPoll: true,
+    jobStepMs: 20,
+    mutateStatus: (s) => {
+      s.core.storage = { kind: "internal", fs: "jffs2", total: 64 * 1024 * 1024, free: 20 * 1024 * 1024 };
+      s.core.prev = false;
+      s.core.prev_size = 0;
+    },
+  });
+  await page.goto(url);
+  await ready(page);
+  await clickTab(page, "核心");
+
+  await page.getByText("路由器内置闪存", { exact: true }).waitFor();
+  await page.getByText("jffs2", { exact: true }).waitFor();
+  await page.getByText("剩余 20.0 MB，共 64.0 MB", { exact: true }).waitFor();
+  await page.getByText(/更新后不保留上一版，无法回退/).waitFor();
+  await page.getByText(/文件系统会自动压缩不压缩版核心/).waitFor();
+  assert.equal(await page.getByRole("button", { name: "删除", exact: true }).count(), 0);
+
+  await page.getByRole("button", { name: "更新核心", exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "确认", exact: true }).click();
+  await page.getByText("1.106.0", { exact: true }).waitFor();
+  assert.equal(await page.getByText(/剩余空间不足，未保留上一版/).count(), 0);
+  await page.getByText("未保留", { exact: true }).waitFor();
+});

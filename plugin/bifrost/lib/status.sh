@@ -88,6 +88,11 @@ _status_render_jq() {
         --arg karch "$_sr_karch" \
         --argjson cinst "$_sr_core_inst" \
         --argjson cprev "$_sr_prev" \
+        --argjson cprev_size "$_sr_prev_size" \
+        --arg skind "${_CS_KIND:-unknown}" \
+        --arg sfs "$_CS_FS" \
+        --arg stotal "$_CS_TOTAL_KB" \
+        --arg sfree "$_CS_FREE_KB" \
         --argjson drun "$_sr_drun" \
         --argjson dpid "$_sr_dpid_json" \
         --argjson restarts "$_sr_restarts" \
@@ -280,6 +285,13 @@ _status_render_jq() {
                 size: $core_size,
                 installed: $cinst,
                 prev: $cprev,
+                prev_size: $cprev_size,
+                storage: {
+                    kind: $skind,
+                    fs: (if $sfs == "" then null else $sfs end),
+                    total: (if $stotal == "" then null else ($stotal | tonumber) * 1024 end),
+                    free: (if $sfree == "" then null else ($sfree | tonumber) * 1024 end)
+                },
                 update: $core_update,
                 check: {
                     checked: ($chk.checked // 0),
@@ -364,7 +376,14 @@ status_refresh() {
         valid_uint "$_sr_mt" && _sr_core_inst=$_sr_mt
     fi
     _sr_karch=$(uname -m 2>/dev/null || echo "")
-    if [ -f "$BIFROST_BIN/bifrostd.prev.gz" ]; then _sr_prev=true; else _sr_prev=false; fi
+    _sr_prev=false
+    _sr_prev_size=0
+    if [ -f "$BIFROST_BIN/bifrostd.prev.gz" ]; then
+        _sr_prev=true
+        _sr_prev_size=$(file_size "$BIFROST_BIN/bifrostd.prev.gz") || _sr_prev_size=0
+        valid_uint "$_sr_prev_size" || _sr_prev_size=0
+    fi
+    core_storage || :
 
     # Daemon & conflict probes
     _sr_dpid=$(daemon_pid 2>/dev/null) || _sr_dpid=""

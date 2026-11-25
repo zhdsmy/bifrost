@@ -56,6 +56,16 @@ export interface CoreBuildInfo {
   omit: string[];
 }
 
+// Filesystem that holds the core (status.sh core_storage). Sizes are bytes.
+export type CoreStorageKind = "internal" | "external" | "unknown";
+
+export interface CoreStorage {
+  kind: CoreStorageKind;
+  fs: string | null;
+  total: number | null;
+  free: number | null;
+}
+
 export interface CoreInfo {
   tailscale: string;
   revision: number;
@@ -66,6 +76,8 @@ export interface CoreInfo {
   size: number;
   installed: number;
   prev: boolean;
+  prev_size?: number;
+  storage?: CoreStorage;
   update: CoreLatest | null;
   check?: {
     checked: number;

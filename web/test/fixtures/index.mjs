@@ -3,6 +3,8 @@
 
 export const SAMPLE_NOW = 1795430000;
 
+export const SAMPLE_PREV_SIZE = 7_595_963;
+
 export const SAMPLE_BUILD = {
   go: "1.27.4",
   commit: "cbc74fe48ef1b1649f69a4d9a602319427e25102",
@@ -96,6 +98,8 @@ function baseRunningStatus() {
       size: 25_100_448,
       installed: 1795000000,
       prev: true,
+      prev_size: SAMPLE_PREV_SIZE,
+      storage: { kind: "external", fs: "ext4", total: 31_250_000 * 1024, free: 28_000_000 * 1024 },
       update: null,
       build: structuredClone(SAMPLE_BUILD),
     },
@@ -185,6 +189,7 @@ export function createStatusFixture(name = "running") {
           size: 0,
           installed: 0,
           prev: false,
+          prev_size: 0,
           build: null,
         },
         daemon: { running: false, pid: null, restarts: 0 },

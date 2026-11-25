@@ -10,6 +10,9 @@
 : "${BIFROST_UPDATE_VERIFY_SECS:=60}"
 : "${BIFROST_UPDATE_VERSION_TIMEOUT:=10}"
 : "${BIFROST_UPDATE_METADATA_BYTES:=65536}"
+# Free space kept beyond one spare core before a rollback archive is kept: the
+# software center refuses upgrades with less than 2 MB free (PLAN 2.4 item 5).
+: "${BIFROST_PREV_MARGIN_KB:=2048}"
 
 # ---- Format validators (manifest fields and versions) ----
 
@@ -231,6 +234,74 @@ _upd_free_kb() {
 
 _upd_bytes_to_kb() {
     printf '%s\n' $((($1 + 1023) / 1024))
+}
+
+# core_storage: describe the filesystem that holds $BIFROST_BIN in _CS_KIND,
+# _CS_FS, _CS_TOTAL_KB and _CS_FREE_KB. _CS_KIND is "internal" for router flash
+# (jffs2, ubifs, yaffs, or an mtd/ubi device), "external" for a USB disk
+# (/dev/sd*, also when USB2JFFS mounts it on /jffs), and "unknown" otherwise.
+# Returns 1 with empty numbers when df gives nothing usable.
+core_storage() {
+    _CS_KIND=unknown
+    _CS_FS=""
+    _CS_TOTAL_KB=""
+    _CS_FREE_KB=""
+    _cs_d=$BIFROST_BIN
+    [ -d "$_cs_d" ] || _cs_d=$BIFROST_HOME
+    [ -d "$_cs_d" ] || _cs_d=$BIFROST_KSROOT
+    # BusyBox df prints a long device name on its own line, so join the fields
+    # and count from the front: device, total, used, available.
+    _cs_df=$(df -k "$_cs_d" 2>/dev/null |
+        awk 'NR > 1 { for (i = 1; i <= NF; i++) f[++n] = $i } END { if (n >= 4) print f[1], f[2], f[4] }')
+    [ -n "$_cs_df" ] || return 1
+    _cs_dev=${_cs_df%% *}
+    _cs_df=${_cs_df#* }
+    _cs_total=${_cs_df%% *}
+    _cs_free=${_cs_df#* }
+    valid_uint "$_cs_total" && _CS_TOTAL_KB=$_cs_total
+    valid_uint "$_cs_free" && _CS_FREE_KB=$_cs_free
+    _CS_FS=$(awk -v d="$_cs_dev" '$1 == d { print $3; exit }' "$BIFROST_MOUNTS" 2>/dev/null)
+    case "$_CS_FS" in
+        jffs2 | ubifs | yaffs | yaffs2) _CS_KIND=internal ;;
+        *)
+            case "$_cs_dev" in
+                /dev/mtd* | mtd:* | ubi*) _CS_KIND=internal ;;
+                /dev/sd*) _CS_KIND=external ;;
+            esac
+            ;;
+    esac
+    [ -n "$_CS_FREE_KB" ]
+}
+
+# _upd_prev_fits <archive bytes>: 0 when the previous-core archive may be
+# kept. Never on internal flash: it is small and the firmware and other
+# plugins share it. Elsewhere the free space left after the archive must
+# still hold one more copy of the current core (the next update unpacks a new
+# core beside it) plus the 2 MB that the software center requires for
+# upgrades. Sets _UPF_WHY to internal or space when it returns 1.
+_upd_prev_fits() {
+    _UPF_WHY=""
+    core_storage || :
+    if [ "$_CS_KIND" = internal ]; then
+        _UPF_WHY=internal
+        return 1
+    fi
+    [ -n "$_CS_FREE_KB" ] || return 0
+    _upf_core=$(file_size "$BIFROST_CORE" 2>/dev/null) || _upf_core=0
+    _upf_need=$(($(_upd_bytes_to_kb "$1") + $(_upd_bytes_to_kb "$_upf_core") + BIFROST_PREV_MARGIN_KB))
+    [ "$_CS_FREE_KB" -ge "$_upf_need" ] && return 0
+    _UPF_WHY=space
+    return 1
+}
+
+# core_prev_drop: remove the previous-core archive. The archive is the
+# availability flag (see _upd_publish_prev), so remove it before its metadata.
+core_prev_drop() {
+    if ! rm -f "$BIFROST_BIN/bifrostd.prev.gz" || ! rm -f "$BIFROST_BIN/bifrostd.prev.json"; then
+        fail internal
+        return 1
+    fi
+    sync
 }
 
 # The archive is the availability flag used by status and rollback. Withdraw it
@@ -691,9 +762,14 @@ _upd_finish_prev() {
     _fp_action=$(cat "$_ut_j/action") || return 1
     [ "$_fp_action" != package ] || return 0
     _fp_kept=false
+    _fp_why=""
     _fp_gz="$BIFROST_BIN/bifrostd.prev.gz"
     _fp_man="$BIFROST_BIN/bifrostd.prev.json"
-    if [ "$_fp_action" = keep ] && [ -s "$_ut_j/installed.json" ] &&
+    core_storage || :
+    if [ "$_fp_action" = keep ] && [ "$_CS_KIND" = internal ]; then
+        # Never kept on internal flash, so do not spend time compressing one.
+        _fp_why=internal
+    elif [ "$_fp_action" = keep ] && [ -s "$_ut_j/installed.json" ] &&
         jq -e '.serial > 0' "$_ut_j/installed.json" >/dev/null; then
         if [ -f "$BIFROST_BIN/bifrostd.old" ]; then
             rm -f "$_ut_dir/previous.gz"
@@ -707,13 +783,16 @@ _upd_finish_prev() {
             _fp_kept=true
         fi
         if [ "$_fp_kept" = false ] && [ -s "$_ut_dir/previous.gz" ]; then
-            _fp_free=$(_upd_free_kb "$BIFROST_BIN") || _fp_free=""
             _fp_bytes=$(($(file_size "$_ut_dir/previous.gz") + $(file_size "$_ut_j/installed.json")))
-            if { [ -z "$_fp_free" ] || [ "$_fp_free" -ge "$(_upd_bytes_to_kb "$_fp_bytes")" ]; } &&
-                _upd_publish_prev "$_ut_dir/previous.gz" "$_ut_j/installed.json"; then _fp_kept=true; fi
+            if ! _upd_prev_fits "$_fp_bytes"; then
+                _fp_why=$_UPF_WHY
+            elif _upd_publish_prev "$_ut_dir/previous.gz" "$_ut_j/installed.json"; then
+                _fp_kept=true
+            fi
         fi
     fi
     if [ "$_fp_kept" = false ]; then
+        [ -z "$_fp_why" ] || log update "previous core not kept: $_fp_why"
         rm -f "$_fp_gz" "$_fp_man" || return 1
     fi
     if [ -f "$(job_file update)" ]; then job_data update "{\"kept_prev\":$_fp_kept}"; fi
@@ -987,6 +1066,23 @@ act_core_rollback() {
         return 1
     fi
     job_start update rollback
+}
+
+# Finish any interrupted core transaction first: its recovery may still need
+# the archive (the stash is published back as bifrostd.prev.gz).
+_upd_drop_prev_locked() {
+    core_recover || return 1
+    [ -e "$BIFROST_BIN/bifrostd.prev.gz" ] || [ -e "$BIFROST_BIN/bifrostd.prev.json" ] || return 0
+    core_prev_drop || return 1
+    log update "previous core deleted from the page"
+}
+
+act_core_drop_prev() {
+    if job_running update; then
+        fail busy
+        return 1
+    fi
+    with_lock state "$BIFROST_LOCK_WAIT" _upd_drop_prev_locked
 }
 
 act_core_arch() {

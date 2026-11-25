@@ -263,6 +263,7 @@ export const api = {
   coreCheck: (signal?: AbortSignal) => postScript<JobStartResult>("bifrost_config.sh", ["core-check"], signal),
   coreUpdate: (signal?: AbortSignal) => postScript<JobStartResult>("bifrost_config.sh", ["core-update"], signal),
   coreRollback: (signal?: AbortSignal) => postScript<JobStartResult>("bifrost_config.sh", ["core-rollback"], signal),
+  coreDropPrev: (signal?: AbortSignal) => postScript("bifrost_config.sh", ["core-drop-prev"], signal),
   coreArch: (arch: CoreArch, signal?: AbortSignal) =>
     postScript<JobStartResult>("bifrost_config.sh", ["core-arch", arch], signal),
   coreType: (variant: CoreVariant, signal?: AbortSignal) =>

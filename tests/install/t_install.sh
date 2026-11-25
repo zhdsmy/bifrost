@@ -362,6 +362,25 @@ out=$(sh "$T/pkgs/v2/install.sh" 2>&1)
 eq upg-stop-rc 0 "$?"
 no upg-stop-still-stopped test -f "$BIFROST_PIDFILE"
 
+# An upgrade keeps a previous core on other storage and removes it from
+# internal flash, where core updates no longer keep one.
+printf 'old' >"$BIFROST_BIN/bifrostd.prev.gz"
+printf '{}' >"$BIFROST_BIN/bifrostd.prev.json"
+printf '900000\n' >"$MOCK_STATE/df_avail_kb"
+export BIFROST_MOUNTS="$T/mounts"
+printf '/dev/mock /jffs ext4 rw 0 0\n' >"$BIFROST_MOUNTS"
+out=$(sh "$T/pkgs/v2/install.sh" 2>&1)
+eq upg-prev-other-rc 0 "$?"
+ok upg-prev-other-kept test -f "$BIFROST_BIN/bifrostd.prev.gz"
+printf '/dev/mock /jffs jffs2 rw 0 0\n' >"$BIFROST_MOUNTS"
+out=$(sh "$T/pkgs/v2/install.sh" 2>&1)
+eq upg-prev-internal-rc 0 "$?"
+has upg-prev-internal-msg "已删除上一版核心备份" "$out"
+no upg-prev-internal-gz test -e "$BIFROST_BIN/bifrostd.prev.gz"
+no upg-prev-internal-man test -e "$BIFROST_BIN/bifrostd.prev.json"
+rm -f "$MOCK_STATE/df_avail_kb"
+export BIFROST_MOUNTS=/proc/mounts
+
 # =====================================================================
 # 5. JS-only upgrade, CSS-only upgrade & mid-install package mutation immunity (Item 6)
 # =====================================================================

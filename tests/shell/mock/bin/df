@@ -3,6 +3,7 @@
 # Supports optional free-space overrides in $MOCK_STATE:
 #   $MOCK_STATE/df.map       lines of "<path_prefix> <avail_kb>" (longest prefix wins)
 #   $MOCK_STATE/df_avail_kb  fallback integer available KiB for any path
+#   $MOCK_STATE/df_dev       device name printed for overridden paths (default /dev/mock)
 # When neither matches, delegates to BusyBox df.
 
 target=""
@@ -37,8 +38,9 @@ if [ -z "$avail" ] && [ -r "$MOCK_STATE/df_avail_kb" ]; then
 fi
 
 if [ -n "$avail" ]; then
+    dev=$(head -n 1 "$MOCK_STATE/df_dev" 2>/dev/null)
     printf 'Filesystem           1K-blocks      Used Available Use%% Mounted on\n'
-    printf '/dev/mock               500000     10000 %9s   2%% %s\n' "$avail" "${target:-/}"
+    printf '%-20s    500000     10000 %9s   2%% %s\n' "${dev:-/dev/mock}" "$avail" "${target:-/}"
     exit 0
 fi
 

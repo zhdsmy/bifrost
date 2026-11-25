@@ -403,6 +403,98 @@ eq upd-noprev-ok "true false" "$(jq -r '"\(.ok) \(.data.kept_prev)"' "$jf")"
 ok upd-noprev-absent [ ! -f "$BIFROST_BIN/bifrostd.prev.gz" ]
 df_reset
 
+# ---- 8b. Core storage kind and the keep-previous rule ----
+# df reports the device; BIFROST_MOUNTS gives its filesystem type.
+# Exported: core jobs run in a child process.
+export BIFROST_MOUNTS="$T/mounts"
+printf '/dev/mock /jffs jffs2 rw,noatime 0 0\n' >"$BIFROST_MOUNTS"
+df_set "$BIFROST_BIN" 30000
+ok storage-jffs2 core_storage
+eq storage-jffs2-vals "internal jffs2 500000 30000" "$_CS_KIND $_CS_FS $_CS_TOTAL_KB $_CS_FREE_KB"
+printf 'ubi:jffs2\n' >"$MOCK_STATE/df_dev"
+printf 'ubi:jffs2 /jffs ubifs rw 0 0\n' >"$BIFROST_MOUNTS"
+ok storage-ubifs core_storage
+eq storage-ubifs-vals "internal ubifs" "$_CS_KIND $_CS_FS"
+# USB2JFFS: the same USB partition is mounted on /tmp/mnt/<disk> and on /jffs.
+printf '/dev/sda1\n' >"$MOCK_STATE/df_dev"
+printf '/dev/sda1 /tmp/mnt/sda1 ext4 rw 0 0\n/dev/sda1 /jffs ext4 rw 0 0\n' >"$BIFROST_MOUNTS"
+ok storage-usb core_storage
+eq storage-usb-vals "external ext4" "$_CS_KIND $_CS_FS"
+printf '/dev/mmcblk0p1\n' >"$MOCK_STATE/df_dev"
+printf '/dev/mmcblk0p1 /jffs ext4 rw 0 0\n' >"$BIFROST_MOUNTS"
+ok storage-other core_storage
+eq storage-other-vals "unknown ext4" "$_CS_KIND $_CS_FS"
+rm -f "$MOCK_STATE/df_dev"
+df_reset
+df_set "$BIFROST_BIN" nope
+no storage-no-df core_storage
+eq storage-no-df-vals "unknown 500000 " "$_CS_KIND $_CS_TOTAL_KB $_CS_FREE_KB"
+df_reset
+
+# Keep rule: never on internal flash; elsewhere the archive, one more core and
+# BIFROST_PREV_MARGIN_KB must fit.
+_cur_kb=$(( ($(wc -c <"$BIFROST_CORE") + 1023) / 1024 ))
+printf '/dev/mock /jffs jffs2 rw 0 0\n' >"$BIFROST_MOUNTS"
+df_set "$BIFROST_BIN" 900000
+no fits-internal _upd_prev_fits 1024
+eq fits-internal-why internal "$_UPF_WHY"
+printf '/dev/mock /jffs ext4 rw 0 0\n' >"$BIFROST_MOUNTS"
+df_reset
+df_set "$BIFROST_BIN" "$((1 + _cur_kb + BIFROST_PREV_MARGIN_KB))"
+ok fits-exact _upd_prev_fits 1024
+df_reset
+df_set "$BIFROST_BIN" "$((_cur_kb + BIFROST_PREV_MARGIN_KB))"
+no fits-short _upd_prev_fits 1024
+eq fits-short-why space "$_UPF_WHY"
+df_reset
+df_set "$BIFROST_BIN" nope
+ok fits-no-df _upd_prev_fits 1024
+df_reset
+
+# An update on internal flash succeeds without an archive, even with room for one.
+make_fake_core "$FIX/v4small-arm" 1.107.0 0
+gzip -c "$FIX/v4small-arm" >"$FIX/v4small-arm.gz"
+make_manifest "$FIX/m4small.json" 4 1.107.0 1 0.1.0 arm "$FIX/v4small-arm" "$FIX/v4small-arm.gz"
+sh "$T_SRC/tools/sign.sh" "$KEYDIR/key1.key.pem" "$FIX/m4small.json"
+printf '/dev/mock /jffs jffs2 rw 0 0\n' >"$BIFROST_MOUNTS"
+df_set "$BIFROST_BIN" 900000
+df_set "$BIFROST_RUN" 900000
+curl_map_reset
+curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m4small.json"
+curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m4small.json.sig"
+curl_map_set "$BIFROST_RELEASE_BASE/core-1.107.0-1/bifrost-core-1.107.0-1-linux-arm.gz" "file:$FIX/v4small-arm.gz"
+: >"$BIFROST_LOG"
+ok act-upd-internal act_core_update
+bg_drain
+eq upd-internal-ok "true false" "$(jq -r '"\(.ok) \(.data.kept_prev)"' "$jf")"
+eq upd-internal-ver 1.107.0 "$(core_version)"
+ok upd-internal-noprev [ ! -e "$BIFROST_BIN/bifrostd.prev.gz" ]
+ok upd-internal-noold [ ! -e "$BIFROST_BIN/bifrostd.old" ]
+has upd-internal-log "previous core not kept: internal" "$(cat "$BIFROST_LOG")"
+df_reset
+
+# Deleting the previous core from the page: idempotent and under the state lock.
+printf 'archive' >"$BIFROST_BIN/bifrostd.prev.gz"
+printf '{}' >"$BIFROST_BIN/bifrostd.prev.json"
+ok drop-prev act_core_drop_prev
+ok drop-prev-gz-gone [ ! -e "$BIFROST_BIN/bifrostd.prev.gz" ]
+ok drop-prev-man-gone [ ! -e "$BIFROST_BIN/bifrostd.prev.json" ]
+ok drop-prev-again act_core_drop_prev
+eq drop-prev-page '{"ok":true}' "$(t_page core-drop-prev)"
+eq drop-prev-page-args '{"ok":false,"code":"invalid_param"}' "$(t_page core-drop-prev x)"
+printf 'archive' >"$BIFROST_BIN/bifrostd.prev.gz"
+_lock_wait=$BIFROST_LOCK_WAIT
+BIFROST_LOCK_WAIT=0
+ok drop-prev-lock lock_acquire state 0
+no drop-prev-locked act_core_drop_prev
+eq drop-prev-locked-code busy "$BIFROST_ERR"
+lock_release state
+BIFROST_LOCK_WAIT=$_lock_wait
+ok drop-prev-kept-when-locked [ -e "$BIFROST_BIN/bifrostd.prev.gz" ]
+ok drop-prev-after-lock act_core_drop_prev
+ok drop-prev-after-lock-gone [ ! -e "$BIFROST_BIN/bifrostd.prev.gz" ]
+export BIFROST_MOUNTS=/proc/mounts
+
 # ---- 9. Architecture switching (core-arch): stopped & running ----
 rm -f "$BIFROST_CORE" "$BIFROST_MANIFEST" "$BIFROST_HOME/core-channel.serial" "$BIFROST_RUN/core_latest.json"
 ok install-v2-for-arch core_install_file "$FIX/v2-arm.gz" "$FIX/m2.json" arm

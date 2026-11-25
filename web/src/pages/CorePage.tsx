@@ -10,9 +10,15 @@ import { JobProgress } from "../components/JobProgress";
 import { DetailItem, DetailList, SectionCard } from "../components/SectionCard";
 import { api } from "../core/api";
 import { CORE_VERIFY_COMMAND, formatBytes, formatDateTime, isCoreUpToDate } from "../core/format";
-import type { CoreArch, CoreVariant, JobProgressState, UpdateJobData } from "../core/types";
+import type { CoreArch, CoreStorageKind, CoreVariant, JobProgressState, UpdateJobData } from "../core/types";
 
-type CoreConfirmKind = "update" | "rollback" | { arch: CoreArch } | { variant: CoreVariant };
+type CoreConfirmKind = "update" | "rollback" | "dropPrev" | { arch: CoreArch } | { variant: CoreVariant };
+
+const STORAGE_KIND_KEYS = {
+  internal: "core.storage.internal",
+  external: "core.storage.external",
+  unknown: "core.storage.unknown",
+} as const satisfies Record<CoreStorageKind, string>;
 
 interface CoreConfirmState {
   kind: CoreConfirmKind;
@@ -20,8 +26,9 @@ interface CoreConfirmState {
 }
 
 export function CorePage() {
-  const { status, busy, jobs, runJob, notify, t } = useApp();
+  const { status, busy, jobs, runJob, reloadStatus, notify, t, tError } = useApp();
   const [confirmState, setConfirmState] = useState<CoreConfirmState | null>(null);
+  const [droppingPrev, setDroppingPrev] = useState(false);
 
   if (!status) return null;
 
@@ -37,13 +44,21 @@ export function CorePage() {
   const targetVariant: CoreVariant = currentVariant === "upx" ? "normal" : "upx";
   const variantLabel = (v: CoreVariant) => t(v === "upx" ? "core.variant.upx" : "core.variant.normal");
   const upToDate = isCoreUpToDate(status, updateJob);
+  const storage = core.storage;
+  const internal = storage?.kind === "internal";
+  const prevSize = core.prev_size ?? 0;
+  // Internal flash never keeps a backup (the hint below explains it), so only
+  // a skipped backup on other storage is unexpected enough for an alert.
   const lostPrev = Boolean(
-    updateJob &&
+    !internal &&
+      updateJob &&
       !updateJob.running &&
       updateJob.ok === true &&
       updateJob.data?.action === "update" &&
       updateJob.data?.kept_prev === false,
   );
+  const storageKind = t(STORAGE_KIND_KEYS[storage?.kind ?? "unknown"] ?? STORAGE_KIND_KEYS.unknown);
+  const compressingFlash = internal && (storage?.fs === "jffs2" || storage?.fs === "ubifs");
 
   async function runCoreMutation(trigger: () => Promise<unknown>) {
     await runJob<UpdateJobData>("update", trigger, {
@@ -53,9 +68,24 @@ export function CorePage() {
     });
   }
 
+  async function dropPrev() {
+    setDroppingPrev(true);
+    try {
+      await api.coreDropPrev();
+      await reloadStatus();
+      notify({ title: t("common.actionSuccess"), variant: "success" });
+    } catch (err) {
+      notify({ title: tError(err), variant: "error" });
+    } finally {
+      setDroppingPrev(false);
+    }
+  }
+
   async function executeConfirm(kind: CoreConfirmKind) {
     setConfirmState(null);
-    if (kind === "update") {
+    if (kind === "dropPrev") {
+      await dropPrev();
+    } else if (kind === "update") {
       await runCoreMutation(() => api.coreUpdate());
     } else if (kind === "rollback") {
       await runCoreMutation(() => api.coreRollback());
@@ -88,9 +118,38 @@ export function CorePage() {
             {formatDateTime(core.installed)}
           </DetailItem>
           <DetailItem label={t("core.field.prev")}>
-            <Badge variant={core.prev ? "success" : "secondary"}>
-              {core.prev ? t("core.prev.available") : t("core.prev.missing")}
-            </Badge>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={core.prev ? "success" : "secondary"}>
+                {core.prev ? t("core.prev.available") : t("core.prev.missing")}
+              </Badge>
+              {core.prev && prevSize > 0 && <span className="text-kumo-subtle">{formatBytes(prevSize)}</span>}
+              {core.prev && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={busy || droppingPrev}
+                  loading={droppingPrev}
+                  onClick={(e) => setConfirmState({ kind: "dropPrev", anchor: e.currentTarget })}
+                >
+                  {t("core.action.dropPrev")}
+                </Button>
+              )}
+            </div>
+          </DetailItem>
+          <DetailItem label={t("core.field.storage")}>
+            <div className="flex flex-wrap items-center gap-2">
+              <span>{storageKind}</span>
+              {storage?.fs && (
+                <Badge variant="outline">
+                  <span data-raw-value="true">{storage.fs}</span>
+                </Badge>
+              )}
+            </div>
+          </DetailItem>
+          <DetailItem label={t("core.field.free")}>
+            {storage?.free != null && storage.total != null
+              ? t("core.storage.free", { free: formatBytes(storage.free), total: formatBytes(storage.total) })
+              : "—"}
           </DetailItem>
         </DetailList>
       </SectionCard>
@@ -167,7 +226,7 @@ export function CorePage() {
           </Button>
           <Button
             variant="secondary"
-            disabled={busy || !core.prev}
+            disabled={busy || droppingPrev || !core.prev}
             loading={updateJob?.running && updateJob.data?.action === "rollback"}
             onClick={(e) => setConfirmState({ kind: "rollback", anchor: e.currentTarget })}
           >
@@ -197,9 +256,15 @@ export function CorePage() {
           )}
         </div>
 
-        <p className="text-xs text-kumo-subtle">{t("core.variant.cost")}</p>
+        <p className="text-xs text-kumo-subtle">
+          {t("core.variant.cost")}
+          {compressingFlash && ` ${t("core.variant.internal")}`}
+          {storage?.kind === "external" && ` ${t("core.variant.external")}`}
+        </p>
 
-        {!core.prev && <p className="text-xs text-kumo-subtle">{t("core.noPrevHint")}</p>}
+        {!core.prev && (
+          <p className="text-xs text-kumo-subtle">{t(internal ? "core.noPrevInternal" : "core.noPrevHint")}</p>
+        )}
       </SectionCard>
 
       <SectionCard title={t("core.section.recipe")} description={t("core.recipe.desc")}>
@@ -253,7 +318,9 @@ export function CorePage() {
             if (!open) setConfirmState(null);
           }}
           title={
-            confirmState.kind === "update"
+            confirmState.kind === "dropPrev"
+              ? t("core.confirm.dropPrevTitle")
+              : confirmState.kind === "update"
               ? t("core.confirm.updateTitle")
               : confirmState.kind === "rollback"
                 ? t("core.confirm.rollbackTitle")
@@ -262,7 +329,9 @@ export function CorePage() {
                   : t("core.confirm.typeTitle", { type: variantLabel(confirmState.kind.variant) })
           }
           description={
-            confirmState.kind === "update"
+            confirmState.kind === "dropPrev"
+              ? t("core.confirm.dropPrevDesc")
+              : confirmState.kind === "update"
               ? t("core.confirm.updateDesc")
               : confirmState.kind === "rollback"
                 ? t("core.confirm.rollbackDesc")
@@ -270,7 +339,8 @@ export function CorePage() {
                   ? t("core.confirm.archDesc", { arch: confirmState.kind.arch })
                   : t("core.confirm.typeDesc", { type: variantLabel(confirmState.kind.variant) })
           }
-          disruptive={true}
+          disruptive={confirmState.kind !== "dropPrev"}
+          confirmVariant={confirmState.kind === "dropPrev" ? "destructive" : "primary"}
           onConfirm={() => executeConfirm(confirmState.kind)}
         />
       )}

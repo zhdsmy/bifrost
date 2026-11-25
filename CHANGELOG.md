@@ -5,6 +5,22 @@ All notable changes to Bifrost will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Core tab: the previous core backup shows its size and has a Delete button. The tab also shows where the core is stored (router internal flash, external USB storage, or unknown, with the filesystem type) and the free space there.
+
+### Changed
+
+- The previous core is no longer kept on internal flash (jffs2, ubifs, yaffs, or an mtd/ubi device). Internal flash is small and shared with the firmware and other plugins. A failed update still restores the current core automatically; only the manual rollback is unavailable there. Upgrading the plugin removes a previous core that an older release left on internal flash.
+- On other storage, the previous core is kept only when the free space left afterwards still holds one more copy of the current core (the next update unpacks beside it) plus 2 MB, the minimum the software center requires for upgrades.
+- The UPX hint on the Core tab depends on the storage: on jffs2 or ubifs, the filesystem already compresses the uncompressed core, so UPX saves less than the file sizes suggest; on external storage, UPX is not needed to save space.
+
+### Fixed
+
+- The Core tab no longer says that reinstalling the plugin package restores a missing previous core. A package with an older core does not replace a newer installed core.
+
 ## [0.2.4] - 2026-11-25
 
 ### Changed

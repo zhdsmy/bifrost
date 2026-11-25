@@ -130,7 +130,12 @@ ts_out_file status "$FIXDIR/status_running.json"
 ts_out_file debug-prefs "$FIXDIR/prefs_default.json"
 ok setup-fw-for-running fw_apply
 # shellcheck disable=SC2153
-: >"$BIFROST_BIN/bifrostd.prev.gz"
+printf 'abc' >"$BIFROST_BIN/bifrostd.prev.gz"
+# The core sits on a USB disk (as with USB2JFFS): 1000 KiB free of 500000.
+printf '1000\n' >"$MOCK_STATE/df_avail_kb"
+printf '/dev/sda1\n' >"$MOCK_STATE/df_dev"
+export BIFROST_MOUNTS="$T/mounts"
+printf '/dev/sda1 /jffs ext4 rw 0 0\n' >"$BIFROST_MOUNTS"
 _now=$(now)
 printf '%s\n%s\n%s\nbadline\n' "$((_now - 3600))" "$((_now - 600))" "$((_now - 60))" >"$BIFROST_RUN/watchdog.restarts"
 cat >"$BIFROST_RUN/core_latest.json" <<'EOF'
@@ -147,8 +152,13 @@ eq cli-at-most-2 2 "$(wc -l <"$MOCK_STATE/ts.log" | tr -d ' ')"
 # Exact top-level keys match contract 6.1
 eq top-keys '["auth_url","checks","conflict","core","daemon","dns","error","exit_node","health","lan","peers","plugin","prefs","routes","schema","self","settings","state","time"]' \
     "$(jq -c 'keys' "$ST_OUT")"
-eq core-keys '["arch","build","check","installed","kernel_arch","prev","revision","serial","size","tailscale","update","variant"]' \
+eq core-keys '["arch","build","check","installed","kernel_arch","prev","prev_size","revision","serial","size","storage","tailscale","update","variant"]' \
     "$(jq -c '.core | keys' "$ST_OUT")"
+eq core-prev-size 3 "$(jq -r '.core.prev_size' "$ST_OUT")"
+eq core-storage '{"free":1024000,"fs":"ext4","kind":"external","total":512000000}' \
+    "$(jq -Sc '.core.storage' "$ST_OUT")"
+rm -f "$MOCK_STATE/df_avail_kb" "$MOCK_STATE/df_dev"
+export BIFROST_MOUNTS=/proc/mounts
 
 eq run-basic "1 running null $(head -n 1 "$BIFROST_VERSION_FILE") true" \
     "$(jq -r '"\(.schema) \(.state) \(.error) \(.plugin.version) \(.plugin.enabled)"' "$ST_OUT")"

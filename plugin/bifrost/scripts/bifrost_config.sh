@@ -84,7 +84,7 @@ page() {
     done
     case "$_pg_act" in
         enable | disable | connect | relogin | logout | purge | migrate | \
-            core-check | core-update | core-rollback | netcheck | logs)
+            core-check | core-update | core-rollback | core-drop-prev | netcheck | logs)
             nargs 0 $# || {
                 respond_err invalid_param
                 return 1
@@ -121,6 +121,7 @@ page() {
         core-check) run_act act_core_check ;;
         core-update) run_act act_core_update ;;
         core-rollback) run_act act_core_rollback ;;
+        core-drop-prev) run_act act_core_drop_prev ;;
         core-arch) run_act act_core_arch "$1" ;;
         core-type) run_act act_core_type "$1" ;;
         netcheck) run_act act_netcheck ;;
