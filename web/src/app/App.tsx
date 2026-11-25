@@ -64,18 +64,18 @@ function AppShell() {
 
   return (
     <main className="@container rounded-xl border border-kumo-line bg-kumo-base text-kumo-default">
-      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-kumo-line px-4 py-4 @md:px-6 @md:py-5">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-kumo-line px-6 py-5">
         <div className="flex min-w-0 items-center gap-3">
           <img
             src="/res/icon-bifrost.png"
-            width={40}
-            height={40}
+            width={44}
+            height={44}
             alt=""
-            className="shrink-0 rounded-lg"
+            className="shrink-0"
           />
-          <div className="grid min-w-0 gap-0.5">
+          <div className="grid min-w-0 gap-1">
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-lg font-semibold text-kumo-strong @md:text-xl">
+              <h1 className="text-xl font-semibold text-kumo-strong">
                 {t("app.name")}
               </h1>
               {status && presentation && (
@@ -87,7 +87,7 @@ function AppShell() {
                 <Badge variant="outline">{status.plugin.version}</Badge>
               )}
             </div>
-            <p className="text-xs text-kumo-subtle @md:text-sm">{t("app.subtitle")}</p>
+            <p className="text-sm text-kumo-subtle">{t("app.subtitle")}</p>
           </div>
         </div>
 
@@ -95,7 +95,6 @@ function AppShell() {
           <Select<UiLang>
             id="bifrost-ui-lang"
             aria-label={t("header.language")}
-            size="sm"
             items={langItems}
             value={lang}
             modal={false}
@@ -108,7 +107,6 @@ function AppShell() {
           <Select<UiMode>
             id="bifrost-ui-mode"
             aria-label={t("header.mode")}
-            size="sm"
             items={modeItems}
             value={mode}
             modal={false}
@@ -119,7 +117,6 @@ function AppShell() {
             }}
           />
           <Button
-            size="sm"
             variant="secondary"
             onClick={() => window.reload_Soft_Center?.()}
           >
@@ -129,7 +126,7 @@ function AppShell() {
       </header>
 
       {(uiLoadError || uiError || statusLoadError) && (
-        <div className="grid gap-2 border-b border-kumo-line px-4 py-3 @md:px-6">
+        <div className="grid gap-2 border-b border-kumo-line px-6 py-3">
           {uiLoadError && (
             <Banner variant="alert" role="alert" size="sm" title={t("common.uiLoadFailed")} />
           )}
@@ -142,7 +139,7 @@ function AppShell() {
         </div>
       )}
 
-      <div className="border-b border-kumo-line px-4 pt-2 @md:px-6">
+      <div className="border-b border-kumo-line px-6 pt-2">
         <Tabs
           variant="underline"
           size={lang === "en" ? "sm" : "base"}
@@ -156,7 +153,7 @@ function AppShell() {
         />
       </div>
 
-      <div className="p-4 @md:p-6">
+      <div className="p-6">
         {!status ? (
           <div className="grid gap-3 py-4" aria-busy="true" aria-label={t("common.loading")}>
             <SkeletonLine />
