@@ -5,6 +5,12 @@ All notable changes to Bifrost will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-11-25
+
+### Changed
+
+- App shell: the header and page padding match the po0fw layout so both plugins read as one family in the software center. The header keeps a fixed 24px padding at every width, shows a 44px icon without an extra rounded crop, uses a larger title, and centers the language, theme, and back controls (now at the default size) against the title block. The tabs strip, error banners, and content area keep the same 24px horizontal padding instead of shrinking on narrow widths.
+
 ## [0.2.2] - 2026-11-25
 
 ### Changed
