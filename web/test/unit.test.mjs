@@ -575,6 +575,9 @@ describe("format.ts state mapping and formatting", () => {
 
     assert.equal(formatBytes(512), "512 B");
     assert.equal(formatBytes(2048), "2.0 KB");
+    // Decimal units, as in docs/PLAN.md.
+    assert.equal(formatBytes(25_100_448), "25.1 MB");
+    assert.equal(formatBytes(999_600), "1.0 MB");
     assert.equal(formatDateTime(0), "—");
     assert.match(formatDateTime(1795000000), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
 

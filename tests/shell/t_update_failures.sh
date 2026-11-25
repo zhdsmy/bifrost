@@ -280,7 +280,16 @@ curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m1.json"
 curl_map_set "${BIFROST_CHANNEL_URL}.sig" "file:$FIX/m1.json.sig"
 act_core_update
 bg_drain
-assert_unchanged s4b-same-serial old_serial
+# m2 (serial 6) was already seen, so the channel floor rejects serial 5 first.
+assert_unchanged s4b-replayed-serial old_serial
+
+# The channel still offers the installed serial: nothing to update.
+_s4c_floor=$(cat "$BIFROST_HOME/core-channel.serial")
+printf '5\n' >"$BIFROST_HOME/core-channel.serial"
+act_core_update
+bg_drain
+assert_unchanged s4c-same-serial up_to_date
+printf '%s\n' "$_s4c_floor" >"$BIFROST_HOME/core-channel.serial"
 
 # ---- Scenario 5: Download interrupted / HTTP error (prev.gz stays intact even under low bin df) ----
 df_reset

@@ -171,7 +171,7 @@ The page translates these. Scripts use no other codes.
 | `download_failed` | a download failed or was cut |
 | `bad_signature` | no public key verifies the manifest |
 | `bad_manifest` | the manifest has the wrong schema or fields |
-| `old_serial` | the manifest's serial is not newer than the installed one |
+| `old_serial` | the manifest's serial is lower than the installed one, or lower than the highest serial seen from the channel |
 | `plugin_too_old` | the core needs a newer plugin (`min_plugin`) |
 | `no_arch` | the manifest has no file for this architecture |
 | `hash_mismatch` | a size or sha256 does not match the manifest |
@@ -180,7 +180,7 @@ The page translates these. Scripts use no other codes.
 | `update_verify_failed` | the new core did not come up; the old one is back |
 | `no_prev` | no previous core to roll back to |
 | `arch_unsupported` | the kernel cannot run the requested architecture |
-| `up_to_date` | no newer core (core-check result, not shown as an error) |
+| `up_to_date` | no newer core: a `core-check` result, or an `update` whose channel serial equals the installed one; the page shows it as a notice, not an error |
 
 ## 6. Files the page reads
 
@@ -199,8 +199,9 @@ All in `$BIFROST_UPLOAD` (`/tmp/upload`), written with `json_write` or
   "core": {
     "tailscale": "1.104.7", "revision": 1, "serial": 7, "arch": "arm",
     "variant": "normal",
-    "kernel_arch": "aarch64", "size": 25100448, "installed": 1795000000,
+    "kernel_arch": "aarch64", "size": 25100448, "sha256": "5d41402a...", "installed": 1795000000,
     "prev": true, "prev_size": 7595963,
+    "prev_info": { "tailscale": "1.104.6", "revision": 1, "serial": 6, "arch": "arm", "variant": "normal" },
     "storage": { "kind": "external", "fs": "ext4", "total": 64000000000, "free": 61440000000 },
     "update": null,
     "check": { "checked": 1795429000, "status": "ok", "error": null },
@@ -265,8 +266,13 @@ All in `$BIFROST_UPLOAD` (`/tmp/upload`), written with `json_write` or
 - `core.installed` comes from the installed core file (`date -r`).
   `core.size` is the installed manifest's `.assets[.arch].raw_size` and
   `core.build` its `build` object (`null` when missing), so a refresh never
-  reads the 25 MB core. `core.prev`: `bifrostd.prev.gz` exists;
-  `core.prev_size` is its size in bytes (0 without one).
+  reads the 25 MB core. `core.sha256` is that asset's `raw_sha256` when it is
+  64 lowercase hex digits, else `null`; the page shows it beside the hash
+  command. `core.prev`: `bifrostd.prev.gz` exists;
+  `core.prev_size` is its size in bytes (0 without one). `core.prev_info` is
+  `{"tailscale","revision","serial","arch","variant"}` from
+  `bifrostd.prev.json` while `core.prev` is true, else `null` (also when the
+  backup has no manifest); `arch` is `""` when the manifest names none.
 - `core.storage` (`core_storage`) describes the filesystem that holds
   `$BIFROST_BIN`: `kind` is `internal` for router flash (`jffs2`, `ubifs`,
   `yaffs`, or an mtd/ubi device), `external` for a USB disk (`/dev/sd*`, also
@@ -305,7 +311,7 @@ own time limit, as long as it keeps refreshing status.
 | `daemon` | `queued start precheck starting waiting prefs firewall dns stopping cleanup purge done` | `{"action":"start"\|"stop"\|"restart"\|"purge"}` |
 | `login` | `queued start running done` | `{"action":"login"\|"relogin","official":bool}` |
 | `migrate` | `queued start precheck record backup stop_original wait_original copy starting verify rollback done` | `{"manual_stop":bool,"rolled_back":bool,"cleanup_error":"<code>","backup_cleanup_pending":bool}`. `cleanup_error` (may be absent): the daemon stopped during rollback but `fw_clear` or `dns_clear` failed; the rollback still finished. `backup_cleanup_pending:true`: the pre-migration backup (it holds the old private key) could not be deleted; the job result is unchanged and the next migration, purge, or uninstall retries |
-| `update` | `queued start manifest verify_manifest space download verify unpack test snapshot swap verify_running finalize rollback done` | `{"action":"check"\|"update"\|"rollback"\|"arch"\|"type","latest":{tailscale,revision,serial,tag,variant}\|null,"up_to_date":bool,"kept_prev":bool}`, plus `"variant":"normal"\|"upx"` for `update`, `arch` and `type`, and `"plugin_update":{version,tag,url}\|null` for `check`. `arch` and `type` accept a channel serial equal to the installed one when the architecture or type changes. `check` ends `ok` both with and without an update; `up_to_date:true` means the channel serial equals the installed one (the page then shows the `up_to_date` text). A lower channel serial fails with `old_serial` |
+| `update` | `queued start manifest verify_manifest space download verify unpack test snapshot swap verify_running finalize rollback done` | `{"action":"check"\|"update"\|"rollback"\|"arch"\|"type","latest":{tailscale,revision,serial,tag,variant}\|null,"up_to_date":bool,"kept_prev":bool}`, plus `"variant":"normal"\|"upx"` for `update`, `arch` and `type`, and `"plugin_update":{version,tag,url}\|null` for `check`. `arch` and `type` accept a channel serial equal to the installed one when the architecture or type changes. `check` ends `ok` both with and without an update; `up_to_date:true` means the channel serial equals the installed one (the page then shows the `up_to_date` text). A lower channel serial fails with `old_serial`; `update` with a channel serial equal to the installed one fails with `up_to_date` |
 | `netcheck` | `queued start running done` | `{"report":{...}}` (below) |
 
 `netcheck` report: `{"udp":bool,"ipv4":bool,"ipv6":bool,"mapping_varies":bool|null,"portmap":"<string>","preferred_derp":"<code>","derp":[{"code":"tok","latency_ms":30}]}`.

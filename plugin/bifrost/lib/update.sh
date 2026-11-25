@@ -491,7 +491,10 @@ EOF
     _pm_cur_serial=$(_upd_installed_serial)
     case "$_pm_smode" in
         gt)
-            if [ "$_UM_SERIAL" -le "$_pm_cur_serial" ]; then
+            if [ "$_UM_SERIAL" -eq "$_pm_cur_serial" ]; then
+                fail up_to_date
+                return 1
+            elif [ "$_UM_SERIAL" -lt "$_pm_cur_serial" ]; then
                 fail old_serial
                 return 1
             fi

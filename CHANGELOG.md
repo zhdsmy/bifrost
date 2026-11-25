@@ -9,17 +9,21 @@ plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ### Added
 
-- Core tab: the previous core backup shows its size and has a Delete button. The tab also shows where the core is stored (router internal flash, external USB storage, or unknown, with the filesystem type) and the free space there.
+- Core tab: the previous core backup shows its version, type, architecture, and size, and has a Delete button. The rollback confirmation names the version it restores. The tab also shows where the core is stored (router internal flash, external USB storage, or unknown, with the filesystem type) and the free space there.
+- Core tab: the expected SHA-256 from the signed core manifest is shown under the hash command, and the arm64 switch explains when it helps.
 
 ### Changed
 
 - The previous core is no longer kept on internal flash (jffs2, ubifs, yaffs, or an mtd/ubi device). Internal flash is small and shared with the firmware and other plugins. A failed update still restores the current core automatically; only the manual rollback is unavailable there. Upgrading the plugin removes a previous core that an older release left on internal flash.
 - On other storage, the previous core is kept only when the free space left afterwards still holds one more copy of the current core (the next update unpacks beside it) plus 2 MB, the minimum the software center requires for upgrades.
 - The UPX hint on the Core tab depends on the storage: on jffs2 or ubifs, the filesystem already compresses the uncompressed core, so UPX saves less than the file sizes suggest; on external storage, UPX is not needed to save space.
+- Core tab layout: Update Core is the main button only when a newer core is known, and it is disabled when the last check found the core up to date. The type and architecture switches have their own group. Field pairs, badges, and the folded list of omitted features are tidier.
+- Sizes use decimal units (1 MB = 1,000,000 bytes), as in the docs. They used 1024-based values with MB and GB labels before.
 
 ### Fixed
 
 - The Core tab no longer says that reinstalling the plugin package restores a missing previous core. A package with an older core does not replace a newer installed core.
+- Updating when the channel offers the installed core now reports `up_to_date` ("already up to date") instead of `old_serial`, which said the channel core was older.
 
 ## [0.2.4] - 2026-11-25
 

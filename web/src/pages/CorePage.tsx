@@ -3,6 +3,7 @@ import { ArrowSquareOutIcon } from "@phosphor-icons/react/dist/csr/ArrowSquareOu
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Banner } from "@cloudflare/kumo/components/banner";
 import { Button } from "@cloudflare/kumo/components/button";
+import { Collapsible } from "@cloudflare/kumo/components/collapsible";
 import { useApp } from "../app/context";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CopyField } from "../components/CopyInline";
@@ -26,7 +27,7 @@ interface CoreConfirmState {
 }
 
 export function CorePage() {
-  const { status, busy, jobs, runJob, reloadStatus, notify, t, tError } = useApp();
+  const { status, busy, jobs, runJob, reloadStatus, notify, lang, t, tError } = useApp();
   const [confirmState, setConfirmState] = useState<CoreConfirmState | null>(null);
   const [droppingPrev, setDroppingPrev] = useState(false);
 
@@ -36,6 +37,8 @@ export function CorePage() {
   const build = core.build;
   const omit = Array.isArray(build?.omit) ? build.omit : null;
   const updateJob = jobs.update as JobProgressState<UpdateJobData> | undefined;
+  // An update that found no newer core shows the up-to-date notice, not an error.
+  const shownJob = updateJob?.code === "up_to_date" ? undefined : updateJob;
   const checkedLatest = updateJob?.ok && updateJob.data.action === "check" ? updateJob.data.latest : null;
   const latest = core.update ?? (checkedLatest && checkedLatest.serial > core.serial ? checkedLatest : null);
   const canSwitchArch = core.kernel_arch === "aarch64";
@@ -47,6 +50,12 @@ export function CorePage() {
   const storage = core.storage;
   const internal = storage?.kind === "internal";
   const prevSize = core.prev_size ?? 0;
+  const prevInfo = core.prev ? core.prev_info ?? null : null;
+  const prevVersion = prevInfo?.tailscale
+    ? prevInfo.revision > 0
+      ? `${prevInfo.tailscale} r${prevInfo.revision}`
+      : prevInfo.tailscale
+    : null;
   // Internal flash never keeps a backup (the hint below explains it), so only
   // a skipped backup on other storage is unexpected enough for an alert.
   const lostPrev = Boolean(
@@ -59,6 +68,14 @@ export function CorePage() {
   );
   const storageKind = t(STORAGE_KIND_KEYS[storage?.kind ?? "unknown"] ?? STORAGE_KIND_KEYS.unknown);
   const compressingFlash = internal && (storage?.fs === "jffs2" || storage?.fs === "ubifs");
+  // Chinese sentences end with "。" and need no space between them.
+  const upxHint = [
+    t("core.variant.cost"),
+    compressingFlash ? t("core.variant.internal") : "",
+    storage?.kind === "external" ? t("core.variant.external") : "",
+  ]
+    .filter(Boolean)
+    .join(lang === "zh-CN" ? "" : " ");
 
   async function runCoreMutation(trigger: () => Promise<unknown>) {
     await runJob<UpdateJobData>("update", trigger, {
@@ -105,11 +122,11 @@ export function CorePage() {
           <DetailItem label={t("core.field.arch")}>
             <Badge variant="outline">{core.arch || "—"}</Badge>
           </DetailItem>
+          <DetailItem label={t("core.field.kernelArch")}>
+            <Badge variant="outline">{core.kernel_arch || "—"}</Badge>
+          </DetailItem>
           <DetailItem label={t("core.field.variant")}>
             <Badge variant="outline">{variantLabel(currentVariant)}</Badge>
-          </DetailItem>
-          <DetailItem label={t("core.field.kernelArch")}>
-            <Badge variant="secondary">{core.kernel_arch || "—"}</Badge>
           </DetailItem>
           <DetailItem label={t("core.field.size")}>
             {core.size > 0 ? formatBytes(core.size) : "—"}
@@ -118,12 +135,12 @@ export function CorePage() {
             {formatDateTime(core.installed)}
           </DetailItem>
           <DetailItem label={t("core.field.prev")}>
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={core.prev ? "success" : "secondary"}>
-                {core.prev ? t("core.prev.available") : t("core.prev.missing")}
-              </Badge>
-              {core.prev && prevSize > 0 && <span className="text-kumo-subtle">{formatBytes(prevSize)}</span>}
-              {core.prev && (
+            {core.prev ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span>{prevVersion ?? t("core.prev.available")}</span>
+                {prevInfo && <Badge variant="outline">{variantLabel(prevInfo.variant)}</Badge>}
+                {prevInfo?.arch && <Badge variant="outline">{prevInfo.arch}</Badge>}
+                {prevSize > 0 && <span className="text-kumo-subtle">{formatBytes(prevSize)}</span>}
                 <Button
                   size="sm"
                   variant="secondary"
@@ -133,8 +150,10 @@ export function CorePage() {
                 >
                   {t("core.action.dropPrev")}
                 </Button>
-              )}
-            </div>
+              </div>
+            ) : (
+              <span className="text-kumo-subtle">{t("core.prev.missing")}</span>
+            )}
           </DetailItem>
           <DetailItem label={t("core.field.storage")}>
             <div className="flex flex-wrap items-center gap-2">
@@ -200,7 +219,7 @@ export function CorePage() {
         {lostPrev && <Banner variant="alert" size="sm" title={t("core.noPrevAfterUpdate")} />}
 
         <JobProgress
-          job={updateJob}
+          job={shownJob}
           label={t("core.progressLabel")}
           hideSuccess={upToDate || updateJob?.data?.action === "check"}
         />
@@ -217,8 +236,8 @@ export function CorePage() {
             {t("core.action.check")}
           </Button>
           <Button
-            variant="primary"
-            disabled={busy}
+            variant={latest ? "primary" : "secondary"}
+            disabled={busy || upToDate}
             loading={updateJob?.running && updateJob.data?.action === "update"}
             onClick={(e) => setConfirmState({ kind: "update", anchor: e.currentTarget })}
           >
@@ -232,38 +251,40 @@ export function CorePage() {
           >
             {t("core.action.rollback")}
           </Button>
-          {canSwitchArch && (
-            <Button
-              variant="secondary"
-              disabled={busy}
-              loading={updateJob?.running && updateJob.data?.action === "arch"}
-              onClick={(e) =>
-                setConfirmState({ kind: { arch: targetArch }, anchor: e.currentTarget })
-              }
-            >
-              {targetArch === "arm64" ? t("core.action.switchArm64") : t("core.action.switchArm")}
-            </Button>
-          )}
-          {core.variant && (
-            <Button
-              variant="secondary"
-              disabled={busy}
-              loading={updateJob?.running && updateJob.data?.action === "type"}
-              onClick={(e) => setConfirmState({ kind: { variant: targetVariant }, anchor: e.currentTarget })}
-            >
-              {targetVariant === "upx" ? t("core.action.switchUpx") : t("core.action.switchNormal")}
-            </Button>
-          )}
         </div>
-
-        <p className="text-xs text-kumo-subtle">
-          {t("core.variant.cost")}
-          {compressingFlash && ` ${t("core.variant.internal")}`}
-          {storage?.kind === "external" && ` ${t("core.variant.external")}`}
-        </p>
 
         {!core.prev && (
           <p className="text-xs text-kumo-subtle">{t(internal ? "core.noPrevInternal" : "core.noPrevHint")}</p>
+        )}
+
+        {(core.variant || canSwitchArch) && (
+          <div className="grid gap-3 border-t border-kumo-hairline pt-4">
+            <span className="text-xs font-medium text-kumo-subtle">{t("core.switch.title")}</span>
+            <div className="flex flex-wrap gap-2">
+              {core.variant && (
+                <Button
+                  variant="secondary"
+                  disabled={busy}
+                  loading={updateJob?.running && updateJob.data?.action === "type"}
+                  onClick={(e) => setConfirmState({ kind: { variant: targetVariant }, anchor: e.currentTarget })}
+                >
+                  {targetVariant === "upx" ? t("core.action.switchUpx") : t("core.action.switchNormal")}
+                </Button>
+              )}
+              {canSwitchArch && (
+                <Button
+                  variant="secondary"
+                  disabled={busy}
+                  loading={updateJob?.running && updateJob.data?.action === "arch"}
+                  onClick={(e) => setConfirmState({ kind: { arch: targetArch }, anchor: e.currentTarget })}
+                >
+                  {targetArch === "arm64" ? t("core.action.switchArm64") : t("core.action.switchArm")}
+                </Button>
+              )}
+            </div>
+            {core.variant && <p className="text-xs text-kumo-subtle">{upxHint}</p>}
+            {canSwitchArch && <p className="text-xs text-kumo-subtle">{t("core.arch.hint")}</p>}
+          </div>
         )}
       </SectionCard>
 
@@ -283,30 +304,45 @@ export function CorePage() {
           </DetailItem>
         </DetailList>
 
-        <div className="grid gap-2">
-          <span className="text-xs font-medium text-kumo-subtle">
-            {omit
-              ? t("core.recipe.omit", { count: omit.length })
-              : t("core.recipe.omitLabel")}
-          </span>
-          {!omit ? (
-            <span className="text-sm text-kumo-subtle">{t("common.unknown")}</span>
-          ) : omit.length > 0 ? (
-            <div data-raw-value="true" className="flex flex-wrap gap-1.5">
-              {omit.map((tag) => (
-                <Badge key={tag} variant="outline">
-                  {tag}
-                </Badge>
-              ))}
-            </div>
-          ) : (
-            <span className="text-sm text-kumo-subtle">{t("common.none")}</span>
-          )}
-        </div>
+        {omit && omit.length > 0 ? (
+          <Collapsible.Root className="rounded-lg border border-kumo-line bg-kumo-recessed/50 px-3 py-2">
+            <Collapsible.DefaultTrigger className="w-full py-1 text-sm font-medium text-kumo-default">
+              {t("core.recipe.omit", { count: omit.length })}
+            </Collapsible.DefaultTrigger>
+            <Collapsible.DefaultPanel className="pt-3 pb-2">
+              <div data-raw-value="true" className="flex flex-wrap gap-1.5">
+                {omit.map((tag) => (
+                  <Badge key={tag} variant="outline">
+                    {tag}
+                  </Badge>
+                ))}
+              </div>
+            </Collapsible.DefaultPanel>
+          </Collapsible.Root>
+        ) : (
+          <div className="grid gap-0.5">
+            <span className="text-xs font-medium text-kumo-subtle">{t("core.recipe.omitLabel")}</span>
+            <span className="text-sm text-kumo-subtle">{omit ? t("common.none") : t("common.unknown")}</span>
+          </div>
+        )}
 
         <div className="grid gap-1.5">
           <span className="text-xs font-medium text-kumo-subtle">{t("core.recipe.verify")}</span>
           <CopyField text={CORE_VERIFY_COMMAND} />
+        </div>
+
+        <div className="grid gap-1.5">
+          <span className="text-xs font-medium text-kumo-subtle">{t("core.recipe.expected")}</span>
+          {core.sha256 ? (
+            <code
+              data-raw-value="true"
+              className="rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 font-mono text-xs text-kumo-default [overflow-wrap:anywhere]"
+            >
+              {core.sha256}
+            </code>
+          ) : (
+            <span className="text-sm text-kumo-subtle">{t("common.unknown")}</span>
+          )}
         </div>
       </SectionCard>
 
@@ -334,7 +370,13 @@ export function CorePage() {
               : confirmState.kind === "update"
               ? t("core.confirm.updateDesc")
               : confirmState.kind === "rollback"
-                ? t("core.confirm.rollbackDesc")
+                ? prevVersion && prevInfo?.arch
+                  ? t("core.confirm.rollbackDescTarget", {
+                      version: prevVersion,
+                      type: variantLabel(prevInfo.variant),
+                      arch: prevInfo.arch,
+                    })
+                  : t("core.confirm.rollbackDesc")
                 : "arch" in confirmState.kind
                   ? t("core.confirm.archDesc", { arch: confirmState.kind.arch })
                   : t("core.confirm.typeDesc", { type: variantLabel(confirmState.kind.variant) })

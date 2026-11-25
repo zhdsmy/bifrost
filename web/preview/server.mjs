@@ -151,6 +151,22 @@ export function createPreviewServer({
     return true;
   }
 
+  // Like update.sh: a core change keeps the replaced core unless the core is
+  // on internal flash. Call it before the change; apply the result after it.
+  function previousCore() {
+    const keep = status.core.storage?.kind !== "internal";
+    const { tailscale, revision, serial, arch, variant } = status.core;
+    const info = { tailscale, revision, serial, arch, variant: variant ?? "normal" };
+    return {
+      keep,
+      apply() {
+        status.core.prev = keep;
+        status.core.prev_size = keep ? SAMPLE_PREV_SIZE : 0;
+        status.core.prev_info = keep ? info : null;
+      },
+    };
+  }
+
   function cancelWaitingLogin() {
     const login = jobs.get("login");
     if (login?.running) {
@@ -564,11 +580,21 @@ export function createPreviewServer({
 
       case "core-update": {
         if (args.length !== 0) return { ok: false, code: "invalid_param" };
-        // Like update.sh: internal flash never keeps the previous core.
-        const keepPrev = status.core.storage?.kind !== "internal";
+        // Like update.sh: an equal serial is up_to_date, a lower one old_serial.
+        if (status.core.serial >= SAMPLE_LATEST_CORE.serial) {
+          const code = status.core.serial === SAMPLE_LATEST_CORE.serial ? "up_to_date" : "old_serial";
+          const ok = scheduleJob(
+            "update",
+            { action: "update", latest: null, up_to_date: false, kept_prev: false },
+            [{ phase: "manifest", progress: 5 }],
+            () => ({ ok: false, code }),
+          );
+          return ok ? { ok: true, job: "update" } : { ok: false, code: "busy" };
+        }
+        const prev = previousCore();
         const ok = scheduleJob(
           "update",
-          { action: "update", latest: SAMPLE_LATEST_CORE, up_to_date: false, kept_prev: keepPrev },
+          { action: "update", latest: SAMPLE_LATEST_CORE, up_to_date: false, kept_prev: prev.keep },
           [
             { phase: "manifest", progress: 15 },
             { phase: "verify_manifest", progress: 30 },
@@ -583,8 +609,7 @@ export function createPreviewServer({
             status.core.revision = SAMPLE_LATEST_CORE.revision;
             status.core.serial = SAMPLE_LATEST_CORE.serial;
             status.core.installed = SAMPLE_NOW;
-            status.core.prev = keepPrev;
-            status.core.prev_size = keepPrev ? SAMPLE_PREV_SIZE : 0;
+            prev.apply();
             status.core.update = null;
             return { ok: true };
           },
@@ -599,6 +624,7 @@ export function createPreviewServer({
         if (status.core.prev && storage?.free != null) storage.free += status.core.prev_size ?? 0;
         status.core.prev = false;
         status.core.prev_size = 0;
+        status.core.prev_info = null;
         return { ok: true };
       }
 
@@ -614,11 +640,17 @@ export function createPreviewServer({
             { phase: "verify_running", progress: 90 },
           ],
           () => {
-            status.core.tailscale = "1.104.7";
-            status.core.revision = 1;
-            status.core.serial = 7;
+            const target = status.core.prev_info;
+            status.core.tailscale = target?.tailscale ?? "1.104.7";
+            status.core.revision = target?.revision ?? 1;
+            status.core.serial = target?.serial ?? 7;
+            if (target) {
+              status.core.arch = target.arch;
+              status.core.variant = target.variant;
+            }
             status.core.prev = false;
             status.core.prev_size = 0;
+            status.core.prev_info = null;
             // Like status.sh: a kept check that saw a newer core offers it again.
             if (status.core.check?.status === "ok") status.core.update = { ...SAMPLE_LATEST_CORE };
             return { ok: true };
@@ -633,14 +665,16 @@ export function createPreviewServer({
         if (nextArch === "arm64" && status.core.kernel_arch !== "aarch64") {
           return { ok: false, code: "arch_unsupported" };
         }
+        const prev = previousCore();
         const ok = scheduleJob(
           "update",
-          { action: "arch", latest: null, up_to_date: false, kept_prev: true },
+          { action: "arch", latest: null, up_to_date: false, kept_prev: prev.keep },
           [
             { phase: "download", progress: 40 },
             { phase: "swap", progress: 80 },
           ],
           () => {
+            prev.apply();
             status.core.arch = nextArch;
             status.core.size = nextArch === "arm64" ? 24_576_160 : 25_100_448;
             return { ok: true };
@@ -652,14 +686,16 @@ export function createPreviewServer({
       case "core-type": {
         if (args.length !== 1 || !["normal", "upx"].includes(args[0])) return { ok: false, code: "invalid_param" };
         const nextVariant = args[0];
+        const prev = previousCore();
         const ok = scheduleJob(
           "update",
-          { action: "type", latest: null, up_to_date: false, kept_prev: true, variant: nextVariant },
+          { action: "type", latest: null, up_to_date: false, kept_prev: prev.keep, variant: nextVariant },
           [
             { phase: "download", progress: 40 },
             { phase: "swap", progress: 80 },
           ],
           () => {
+            prev.apply();
             status.core.variant = nextVariant;
             status.core.size = nextVariant === "upx" ? 7_720_204 : 25_100_448;
             return { ok: true };

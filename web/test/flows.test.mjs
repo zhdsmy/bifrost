@@ -803,6 +803,9 @@ test("core page: core.build display, null build fallback, update flow, up_to_dat
   // core.build is rendered dynamically from status.core.build.
   await page.getByText("1.27.4", { exact: true }).waitFor();
   await page.getByText("cbc74fe48ef1", { exact: true }).waitFor();
+  // The omitted features stay folded until asked for.
+  assert.equal(await page.getByText("aws", { exact: true }).isVisible(), false);
+  await page.getByRole("button", { name: /^省略功能（\d+ 项）$/ }).click();
   await page.getByText("aws", { exact: true }).waitFor();
 
   await page.getByRole("button", { name: "检查更新", exact: true }).click();
@@ -823,6 +826,8 @@ test("core page: core.build display, null build fallback, update flow, up_to_dat
   await page.getByRole("button", { name: "检查更新", exact: true }).click();
   await page.getByText("当前已是最新稳定版核心。", { exact: true }).waitFor();
   assert.equal(await page.getByRole("alert").count(), 0);
+  // Nothing to update: the update button is off until a check finds a newer core.
+  assert.equal(await page.getByRole("button", { name: "更新核心", exact: true }).isDisabled(), true);
 
   // Overview now confirms core is up to date because check succeeded with up_to_date: true.
   await clickTab(page, "概览");
@@ -834,11 +839,30 @@ test("core page: core.build display, null build fallback, update flow, up_to_dat
   await page.getByRole("alertdialog").getByRole("button", { name: "确认", exact: true }).click();
   await page.getByText("arm64", { exact: true }).waitFor();
 
-  // Roll back to previous -> disables rollback button afterward when prev=false.
+  // The backup is now the arm core that the switch replaced; the confirmation names it.
+  await page.getByText("1.106.0 r1", { exact: true }).waitFor();
   await page.getByRole("button", { name: "回退到上一版", exact: true }).click();
+  await page.getByRole("alertdialog").getByText(/将换回本地保留的上一版核心 1\.106\.0 r1（不压缩，arm）/).waitFor();
   await page.getByRole("alertdialog").getByRole("button", { name: "确认", exact: true }).click();
-  await page.getByText("1.104.7", { exact: true }).waitFor();
+  // Roll back -> back on arm, and rollback is disabled afterward when prev=false.
+  await page.getByRole("button", { name: "切换到 arm64 核心", exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "回退到上一版", exact: true }).isDisabled(), true);
+
+  // Updating without a check while already current ends as a notice, not an error.
+  const current = await openPreview(t, {
+    initialState: "running",
+    mutateStatus: (s) => { s.core.serial = 8; },
+    fastJobPoll: true,
+    jobStepMs: 20,
+  });
+  await current.page.goto(current.url);
+  await ready(current.page);
+  await clickTab(current.page, "核心");
+  await current.page.getByRole("button", { name: "更新核心", exact: true }).click();
+  await current.page.getByRole("alertdialog").getByRole("button", { name: "确认", exact: true }).click();
+  await current.page.getByText("当前已是最新稳定版核心。", { exact: true }).waitFor();
+  assert.equal(await current.page.getByRole("alert").count(), 0);
+  assert.equal(await current.page.getByRole("button", { name: "更新核心", exact: true }).isDisabled(), true);
 
   // core-check old_serial failure shows error alert (contract §6.2).
   const oldSerial = await openPreview(t, {
@@ -1126,8 +1150,11 @@ test("core page: storage details, deleting the previous backup, and external sto
 
   await page.getByText("外置 USB 存储", { exact: true }).waitFor();
   await page.getByText("ext4", { exact: true }).waitFor();
-  await page.getByText("剩余 26.7 GB，共 29.8 GB", { exact: true }).waitFor();
-  await page.getByText("7.2 MB", { exact: true }).waitFor();
+  await page.getByText("剩余 28.7 GB，共 32.0 GB", { exact: true }).waitFor();
+  await page.getByText("1.104.6 r1", { exact: true }).waitFor();
+  await page.getByText("7.6 MB", { exact: true }).waitFor();
+  // The storage hint follows the UPX cost as one paragraph, without a space after "。".
+  await page.getByText(/内存不能共享。核心在外置存储上/).waitFor();
   await page.getByText(/不需要为了省空间换成 UPX/).waitFor();
   assert.equal(await page.getByText(/文件系统会自动压缩/).count(), 0);
 
@@ -1142,7 +1169,7 @@ test("core page: storage details, deleting the previous backup, and external sto
   await page.getByText(/当前没有上一版核心备份，无法回退/).waitFor();
   assert.equal(await page.getByRole("button", { name: "删除", exact: true }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "回退到上一版", exact: true }).isDisabled(), true);
-  await page.getByText("剩余 26.7 GB，共 29.8 GB", { exact: true }).waitFor();
+  await page.getByText("剩余 28.7 GB，共 32.0 GB", { exact: true }).waitFor();
 });
 
 test("core page: internal flash explains the missing backup and does not alert after an update", async (t) => {
@@ -1151,9 +1178,10 @@ test("core page: internal flash explains the missing backup and does not alert a
     fastJobPoll: true,
     jobStepMs: 20,
     mutateStatus: (s) => {
-      s.core.storage = { kind: "internal", fs: "jffs2", total: 64 * 1024 * 1024, free: 20 * 1024 * 1024 };
+      s.core.storage = { kind: "internal", fs: "jffs2", total: 64_000_000, free: 20_000_000 };
       s.core.prev = false;
       s.core.prev_size = 0;
+      s.core.prev_info = null;
     },
   });
   await page.goto(url);

@@ -108,6 +108,8 @@ export function isCoreUpToDate(status: StatusData, check?: JobProgressState<Upda
   if (check?.data.action === "check" && !check.running) {
     return check.ok === true && check.data.up_to_date === true;
   }
+  // An update that found no newer core ends with this code (contract section 5).
+  if (check && !check.running && check.code === "up_to_date") return true;
   // Otherwise use the last check the router kept, from this or an earlier visit.
   return status.core.check?.status === "ok" && status.core.check.checked > 0;
 }
@@ -132,19 +134,21 @@ export function analyzeKeyExpiry(iso: string, nowMs = Date.now()): KeyExpiryInfo
   };
 }
 
+// Decimal units (1 MB = 1,000,000 bytes), as in docs/PLAN.md and on storage labels.
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
-  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (bytes < 1000) return `${Math.round(bytes)} B`;
   const units = ["KB", "MB", "GB", "TB"];
-  let value = bytes / 1024;
+  let value = bytes / 1000;
   let idx = 0;
-  while (value >= 1024 && idx < units.length - 1) {
-    value /= 1024;
+  while (value >= 999.5 && idx < units.length - 1) {
+    value /= 1000;
     idx++;
   }
   return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} ${units[idx]}`;
 }
 
+// df counts 1024-byte blocks.
 export function formatKb(kb: number): string {
   return formatBytes(kb * 1024);
 }

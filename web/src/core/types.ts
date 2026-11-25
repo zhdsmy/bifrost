@@ -66,6 +66,14 @@ export interface CoreStorage {
   free: number | null;
 }
 
+export interface CorePrevInfo {
+  tailscale: string;
+  revision: number;
+  serial: number;
+  arch: string;
+  variant: CoreVariant;
+}
+
 export interface CoreInfo {
   tailscale: string;
   revision: number;
@@ -74,9 +82,12 @@ export interface CoreInfo {
   variant?: CoreVariant;
   kernel_arch: string;
   size: number;
+  /** Expected SHA-256 of the installed core, from its signed manifest. */
+  sha256?: string | null;
   installed: number;
   prev: boolean;
   prev_size?: number;
+  prev_info?: CorePrevInfo | null;
   storage?: CoreStorage;
   update: CoreLatest | null;
   check?: {

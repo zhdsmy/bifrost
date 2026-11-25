@@ -272,7 +272,7 @@ export const zhCN = {
   "core.field.size": "文件大小",
   "core.field.installed": "安装时间",
   "core.field.prev": "上一版备份",
-  "core.prev.available": "已保留（可回退）",
+  "core.prev.available": "已保留，版本未知",
   "core.prev.missing": "未保留",
   "core.field.storage": "核心存储",
   "core.storage.internal": "路由器内置闪存",
@@ -289,6 +289,8 @@ export const zhCN = {
   "core.action.switchArm": "切换到 arm 核心",
   "core.action.switchUpx": "切换到 UPX 核心",
   "core.action.switchNormal": "切换到不压缩核心",
+  "core.switch.title": "核心类型与架构",
+  "core.arch.hint": "内核是 64 位（aarch64），arm 和 arm64 核心都能运行。arm64 核心的数据加密有 64 位汇编实现，转发吞吐可能更高；两者功能相同，可以随时切换。",
   "core.latestBanner": "发现新核心：{version}（r{revision}，序号 {serial}）",
   "core.releaseNotesLink": "查看发布说明",
   "core.pluginUpdateBanner": "发现新插件版本：{version}",
@@ -302,6 +304,7 @@ export const zhCN = {
   "core.confirm.updateDesc": "更新会在校验签名与哈希后替换核心并重启服务，期间 tailnet 连接会中断数十秒；启动验证失败会自动回滚。",
   "core.confirm.rollbackTitle": "确认回退到上一版核心？",
   "core.confirm.rollbackDesc": "将使用本地保留的上一版核心替换当前核心并重启服务，期间 tailnet 连接会短暂中断。手动回退不会改写登录状态。",
+  "core.confirm.rollbackDescTarget": "将换回本地保留的上一版核心 {version}（{type}，{arch}）并重启服务，期间 tailnet 连接会短暂中断。手动回退不会改写登录状态。",
   "core.confirm.dropPrevTitle": "删除上一版核心备份？",
   "core.confirm.dropPrevDesc": "删除后无法回退到上一版核心。当前核心和服务不受影响。",
   "core.confirm.archTitle": "确认切换核心架构为 {arch}？",
@@ -318,6 +321,7 @@ export const zhCN = {
   "core.recipe.omit": "省略功能（{count} 项）",
   "core.recipe.omitLabel": "省略功能",
   "core.recipe.verify": "在路由器 SSH 中核对核心哈希",
+  "core.recipe.expected": "预期哈希值（来自签名的核心清单）",
 
   // Diagnostics page (PLAN 13.4, 13.10)
   "diag.section.netcheck": "网络检测",

@@ -274,7 +274,7 @@ export const en: Record<MessageKey, string> = {
   "core.field.size": "Binary Size",
   "core.field.installed": "Installed At",
   "core.field.prev": "Previous Backup",
-  "core.prev.available": "Kept (rollback available)",
+  "core.prev.available": "Kept, version unknown",
   "core.prev.missing": "Not kept",
   "core.field.storage": "Core Storage",
   "core.storage.internal": "Router internal flash",
@@ -291,6 +291,8 @@ export const en: Record<MessageKey, string> = {
   "core.action.switchArm": "Switch to arm Core",
   "core.action.switchUpx": "Switch to UPX Core",
   "core.action.switchNormal": "Switch to Uncompressed Core",
+  "core.switch.title": "Core Type & Architecture",
+  "core.arch.hint": "The kernel is 64-bit (aarch64), so both the arm and arm64 cores run here. The arm64 core encrypts traffic with 64-bit assembly, so throughput may be higher. Both cores have the same features, and you can switch at any time.",
   "core.latestBanner": "New core available: {version} (r{revision}, serial {serial})",
   "core.releaseNotesLink": "View release notes",
   "core.pluginUpdateBanner": "New plugin version available: {version}",
@@ -304,6 +306,7 @@ export const en: Record<MessageKey, string> = {
   "core.confirm.updateDesc": "The new core is verified by signature and SHA-256 before restarting the daemon. Connectivity will drop for tens of seconds; failed starts roll back automatically.",
   "core.confirm.rollbackTitle": "Roll back to previous core?",
   "core.confirm.rollbackDesc": "Restores the locally saved previous core and restarts the daemon, briefly interrupting connectivity. Login state is kept as is.",
+  "core.confirm.rollbackDescTarget": "Restores the locally saved previous core {version} ({type}, {arch}) and restarts the daemon, briefly interrupting connectivity. Login state is kept as is.",
   "core.confirm.dropPrevTitle": "Delete the previous core backup?",
   "core.confirm.dropPrevDesc": "You can no longer roll back to the previous core. The current core and the service are not affected.",
   "core.confirm.archTitle": "Switch core architecture to {arch}?",
@@ -320,6 +323,7 @@ export const en: Record<MessageKey, string> = {
   "core.recipe.omit": "Omitted Features ({count})",
   "core.recipe.omitLabel": "Omitted Features",
   "core.recipe.verify": "Verify binary hash over router SSH",
+  "core.recipe.expected": "Expected SHA-256 (from the signed core manifest)",
 
   // Diagnostics page (PLAN 13.4, 13.10)
   "diag.section.netcheck": "Network Check",

@@ -131,6 +131,9 @@ ts_out_file debug-prefs "$FIXDIR/prefs_default.json"
 ok setup-fw-for-running fw_apply
 # shellcheck disable=SC2153
 printf 'abc' >"$BIFROST_BIN/bifrostd.prev.gz"
+cat >"$BIFROST_BIN/bifrostd.prev.json" <<'EOF'
+{"schema":1,"serial":6,"tailscale":"1.104.6","revision":3,"tag":"core-1.104.6-3","arch":"arm","variant":"upx","assets":{"arm":{"raw_size":7720204}}}
+EOF
 # The core sits on a USB disk (as with USB2JFFS): 1000 KiB free of 500000.
 printf '1000\n' >"$MOCK_STATE/df_avail_kb"
 printf '/dev/sda1\n' >"$MOCK_STATE/df_dev"
@@ -152,9 +155,13 @@ eq cli-at-most-2 2 "$(wc -l <"$MOCK_STATE/ts.log" | tr -d ' ')"
 # Exact top-level keys match contract 6.1
 eq top-keys '["auth_url","checks","conflict","core","daemon","dns","error","exit_node","health","lan","peers","plugin","prefs","routes","schema","self","settings","state","time"]' \
     "$(jq -c 'keys' "$ST_OUT")"
-eq core-keys '["arch","build","check","installed","kernel_arch","prev","prev_size","revision","serial","size","storage","tailscale","update","variant"]' \
+eq core-keys '["arch","build","check","installed","kernel_arch","prev","prev_info","prev_size","revision","serial","sha256","size","storage","tailscale","update","variant"]' \
     "$(jq -c '.core | keys' "$ST_OUT")"
 eq core-prev-size 3 "$(jq -r '.core.prev_size' "$ST_OUT")"
+eq core-prev-info '{"arch":"arm","revision":3,"serial":6,"tailscale":"1.104.6","variant":"upx"}' \
+    "$(jq -Sc '.core.prev_info' "$ST_OUT")"
+# The fixture's raw_sha256 is not a SHA-256, so the page gets no expected hash.
+eq core-sha256-invalid null "$(jq -c '.core.sha256' "$ST_OUT")"
 eq core-storage '{"free":1024000,"fs":"ext4","kind":"external","total":512000000}' \
     "$(jq -Sc '.core.storage' "$ST_OUT")"
 rm -f "$MOCK_STATE/df_avail_kb" "$MOCK_STATE/df_dev"
@@ -232,11 +239,16 @@ done
 
 # --- 10b. Installed manifest with arch=arm64 & missing build -> null (items 11, 17, 20) ---
 cat >"$BIFROST_MANIFEST" <<'EOF'
-{"schema":1,"serial":9,"tailscale":"1.104.7","revision":2,"tag":"core-1.104.7-2","min_plugin":"0.1.0","arch":"arm64","assets":{"arm64":{"file":"bifrost-core-1.104.7-2-linux-arm64.gz","size":9200000,"sha256":"cc","raw_size":24576160,"raw_sha256":"dd"}}}
+{"schema":1,"serial":9,"tailscale":"1.104.7","revision":2,"tag":"core-1.104.7-2","min_plugin":"0.1.0","arch":"arm64","assets":{"arm64":{"file":"bifrost-core-1.104.7-2-linux-arm64.gz","size":9200000,"sha256":"cc","raw_size":24576160,"raw_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}}
 EOF
+# A backup without its manifest is still available, but its version is unknown.
+rm -f "$BIFROST_BIN/bifrostd.prev.json"
 ok refresh-arm64-manifest status_refresh
 eq arm64-core "arm64 24576160 null null" \
     "$(jq -r '"\(.core.arch) \(.core.size) \(.core.build) \(.core.update)"' "$ST_OUT")"
+eq arm64-core-sha256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+    "$(jq -r '.core.sha256' "$ST_OUT")"
+eq prev-without-manifest "true null" "$(jq -r '"\(.core.prev) \(.core.prev_info)"' "$ST_OUT")"
 eq core-arch-helper arm64 "$(jq -r "$(status_core_arch_jq)" "$BIFROST_MANIFEST")"
 seed_manifest
 

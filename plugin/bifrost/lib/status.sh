@@ -77,6 +77,7 @@ _status_render_jq() {
         --rawfile st_text "$_sr_st_file" \
         --rawfile pr_text "$_sr_pr_file" \
         --rawfile man_text "$_sr_man_file" \
+        --rawfile prev_text "$_sr_prev_file" \
         --rawfile previous_routes "$_sr_routes_file" \
         --rawfile lat_text "$_sr_lat_file" \
         --rawfile chk_text "$_sr_chk_file" \
@@ -141,6 +142,7 @@ _status_render_jq() {
         ($st_text | object_or_null) as $st |
         (if $st != null then ($pr_text | object_or_null) else null end) as $pr |
         ($man_text | object_or_null) as $man |
+        ($prev_text | object_or_null) as $prev_man |
         ($lat_text | object_or_null) as $lat |
         ($chk_text | object_or_null) as $chk |
 
@@ -162,6 +164,17 @@ _status_render_jq() {
         ($man | installed_arch) as $core_arch |
         ($man.variant // "normal") as $core_variant |
         ($man.assets[$core_arch].raw_size // 0) as $core_size |
+        ($man.assets[$core_arch].raw_sha256 // "" |
+            if type == "string" and test("^[0-9a-f]{64}\\z") then . else null end) as $core_sha |
+        (if $cprev and $prev_man != null then
+            {
+                tailscale: ($prev_man.tailscale // ""),
+                revision: ($prev_man.revision // 0),
+                serial: ($prev_man.serial // 0),
+                arch: ($prev_man | installed_arch),
+                variant: ($prev_man.variant // "normal")
+            }
+         else null end) as $prev_info |
         (if $chk != null and (($chk.core.latest.serial | type) == "number") then $chk.core.latest else $lat end) as $latest |
         (if $latest != null and (($latest.serial | type) == "number") and ($latest.serial > $man_serial) then
             {
@@ -283,9 +296,11 @@ _status_render_jq() {
                 variant: $core_variant,
                 kernel_arch: $karch,
                 size: $core_size,
+                sha256: $core_sha,
                 installed: $cinst,
                 prev: $cprev,
                 prev_size: $cprev_size,
+                prev_info: $prev_info,
                 storage: {
                     kind: $skind,
                     fs: (if $sfs == "" then null else $sfs end),
@@ -475,9 +490,11 @@ status_refresh() {
     [ "$(status_time_synced)" = false ] && _sr_chk_clk=true
 
     _sr_man_file=/dev/null
+    _sr_prev_file=/dev/null
     _sr_lat_file=/dev/null
     _sr_chk_file=/dev/null
     [ -f "$BIFROST_MANIFEST" ] && _sr_man_file=$BIFROST_MANIFEST
+    [ -f "$BIFROST_BIN/bifrostd.prev.json" ] && _sr_prev_file="$BIFROST_BIN/bifrostd.prev.json"
     [ -f "$BIFROST_RUN/core_latest.json" ] && _sr_lat_file="$BIFROST_RUN/core_latest.json"
     [ -f "$BIFROST_HOME/core-check.json" ] && _sr_chk_file="$BIFROST_HOME/core-check.json"
 

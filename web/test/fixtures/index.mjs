@@ -4,6 +4,7 @@
 export const SAMPLE_NOW = 1795430000;
 
 export const SAMPLE_PREV_SIZE = 7_595_963;
+export const SAMPLE_CORE_SHA256 = "5d41402abc4b2a76b9719d911017c5925d41402abc4b2a76b9719d911017c592";
 
 export const SAMPLE_BUILD = {
   go: "1.27.4",
@@ -96,9 +97,11 @@ function baseRunningStatus() {
       variant: "normal",
       kernel_arch: "aarch64",
       size: 25_100_448,
+      sha256: SAMPLE_CORE_SHA256,
       installed: 1795000000,
       prev: true,
       prev_size: SAMPLE_PREV_SIZE,
+      prev_info: { tailscale: "1.104.6", revision: 1, serial: 6, arch: "arm", variant: "normal" },
       storage: { kind: "external", fs: "ext4", total: 31_250_000 * 1024, free: 28_000_000 * 1024 },
       update: null,
       build: structuredClone(SAMPLE_BUILD),
@@ -187,9 +190,11 @@ export function createStatusFixture(name = "running") {
           revision: 0,
           serial: 0,
           size: 0,
+          sha256: null,
           installed: 0,
           prev: false,
           prev_size: 0,
+          prev_info: null,
           build: null,
         },
         daemon: { running: false, pid: null, restarts: 0 },
