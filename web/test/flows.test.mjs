@@ -623,17 +623,17 @@ test("devices page: long names stay on one line, and column widths resize by dra
   await osEdge.focus();
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ArrowRight");
-  assert.equal(await headWidth(2), 92);
-  assert.equal(await osEdge.getAttribute("aria-valuenow"), "92");
+  assert.equal(await headWidth(2), 98);
+  assert.equal(await osEdge.getAttribute("aria-valuenow"), "98");
 
   // The widths survive a reload. A double-click resets one column; the button resets all.
   await page.reload();
   await ready(page);
   await clickTab(page, "设备");
   assert.equal(await headWidth(0), 184);
-  assert.equal(await headWidth(2), 92);
+  assert.equal(await headWidth(2), 98);
   await osEdge.dblclick();
-  assert.equal(await headWidth(2), 60);
+  assert.equal(await headWidth(2), 66);
   await reset.click();
   assert.equal(await headWidth(0), 124);
   assert.equal(await reset.count(), 0);

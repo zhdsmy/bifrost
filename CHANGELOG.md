@@ -7,6 +7,14 @@ plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Changed
+
+- English UI: buttons, links, card titles, and field labels use title case throughout. "Log out", "Open Core tab", "Log in to your tailnet", "Reset column widths", and the build recipe labels on the Core tab were the exceptions. Confirmation questions, status values, and descriptions keep sentence case.
+
+### Fixed
+
+- Devices tab: the OS column is wide enough for "windows" and "android", and the English Handshake header no longer runs into the fade of the pinned Action column on a router-width page. Widths you set yourself are kept.
+
 ## [0.2.6] - 2026-11-26
 
 ### Changed

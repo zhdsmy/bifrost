@@ -31,8 +31,8 @@ type ColumnId = keyof typeof COLUMN_LABELS;
 const COLUMNS = Object.keys(COLUMN_LABELS) as ColumnId[];
 type ColumnWidths = Record<ColumnId, number>;
 const DEFAULT_WIDTHS: Record<UiLang, ColumnWidths> = {
-  "zh-CN": { name: 124, ip: 144, os: 60, status: 72, path: 116, handshake: 68, traffic: 80, routes: 136 },
-  en: { name: 116, ip: 144, os: 60, status: 84, path: 106, handshake: 84, traffic: 78, routes: 136 },
+  "zh-CN": { name: 124, ip: 144, os: 66, status: 68, path: 112, handshake: 68, traffic: 80, routes: 136 },
+  en: { name: 104, ip: 144, os: 66, status: 80, path: 102, handshake: 84, traffic: 78, routes: 136 },
 };
 const ACTION_WIDTH = 72;
 const ACTION_WIDTH_WITH_RESULT = 136;
