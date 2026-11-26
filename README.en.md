@@ -125,6 +125,7 @@ Bifrost supports connecting as a client to self-hosted control servers (containe
 - Over SSH, run `bifrost <subcommand>` (e.g., `bifrost status`, `bifrost ping`, `bifrost switch`) to talk to Bifrost's dedicated socket directly.
 - Re-logging in through the web UI runs `tailscale up --reset` with only the UI-managed flags; any extra CLI-only preferences reset to defaults.
 - After Log Out in the web UI, the UI-managed advertised routes, exit node, accepted routes, and device name are kept until the next login, also across a router restart. Other CLI-only preferences reset to defaults.
+- An interactive login after a logout makes the router a device of the account that logs in. Its tags are removed, so the access rules and key expiry of untagged devices apply. Set the tags again in the admin console after the login, or log in with a tagged auth key.
 
 ## Core Updates & Signatures
 
