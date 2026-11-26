@@ -320,6 +320,9 @@ ok update-daemon-running daemon_running
 ok update-no-new [ ! -e "$BIFROST_BIN/bifrostd.new" ]
 ok update-no-old [ ! -e "$BIFROST_BIN/bifrostd.old" ]
 ok update-no-tmp [ ! -d "$BIFROST_RUN/update" ]
+# The API lookup failed (unmapped); it is tried once per tag, not per file.
+eq update-api-lookups "$BIFROST_RELEASE_API/tags/channel-stable
+$BIFROST_RELEASE_API/tags/core-1.105.0-1" "$(grep '/tags/' "$MOCK_STATE/curl.log")"
 
 # ---- 6. core-rollback under mirror (makes zero curl calls) + no_prev after ----
 ok set-mirror-rb cfg_set bifrost_mirror "$MIR"
@@ -345,6 +348,48 @@ job_begin update
 no rollback-no-prev-job job_update rollback
 eq rollback-no-prev-job-code no_prev "$BIFROST_ERR"
 job_end update fail no_prev
+
+# ---- 6b. GitHub API downloads (PLAN 12.7) ----
+# Order: mirror, then the API asset, then the release URL.
+API=$BIFROST_RELEASE_API
+jq -n '{assets: [{id: 101, name: "core.json"}, {id: 102, name: "core.json.sig"}]}' >"$T/rel-channel.json"
+jq -n '{assets: [{id: 201, name: "bifrost-core-1.105.0-1-linux-arm.gz"}]}' >"$T/rel-core.json"
+curl_map_reset
+curl_map_set "$API/tags/channel-stable" "file:$T/rel-channel.json"
+curl_map_set "$API/assets/101" "file:$FIX/m2.json"
+curl_map_set "$API/assets/102" "file:$FIX/m2.json.sig"
+ok act-check-api act_core_check
+bg_drain
+eq check-api-ok "true 2" "$(jq -r '"\(.ok) \(.data.latest.serial)"' "$jf")"
+# plugin.json is not in the asset list, so only it goes to the release URL.
+eq check-api-urls "$API/tags/channel-stable
+$API/assets/101
+$API/assets/102
+${BIFROST_CHANNEL_URL%core.json}plugin.json" "$(cat "$MOCK_STATE/curl.log")"
+
+# A failing mirror falls back to the API.
+ok set-mirror-api cfg_set bifrost_mirror "$MIR"
+curl_map_reset
+curl_map_set "$API/tags/channel-stable" "file:$T/rel-channel.json"
+curl_map_set "$API/tags/core-1.105.0-1" "file:$T/rel-core.json"
+curl_map_set "$API/assets/101" "file:$FIX/m2.json"
+curl_map_set "$API/assets/102" "file:$FIX/m2.json.sig"
+curl_map_set "$API/assets/201" "file:$FIX/v2-arm.gz"
+ok act-update-api act_core_update
+bg_drain
+eq update-api-ok "true 1.105.0" "$(jq -r .ok "$jf") $(core_version)"
+eq update-api-urls "${MIR}${BIFROST_CHANNEL_URL}
+$API/tags/channel-stable
+$API/assets/101
+${MIR}${BIFROST_CHANNEL_URL}.sig
+$API/assets/102
+${MIR}${BIFROST_RELEASE_BASE}/core-1.105.0-1/bifrost-core-1.105.0-1-linux-arm.gz
+$API/tags/core-1.105.0-1
+$API/assets/201" "$(cat "$MOCK_STATE/curl.log")"
+ok clear-mirror-api cfg_set bifrost_mirror ""
+ok act-rb-api act_core_rollback
+bg_drain
+eq rb-api-ver 1.104.7 "$(core_version)"
 
 # ---- 7. Mirror prefix download ----
 ok set-mirror cfg_set bifrost_mirror "$MIR"

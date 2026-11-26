@@ -168,7 +168,7 @@ The page translates these. Scripts use no other codes.
 | `orig_still_running` | migration: the original must be stopped in its own page first |
 | `migrate_verify_failed` | migration: identity or state did not match; rolled back |
 | `migrate_rollback_failed` | migration: the rollback also failed; see the log |
-| `download_failed` | a download failed or was cut |
+| `download_failed` | a download failed or was cut on every source: the mirror, the GitHub API, and the release URL (PLAN 12.7) |
 | `bad_signature` | no public key verifies the manifest |
 | `bad_manifest` | the manifest has the wrong schema or fields |
 | `old_serial` | the manifest's serial is lower than the installed one, or lower than the highest serial seen from the channel |

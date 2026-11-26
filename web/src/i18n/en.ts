@@ -259,8 +259,8 @@ export const en: Record<MessageKey, string> = {
   "settings.noLogs.confirmDesc": "Changing this option restarts the daemon and briefly interrupts tailnet connectivity.",
 
   "settings.mirror.label": "Download Mirror Prefix",
-  "settings.mirror.desc": "Optional HTTPS prefix (ending with /) prepended when checking or downloading core releases. Signatures and hashes are still verified.",
-  "settings.mirror.placeholder": "Leave empty for direct, e.g. https://mirror.example.org/",
+  "settings.mirror.desc": "Optional HTTPS prefix (ending with /) tried first when checking or downloading core releases. GitHub is used if it fails. Signatures and hashes are still verified.",
+  "settings.mirror.placeholder": "Leave empty to download from GitHub, e.g. https://mirror.example.org/",
 
   // Core page (PLAN 12.4 - 12.5, 13.4)
   "core.section.current": "Installed Core",

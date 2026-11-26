@@ -20,6 +20,7 @@ plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 - Core tab layout: Update Core is the main button only when a newer core is known, and it is disabled when the last check found the core up to date. The type and architecture switches have their own group. Field pairs are tidier, and the list of omitted features is folded.
 - Core tab values (architecture, core type, filesystem, previous backup) are plain text instead of badges. Outline badges (header version, advertised routes, path, omitted features) use the `kumo-line` border, the same as secondary buttons, so they stay visible in dark and light mode.
 - Sizes use decimal units (1 MB = 1,000,000 bytes), as in the docs. They used 1024-based values with MB and GB labels before.
+- Update checks and core downloads use the GitHub API (`api.github.com` and its file CDN) before `github.com`, which is often slow or blocked in some networks. A download mirror, when set, is still tried first, and now falls back to GitHub when it fails. The API allows 60 unauthenticated requests an hour per IP address; a check or an update uses about five, and `github.com` is used when the limit is reached. Signatures and hashes are checked as before.
 
 ### Fixed
 

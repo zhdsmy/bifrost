@@ -234,6 +234,33 @@ bg_drain
 assert_unchanged s3-tampered-gz hash_mismatch
 has oversized-download-limited "$V2_URL $(file_size "$FIX/v2.gz")" "$(cat "$MOCK_STATE/curl.limited")"
 
+# Through the GitHub API: an oversized file is not fetched again from the
+# release URL; a transport error is.
+API=$BIFROST_RELEASE_API
+jq -n '{assets: [{id: 1, name: "core.json"}, {id: 2, name: "core.json.sig"}]}' >"$FIX/rel-channel.json"
+jq -n '{assets: [{id: 3, name: "bifrost-core-1.105.0-1-linux-arm.gz"}]}' >"$FIX/rel-core.json"
+api_map() {
+    curl_map_reset
+    curl_map_set "$API/tags/channel-stable" "file:$FIX/rel-channel.json"
+    curl_map_set "$API/tags/core-1.105.0-1" "file:$FIX/rel-core.json"
+    curl_map_set "$API/assets/1" "file:$FIX/m2.json"
+    curl_map_set "$API/assets/2" "file:$FIX/m2.json.sig"
+    curl_map_set "$API/assets/3" "$1"
+    curl_map_set "$V2_URL" "$2"
+}
+api_map "file:$FIX/v2-tampered.gz" "file:$FIX/v2.gz"
+act_core_update
+bg_drain
+assert_unchanged s3-api-oversized hash_mismatch
+no s3-api-oversized-no-release grep -qxF "$V2_URL" "$MOCK_STATE/curl.log"
+
+api_map "trunc:$FIX/v2.gz:64" "fail:22"
+act_core_update
+bg_drain
+assert_unchanged s5-api-then-release download_failed
+eq s5-api-then-release-urls "$API/assets/3
+$V2_URL" "$(grep -e '/assets/3$' -e '\.gz$' "$MOCK_STATE/curl.log")"
+
 # Mock curl partial: mode (returns exit 0 with truncated body -> caught by verify)
 curl_map_reset
 curl_map_set "$BIFROST_CHANNEL_URL" "file:$FIX/m2.json"

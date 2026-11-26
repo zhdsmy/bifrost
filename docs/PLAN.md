@@ -789,12 +789,16 @@ tailscaled 的防火墙模式固定为 `off`，所有规则由 Bifrost 自己的
   - 页面上可以随时删除 `prev.gz`（`core-drop-prev`）。
 - JFFS2 和 UBIFS 会压缩，`df` 的数字偏保守。以解压是否成功为准，不提前拒绝。
 
-### 12.7 镜像
+### 12.7 下载来源
 
-- `bifrost_mirror` 不为空时，下载地址是「镜像前缀 + 原始地址」。
-- 下载用 `curl -fsSL --connect-timeout 10 --max-time 300 --retry 2`。
-- 镜像不可信也没关系，签名和哈希会挡住被改过的文件。
-- 检查更新不调用 GitHub API，避免未登录的频率限制。
+- 每个文件按顺序试三个来源，传输失败才换下一个：
+  1. `bifrost_mirror` 不为空时，先用「镜像前缀 + 原始地址」。
+  2. GitHub API：先请求 `api.github.com/repos/<仓库>/releases/tags/<tag>`，按文件名找到 asset id；再带 `Accept: application/octet-stream` 请求 `/releases/assets/<id>`，它会跳转到 `release-assets.githubusercontent.com`。每个 tag 在一次任务里只查一次，查询失败也记下，不再重查。
+  3. 原始地址 `github.com/<仓库>/releases/download/<tag>/<文件>`。
+- 原因：在一些网络里，`github.com` 经常卡住或连不上，`api.github.com` 和文件 CDN 却正常。在中国大陆的一台路由器上实测：原始地址 3 次只成功 1 次，API 3 次都成功，9.6 MB 的核心 3 秒下完。
+- 不登录的 GitHub API 每个公网 IP 每小时限 60 次。一次检查或一次更新大约用 5 次。超限时 API 返回错误，自动改用原始地址。插件不保存 GitHub token。
+- 下载用 `curl -fsSL --connect-timeout 10 --max-time 300 --retry 2`。文件比清单写的大小还大时直接报 `hash_mismatch`，不换来源：各个来源发的是同一个发布。
+- 来源不可信也没关系，签名和哈希会挡住被改过的文件。
 - `plugin.json` 使用同一套签名，包含插件版本、tag 和发布页链接。缺少或无法验证时插件更新状态为未知，不影响核心检查。
 
 ## 13. 页面

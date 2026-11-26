@@ -49,6 +49,7 @@ const ALLOWED_TOKENS = new Set([
   "sha256",
   "koolshare",
   "bifrostd",
+  "github",
 ]);
 
 // Exact names: the Go language, AP (access point) mode, and the Linux tun module.

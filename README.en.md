@@ -113,7 +113,7 @@ Bifrost supports connecting as a client to self-hosted control servers (containe
 | SNAT into LAN | Auto | `Auto`: off in router mode, on in AP mode; `On`: always masquerade to the router LAN IP; `Off`: preserve tailnet source IPs. |
 | Resolve Tailnet Hostnames on LAN | Off | Writes `/jffs/configs/dnsmasq.d/bifrost.conf` forwarding the MagicDNS suffix to `100.100.100.100` and restarts dnsmasq; removed on stop or uninstall. |
 | Disable Tailscale Log Uploads | On | Enables `--no-logs-no-support`; locked On when using a custom control server. |
-| Download Mirror Prefix | Empty | Optional `https://.../` prefix for core updates; manifest signatures and file hashes are always verified before installation. |
+| Download Mirror Prefix | Empty | Optional `https://.../` prefix for core updates, tried before GitHub. Without it, downloads use the GitHub API first and then github.com. Manifest signatures and file hashes are always verified before installation. |
 
 ### Coexistence with Transparent Proxy Plugins
 

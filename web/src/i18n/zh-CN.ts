@@ -257,8 +257,8 @@ export const zhCN = {
   "settings.noLogs.confirmDesc": "更改此项需要重启后台服务，期间 tailnet 连接会短暂中断。",
 
   "settings.mirror.label": "下载镜像",
-  "settings.mirror.desc": "在线检查和下载核心时附加的镜像前缀（以 https:// 开头、/ 结尾）。下载后仍会校验数字签名与哈希。",
-  "settings.mirror.placeholder": "留空直连，例如 https://mirror.example.org/",
+  "settings.mirror.desc": "在线检查和下载核心时先用这个镜像前缀（以 https:// 开头、/ 结尾），失败时改从 GitHub 下载。下载后仍会校验数字签名与哈希。",
+  "settings.mirror.placeholder": "留空则从 GitHub 下载，例如 https://mirror.example.org/",
 
   // Core page (PLAN 12.4 - 12.5, 13.4)
   "core.section.current": "当前核心",

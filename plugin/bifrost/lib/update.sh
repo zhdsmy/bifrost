@@ -10,6 +10,8 @@
 : "${BIFROST_UPDATE_VERIFY_SECS:=60}"
 : "${BIFROST_UPDATE_VERSION_TIMEOUT:=10}"
 : "${BIFROST_UPDATE_METADATA_BYTES:=65536}"
+# A GitHub release lookup lists every asset; a release here is about 20 KB.
+: "${BIFROST_UPDATE_RELEASE_BYTES:=262144}"
 # Free space kept beyond one spare core before a rollback archive is kept: the
 # software center refuses upgrades with less than 2 MB free (PLAN 2.4 item 5).
 : "${BIFROST_PREV_MARGIN_KB:=2048}"
@@ -565,33 +567,91 @@ _upd_backup_core_old() {
 
 # ---- Download helper (PLAN 12.7) ----
 
+# _upd_download <release url> <out> [exact size]: try the mirror (when set),
+# then the GitHub API, then the release URL itself. github.com is often slow
+# or blocked where api.github.com and the asset CDN work. A transport error
+# moves on to the next source; a file larger than the manifest size does
+# not, because every source serves the same release.
 _upd_download() {
     _dl_url=$1
     _dl_out=$2
+    _dl_size=${3:-}
+    _dl_max=${_dl_size:-$BIFROST_UPDATE_METADATA_BYTES}
     _dl_mir=$(cfg bifrost_mirror)
-    _dl_eff="${_dl_mir}${_dl_url}"
-    rm -f "$_dl_out"
-    _dl_rc=0
+    for _dl_src in mirror api release; do
+        case "$_dl_src" in
+            mirror)
+                [ -n "$_dl_mir" ] || continue
+                _upd_fetch "$_dl_out" "$_dl_max" "${_dl_mir}${_dl_url}"
+                ;;
+            api)
+                _upd_api_asset "$_dl_url" "$_dl_out" || continue
+                _upd_fetch "$_dl_out" "$_dl_max" "$_UA_URL" -H 'Accept: application/octet-stream'
+                ;;
+            release) _upd_fetch "$_dl_out" "$_dl_max" "$_dl_url" ;;
+        esac && return 0
+        if [ "$_uf_rc" = 63 ] && [ -n "$_dl_size" ]; then
+            fail hash_mismatch
+            return 1
+        fi
+    done
+    fail download_failed
+}
+
+# _upd_fetch <out> <max bytes> <url> [curl options]: one source, curl's exit
+# code in _uf_rc. An empty file counts as a failure.
+_upd_fetch() {
+    _uf_out=$1
+    _uf_max=$2
+    _uf_url=$3
+    shift 3
+    rm -f "$_uf_out"
+    _uf_rc=0
     run_timeout "$((BIFROST_UPDATE_MAX_TIME + 15))" \
-        curl -fsSL \
+        curl -fsSL "$@" \
         --connect-timeout "$BIFROST_UPDATE_CONNECT_TIMEOUT" \
         --max-time "$BIFROST_UPDATE_MAX_TIME" \
-        --retry "$BIFROST_UPDATE_RETRY" --max-filesize "${3:-$BIFROST_UPDATE_METADATA_BYTES}" \
-        -o "$_dl_out" "$_dl_eff" 2>/dev/null || _dl_rc=$?
-    if [ "$_dl_rc" -ne 0 ]; then
-        rm -f "$_dl_out"
-        if [ "$_dl_rc" = 63 ] && [ -n "${3:-}" ]; then fail hash_mismatch; return 1; fi
-        log update "download failed: $_dl_eff"
-        fail download_failed
-        return 1
+        --retry "$BIFROST_UPDATE_RETRY" --max-filesize "$_uf_max" \
+        -o "$_uf_out" "$_uf_url" 2>/dev/null || _uf_rc=$?
+    [ "$_uf_rc" -eq 0 ] && [ -s "$_uf_out" ] && return 0
+    rm -f "$_uf_out"
+    log update "download failed ($_uf_rc): $_uf_url"
+    return 1
+}
+
+# _upd_api_asset <release url> <out>: map $BIFROST_RELEASE_BASE/<tag>/<name>
+# to its GitHub API asset URL in _UA_URL. The asset list of each tag is
+# fetched once per job and kept next to <out>; a failed lookup is kept as
+# an empty list. Unauthenticated API calls are limited to 60 an hour per
+# address, and a check or an update uses five.
+_upd_api_asset() {
+    _UA_URL=""
+    [ -n "$BIFROST_RELEASE_API" ] || return 1
+    case "$1" in "$BIFROST_RELEASE_BASE"/?*/?*) ;; *) return 1 ;; esac
+    _ua_rel=${1#"$BIFROST_RELEASE_BASE"/}
+    _ua_tag=${_ua_rel%%/*}
+    _ua_name=${_ua_rel#*/}
+    case "$_ua_tag" in *[!A-Za-z0-9._-]*) return 1 ;; esac
+    case "$_ua_name" in */*) return 1 ;; esac
+    _ua_list="${2%/*}/release-$_ua_tag.txt"
+    if [ ! -e "$_ua_list" ]; then
+        if _upd_fetch "$_ua_list.json" "$BIFROST_UPDATE_RELEASE_BYTES" \
+            "$BIFROST_RELEASE_API/tags/$_ua_tag" -H 'Accept: application/vnd.github+json'; then
+            jq -r '.assets[]? | select((.id | type) == "number" and (.name | type) == "string") |
+                "\(.id) \(.name)"' "$_ua_list.json" >"$_ua_list" 2>/dev/null || : >"$_ua_list"
+        else
+            : >"$_ua_list"
+        fi
+        rm -f "$_ua_list.json"
     fi
-    if [ ! -s "$_dl_out" ]; then
-        rm -f "$_dl_out"
-        log update "downloaded empty file: $_dl_eff"
-        fail download_failed
-        return 1
-    fi
-    return 0
+    while read -r _ua_id _ua_n; do
+        if [ "$_ua_n" = "$_ua_name" ]; then
+            case "$_ua_id" in '' | *[!0-9]*) return 1 ;; esac
+            _UA_URL="$BIFROST_RELEASE_API/assets/$_ua_id"
+            return 0
+        fi
+    done <"$_ua_list"
+    return 1
 }
 
 # ---- Local core installation for install.sh (PLAN 15.1 step 4) ----
