@@ -237,7 +237,7 @@ _status_render_jq() {
                 else false end)
         } as $exit_obj |
 
-        (if $pr != null and ((($pr.CorpDNS // false) != false) or (($pr.NetfilterMode // 0) != 0 and ($pr.NetfilterMode // 0) != "off") or (($pr.ShieldsUp // false) != false))
+        (if $pr != null and ((($pr.CorpDNS // false) != false) or (($pr.NetfilterMode // 0) != 0 and ($pr.NetfilterMode // 0) != "off") or (($pr.NoSNAT // false) != false) or (($pr.ShieldsUp // false) != false))
          then true else false end) as $chk_prefs |
 
         ($st | dns_plan((($drun | not) or $state == "disabled" or $state == "core_missing" or $state == "conflict"); $err) | .stale) as $chk_dns |

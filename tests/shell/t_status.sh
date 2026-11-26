@@ -336,6 +336,11 @@ nvram_seed ntp_ready=0
 ok refresh-all-checks status_refresh
 eq checks-four '["fw_incomplete","prefs_drift","dns_stale","clock_unsynced"]' \
     "$(jq -c '.checks' "$ST_OUT")"
+# NoSNAT is one of the four fixed prefs (PLAN 4.3), as in daemon_prefs_drifted.
+ts_out debug-prefs "$(jq -c '.NoSNAT = true' "$FIXDIR/prefs_default.json")"
+ok refresh-nosnat-drift status_refresh
+eq nosnat-drift true "$(jq '.checks | index("prefs_drift") != null' "$ST_OUT")"
+ts_out_file debug-prefs "$FIXDIR/prefs_drift.json"
 # login.tailscale.com is also official
 eq login-ts-official "true  false" \
     "$(jq -r '"\(.self.official) \(.self.control) \(.settings.no_logs_forced)"' "$ST_OUT")"

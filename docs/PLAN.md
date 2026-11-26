@@ -308,7 +308,7 @@ nezha-kumo-theme 是独立网站，做法不同：用 Vite、`i18next`、Inter �
 | `--login-server` | 用户 | 登录的高级选项 |
 | 其他 | 不管 | 用户用命令行改的其他设置不动，但重新登录时会被重置（7.6 节） |
 
-每次启动后和守护检查时，都核对三个固定项；不一致就用 `tailscale set` 改回去。
+每次启动后和守护检查时，都核对四个固定项；不一致就用 `tailscale set` 改回去。
 
 ## 5. 核心
 
@@ -456,7 +456,7 @@ TS_LOGS_DIR=/tmp/bifrost-run/logs \
 - 检查项：
   1. PID 文件里的进程存在，并且 `/proc/<pid>/exe` 指向 Bifrost 的核心；
   2. `status --json` 在 10 秒内返回；
-  3. 三个固定的 prefs 没被改；
+  3. 四个固定的 prefs 没被改；
   4. Bifrost 的链还挂在主链的第一条；
   5. MagicDNS 后缀和 dnsmasq 配置一致；
   6. 日志文件超过 1 MB 时截到最后 200 KB。

@@ -7,6 +7,17 @@ plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Changed
+
+- Text on every tab balances its last line, so a description no longer ends with one word ("console.") or one Chinese character ("希。") alone. Browsers without `text-wrap: pretty` wrap as before.
+- English UI: the route status "Awaiting approval" uses sentence case, like the other status values.
+- The out-of-space error for a core update names plugin storage instead of JFFS, as the Diagnostics tab has since v0.2.6.
+- README screenshots show the current page and plugin version.
+
+### Fixed
+
+- The environment check also reports a changed `--snat-subnet-routes` (`NoSNAT`). The daemon already restored it with the other three fixed settings, but the Overview tab did not warn about it.
+
 ## [0.2.8] - 2026-11-26
 
 ### Added

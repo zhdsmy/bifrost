@@ -1,5 +1,9 @@
 // Fictional example fixtures covering every PLAN 7.1 state and section 6 file.
 // Uses only example.ts.net, 100.64.0.0/10, 192.168.1.0/24, and RFC 5737 doc ranges.
+import { readFileSync } from "node:fs";
+
+// The plugin version of this checkout, so screenshots show the current release.
+const SAMPLE_PLUGIN_VERSION = readFileSync(new URL("../../../plugin/bifrost/version", import.meta.url), "utf8").trim();
 
 export const SAMPLE_NOW = 1795430000;
 
@@ -88,7 +92,7 @@ function baseRunningStatus() {
     time: SAMPLE_NOW,
     state: "running",
     error: null,
-    plugin: { version: "0.1.0", enabled: true, update: null },
+    plugin: { version: SAMPLE_PLUGIN_VERSION, enabled: true, update: null },
     core: {
       tailscale: "1.104.7",
       revision: 1,
@@ -162,7 +166,7 @@ export function createStatusFixture(name = "running") {
       return {
         ...s,
         state: "disabled",
-        plugin: { version: "0.1.0", enabled: false },
+        plugin: { version: SAMPLE_PLUGIN_VERSION, enabled: false },
         daemon: { running: false, pid: null, restarts: 0 },
         conflict: { original_installed: true, original_running: false },
         self: null,
@@ -174,7 +178,7 @@ export function createStatusFixture(name = "running") {
       return {
         ...s,
         state: "conflict",
-        plugin: { version: "0.1.0", enabled: true },
+        plugin: { version: SAMPLE_PLUGIN_VERSION, enabled: true },
         daemon: { running: false, pid: null, restarts: 0 },
         conflict: { original_installed: true, original_running: true },
         self: null,
@@ -305,7 +309,7 @@ export const SAMPLE_DIAG = {
 export const SAMPLE_LOGS_TEXT = [
   "Redacted: public IPv4 (<ipv4>), IPv6 (<ipv6>), email (<email>), tailnet (<tailnet>), auth URL (<auth-url>), keys (<key>), MAC (<mac>).",
   "== summary ==",
-  "plugin_version: 0.1.0",
+  `plugin_version: ${SAMPLE_PLUGIN_VERSION}`,
   "core_version: 1.104.7-1 (arm)",
   "state: running",
   "backend_state: Running",

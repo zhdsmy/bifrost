@@ -457,7 +457,7 @@ export const zhCN = {
   "err.plugin_too_old": "新核心要求更高版本的 Bifrost 插件，请先升级插件。",
   "err.no_arch": "更新清单中没有适配当前架构的核心文件。",
   "err.hash_mismatch": "下载文件的大小或哈希校验不匹配，已拒绝安装。",
-  "err.no_space": "JFFS 剩余空间不足，请清理空间或使用 USB2JFFS。",
+  "err.no_space": "插件存储剩余空间不足，请清理空间或使用 USB2JFFS。",
   "err.core_test_failed": "新核心试运行版本校验失败，已保留原核心。",
   "err.update_verify_failed": "新核心启动后验证失败，已自动恢复旧核心。",
   "err.no_prev": "没有保留上一版核心，无法回退。",

@@ -11,6 +11,8 @@
   max-width: 760px;
   font: var(--text-base)/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   text-align: start;
+  /* Avoid a last line of one word or one or two CJK characters. */
+  text-wrap: pretty;
 }
 
 [data-mode="dark"] {
