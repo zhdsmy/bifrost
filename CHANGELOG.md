@@ -7,6 +7,8 @@ plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-11-26
+
 ### Added
 
 - Core tab: the previous core backup shows its version, type, architecture, and size, and has a Delete button. The rollback confirmation names the version it restores. The tab also shows where the core is stored (router internal flash, external USB storage, or unknown, with the filesystem type) and the free space there.
