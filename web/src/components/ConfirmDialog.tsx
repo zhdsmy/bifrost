@@ -48,7 +48,7 @@ export function ConfirmDialog({
           role="alertdialog"
           aria-labelledby={titleId}
           aria-describedby={descId}
-          className="grid gap-3"
+          className="grid gap-3 text-pretty"
         >
           <div className="grid gap-1">
             <Popover.Title id={titleId} className="text-sm font-semibold text-kumo-strong">
