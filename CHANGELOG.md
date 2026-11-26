@@ -7,6 +7,8 @@ plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-11-26
+
 ### Changed
 
 - English UI: buttons, links, card titles, and field labels use title case throughout. "Log out", "Open Core tab", "Log in to your tailnet", "Reset column widths", and the build recipe labels on the Core tab were the exceptions. Confirmation questions, status values, and descriptions keep sentence case.
