@@ -1,4 +1,4 @@
-// Captures the 8 README screenshots (docs/images/*.png, each <= 300 KB)
+// Captures the 14 README screenshots (docs/images/*.png, each <= 300 KB)
 // plus extra state screenshots into gitignored web/test-results/shots/.
 import { once } from "node:events";
 import { mkdir, stat } from "node:fs/promises";
@@ -55,7 +55,7 @@ async function capture({
 }
 
 try {
-  // 8 committed README screenshots (dark zh-CN 5 tabs + overview-light + overview-en + narrow 420px).
+  // 7 Chinese README screenshots (dark 5 tabs + overview-light + narrow 420px).
   const readmeTargets = [
     { file: "overview.png", tab: "概览", fullPage: true },
     { file: "devices.png", tab: "设备", fullPage: true },
@@ -70,7 +70,6 @@ try {
       },
     },
     { file: "overview-light.png", mode: "light", tab: "概览", fullPage: true },
-    { file: "overview-en.png", lang: "en", tab: "Overview", fullPage: true },
     { file: "narrow.png", viewport: { width: 420, height: 860 }, tab: "概览", fullPage: true },
   ];
 
