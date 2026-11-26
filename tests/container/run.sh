@@ -12,7 +12,7 @@
 #   builds native test core, builds real web/dist, packages Bifrost, installs
 #   via real install.sh, and runs tests/container/suite.sh (login, status,
 #   3 SNAT modes, local_access, fw_clear, watchdog, core update failures &
-#   rollback, uninstall).
+#   rollback, logout keeping settings, uninstall).
 #
 # Usage:
 #   tests/container/run.sh [--smoke-only | --full]

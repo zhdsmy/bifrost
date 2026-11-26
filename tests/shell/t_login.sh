@@ -393,6 +393,82 @@ echo 5 >"$MOCK_STATE/ts/logout.sleep"
 no logout-timeout act_logout
 eq logout-timeout-err timeout "$BIFROST_ERR"
 rm -f "$MOCK_STATE/ts/logout.sleep"
+BIFROST_LOGOUT_TIMEOUT=5
+
+# --- 11b. Logout keeps the Settings-page prefs for the next login (PLAN 7.5) ---
+
+saved=$(login_saved_prefs_file)
+rm -f "$saved"
+SAVED_JSON='{"advertise_routes":["192.168.1.0/24"],"advertise_exit_node":true,"accept_routes":true,"hostname":"home-router"}'
+SAVED_SET="set --advertise-routes=192.168.1.0/24 --advertise-exit-node=true --accept-routes=true --hostname=home-router"
+# The profile that "tailscale logout" leaves behind: defaults and no login.
+LOGGED_OUT='{"ControlURL":"","RouteAll":false,"CorpDNS":true,"WantRunning":false,"LoggedOut":false,"Hostname":"","AdvertiseRoutes":null,"NetfilterMode":2,"Config":null}'
+cat >"$T/logout_cli" <<EOF
+#!/bin/sh
+"$SAVED_CLI" "\$@" || exit \$?
+case " \$* " in *" logout "*) printf '%s\n' '$LOGGED_OUT' >"$MOCK_STATE/ts/debug-prefs.out" ;; esac
+EOF
+chmod 755 "$T/logout_cli"
+
+ts_out_file debug-prefs "$FIX/prefs_drifted.json"
+: >"$MOCK_STATE/ts.log"
+BIFROST_CLI="$T/logout_cli"
+ok logout-save act_logout
+BIFROST_CLI=$SAVED_CLI
+eq logout-saved "$SAVED_JSON" "$(cat "$saved")"
+has logout-fixes-new-profile "set --accept-dns=false --netfilter-mode=off" "$(ts_log)"
+has logout-restores "$SAVED_SET" "$(ts_log)"
+
+# A logged-out profile does not overwrite the saved prefs.
+ok save-logged-out login_save_prefs
+eq save-logged-out-kept "$SAVED_JSON" "$(cat "$saved")"
+
+# A daemon restart loses the in-memory profile; start sets the prefs again.
+daemon_stop
+: >"$MOCK_STATE/ts.log"
+ok restore-on-start daemon_start
+has restore-on-start-set "$SAVED_SET" "$(ts_log)"
+ok restore-on-start-kept [ -f "$saved" ]
+
+# A logged-in profile has its own prefs: the saved file is stale.
+ts_out_file debug-prefs "$FIX/prefs_ok.json"
+: >"$MOCK_STATE/ts.log"
+ok restore-stale login_restore_prefs
+no restore-stale-removed [ -f "$saved" ]
+no restore-stale-no-set grep -q '^set ' "$MOCK_STATE/ts.log"
+
+# Damaged files are discarded without a set.
+ts_out debug-prefs "$LOGGED_OUT"
+for bad in 'not json' '{"advertise_routes":"x","advertise_exit_node":false,"accept_routes":false,"hostname":""}' \
+    '{"advertise_routes":["0.0.0.0/0"],"advertise_exit_node":false,"accept_routes":false,"hostname":""}' \
+    '{"advertise_routes":[],"advertise_exit_node":false,"accept_routes":false,"hostname":"-bad"}'; do
+    printf '%s\n' "$bad" >"$saved"
+    : >"$MOCK_STATE/ts.log"
+    ok restore-bad login_restore_prefs
+    no restore-bad-removed [ -f "$saved" ]
+    no restore-bad-no-set grep -q '^set ' "$MOCK_STATE/ts.log"
+done
+
+# Empty values are passed as empty flags.
+printf '%s\n' '{"advertise_routes":[],"advertise_exit_node":false,"accept_routes":false,"hostname":""}' >"$saved"
+: >"$MOCK_STATE/ts.log"
+ok restore-empty login_restore_prefs
+has restore-empty-set "set --advertise-routes= --advertise-exit-node=false --accept-routes=false --hostname=" "$(ts_log)"
+
+# A Settings change while logged out updates the saved value.
+printf '%s\n' "$SAVED_JSON" >"$saved"
+ts_out debug-prefs '{"RouteAll":true,"Hostname":"edge-router","AdvertiseRoutes":["192.168.1.0/24","0.0.0.0/0","::/0"],"Config":null}'
+ok saved-edit act_set hostname edge-router
+eq saved-edit-file "edge-router true" "$(jq -r '"\(.hostname) \(.accept_routes)"' "$saved")"
+
+# Login applies the saved prefs before reading them, then drops the file.
+ts_out debug-prefs "$LOGGED_OUT"
+: >"$MOCK_STATE/ts.log"
+ok login-after-logout act_login "" ""
+bg_drain
+eq login-after-logout-ok true "$(jq -r .ok "$(job_file login)")"
+ok login-after-logout-set grep -q '^set --advertise-routes=192.168.1.0/24 --advertise-exit-node=true --accept-routes=true --hostname=edge-router$' "$MOCK_STATE/ts.log"
+no login-after-logout-removed [ -f "$saved" ]
 
 daemon_stop
 fresh

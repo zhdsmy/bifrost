@@ -78,6 +78,13 @@ settings_set_pref() {
         fail cli_failed
         return 1
     }
+    # Logged out (PLAN 7.5): the next login and daemon start use the saved value.
+    _ssp_saved=$(login_saved_prefs_file)
+    if [ -f "$_ssp_saved" ]; then
+        jq -c --arg k "$1" --argjson r "$BIFROST_RESULT" '.[$k] = $r.value' "$_ssp_saved" 2>/dev/null |
+            json_write "$_ssp_saved" || log settings "could not update saved prefs"
+        BIFROST_ERR=""
+    fi
 }
 
 settings_restore() {

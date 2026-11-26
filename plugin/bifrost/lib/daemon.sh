@@ -509,6 +509,8 @@ daemon_start_ready() {
         status_refresh || true
         return 1
     fi
+    login_restore_prefs || log daemon "could not restore saved prefs: ${BIFROST_ERR:-internal}"
+    BIFROST_ERR=""
 }
 
 daemon_start() {

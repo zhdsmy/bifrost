@@ -13,6 +13,8 @@ plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ### Fixed
 
+- Logging out no longer clears the advertised routes, exit node, accepted routes, and device name. `tailscale logout` replaces the profile with a new one that has default settings, and the next login used those defaults. Bifrost now saves the four settings before logout, sets them on the new profile (again after each daemon start, since that profile is not saved until login), and the next login uses them. A change on the Settings tab while logged out replaces the saved value.
+- After logging out, the Overview tab no longer briefly shows "fixed settings drifted": the fixed settings are set on the new profile right away instead of at the next watchdog check.
 - Devices tab: the OS column is wide enough for "windows" and "android", and the English Handshake header no longer runs into the fade of the pinned Action column on a router-width page. Widths you set yourself are kept.
 - Confirmation popovers balance their lines, so a Chinese sentence no longer leaves one character ("断。") alone on its last line.
 - Settings: the unchecked "Advertise router LAN subnet" checkbox has a visible border in dark and light mode. Its border was about 1.2:1 against the card and is now about 4:1.

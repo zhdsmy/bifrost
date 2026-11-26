@@ -276,8 +276,41 @@ else
     fail_case "update-broken-core-rolled-back" "code=$code_7c state=$state_7c"
 fi
 
-# 8. Uninstall cleanly.
-echo "==> [B8] Uninstalling Bifrost..."
+# 8. Logout keeps the Settings-page prefs, across a restart, for the next login (PLAN 7.5).
+echo "==> [B8] Testing that logout keeps settings for the next login..."
+r_prefs() { r_exec '/koolshare/bin/bifrost debug prefs' | jq -c '{routes: .AdvertiseRoutes, accept: .RouteAll, host: .Hostname}'; }
+r_saved() { r_exec '[ -f /koolshare/configs/bifrost/saved-prefs.json ]'; }
+want_prefs='{"routes":["192.0.2.0/24"],"accept":true,"host":"it-router"}'
+r_exec "/koolshare/scripts/bifrost_config.sh 14 set hostname it-router" >/dev/null
+r_exec "/koolshare/scripts/bifrost_config.sh 15 set accept_routes 1" >/dev/null
+r_exec "/koolshare/scripts/bifrost_config.sh 16 logout" >/dev/null
+wait_for 20 r_state_is needs_login || true
+got_prefs=$(r_prefs)
+if [ "$got_prefs" = "$want_prefs" ] && r_saved; then
+    pass "logout-keeps-prefs"
+else
+    fail_case "logout-keeps-prefs" "got $got_prefs"
+fi
+r_exec "/koolshare/scripts/bifrost_config.sh 17 disable" >/dev/null
+wait_for 30 r_job_done /tmp/upload/bifrost_daemon.json || true
+r_exec "/koolshare/scripts/bifrost_config.sh 18 enable" >/dev/null
+wait_for 30 r_job_done /tmp/upload/bifrost_daemon.json || true
+wait_for 20 r_state_is needs_login || true
+got_prefs=$(r_prefs)
+if [ "$got_prefs" = "$want_prefs" ]; then
+    pass "restart-while-logged-out-keeps-prefs"
+else
+    fail_case "restart-while-logged-out-keeps-prefs" "got $got_prefs"
+fi
+r_exec "/koolshare/scripts/bifrost_config.sh 19 login '$HS_URL' '$AUTHKEY'" >/dev/null
+if wait_for 45 r_state_is running && [ "$(r_prefs)" = "$want_prefs" ] && ! r_saved; then
+    pass "login-after-logout-restores-prefs"
+else
+    fail_case "login-after-logout-restores-prefs" "got $(r_prefs)"
+fi
+
+# 9. Uninstall cleanly.
+echo "==> [B9] Uninstalling Bifrost..."
 r_exec '/koolshare/scripts/uninstall_bifrost.sh >/dev/null'
 if r_exec '[ ! -e /koolshare/bifrost ] && [ -d /koolshare/configs/bifrost ]'; then
     pass "uninstall-clean-and-state-kept"

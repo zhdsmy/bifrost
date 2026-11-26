@@ -74,6 +74,65 @@ login_read_prefs() {
     return 0
 }
 
+# PLAN 7.5. "tailscale logout" deletes the profile. The new profile stays in
+# memory until the next login, so a daemon restart drops prefs set on it. Keep
+# the Settings-page prefs in the state dir from logout to the next login.
+login_saved_prefs_file() {
+    printf '%s\n' "$BIFROST_STATE/saved-prefs.json"
+}
+
+# login_logged_in_prefs: 0 when $_BIFROST_PREFS_JSON belongs to a logged-in profile.
+login_logged_in_prefs() {
+    printf '%s\n' "$_BIFROST_PREFS_JSON" |
+        jq -e '((.Config.NodeID // "") != "") or ((.Config.UserProfile.LoginName // "") != "")' >/dev/null 2>&1
+}
+
+# login_save_prefs: record the prefs of the logged-in profile before logout.
+# A logged-out profile already holds the saved values, so the file is kept.
+login_save_prefs() {
+    daemon_read_prefs || return 1
+    login_logged_in_prefs || return 0
+    mkdir -p "$BIFROST_STATE" 2>/dev/null || { fail state_not_writable; return 1; }
+    printf '%s\n' "$_BIFROST_PREFS_JSON" | jq -c '{
+        advertise_routes: [(.AdvertiseRoutes // [])[] | select(. != "0.0.0.0/0" and . != "::/0")],
+        advertise_exit_node: ((.AdvertiseRoutes // []) | (index("0.0.0.0/0") != null and index("::/0") != null)),
+        accept_routes: (.RouteAll == true),
+        hostname: (.Hostname // "")
+    }' 2>/dev/null | json_write "$(login_saved_prefs_file)"
+}
+
+# login_restore_prefs: set the saved prefs on a logged-out profile. A logged-in
+# profile has its own prefs: the file is stale and is removed.
+login_restore_prefs() {
+    _lrs_f=$(login_saved_prefs_file)
+    [ -f "$_lrs_f" ] || return 0
+    daemon_read_prefs || return 1
+    if login_logged_in_prefs; then
+        rm -f "$_lrs_f"
+        return 0
+    fi
+    # "-" stands for an empty list or name, so read keeps the field order.
+    _lrs_line=$(jq -r '
+        select((.advertise_routes | type) == "array" and (.advertise_exit_node | type) == "boolean" and
+            (.accept_routes | type) == "boolean" and (.hostname | type) == "string") |
+        "\(.advertise_routes | join(",") | if . == "" then "-" else . end) \(.advertise_exit_node) \(.accept_routes) \(if .hostname == "" then "-" else .hostname end)"
+    ' "$_lrs_f" 2>/dev/null)
+    read -r _lrs_routes _lrs_exit _lrs_acc _lrs_host <<EOF
+$_lrs_line
+EOF
+    [ "$_lrs_routes" = - ] && _lrs_routes=""
+    [ "$_lrs_host" = - ] && _lrs_host=""
+    case "$_lrs_exit:$_lrs_acc" in true:true | true:false | false:true | false:false) ;; *) _lrs_line="" ;; esac
+    if [ -z "$_lrs_line" ] || { [ -n "$_lrs_routes" ] && ! valid_cidr4_list "$_lrs_routes"; } ||
+        { [ -n "$_lrs_host" ] && ! valid_hostname "$_lrs_host"; }; then
+        log login "discarding invalid saved prefs"
+        rm -f "$_lrs_f"
+        return 0
+    fi
+    settings_ts_set "--advertise-routes=$_lrs_routes" "--advertise-exit-node=$_lrs_exit" \
+        "--accept-routes=$_lrs_acc" "--hostname=$_lrs_host"
+}
+
 # PLAN 7.6. The bare reconnect fallback shares the same prefs as login.
 login_run_ts() {
     _lrt_limit=$1
@@ -166,6 +225,8 @@ login_prepare_locked() {
         return 1
     fi
 
+    login_restore_prefs || log login "could not restore saved prefs: ${BIFROST_ERR:-internal}"
+    BIFROST_ERR=""
     _lpl_prefs_ok=1
     _lpl_perr=""
     if ! login_read_prefs; then
@@ -218,6 +279,7 @@ login_post_locked() {
         return 1
     fi
     daemon_set_control_server "$_ljb_target" || return 1
+    rm -f "$(login_saved_prefs_file)"
     # PLAN 7.4: non-official server requires --no-logs-no-support immediately.
     if daemon_should_disable_logs && ! daemon_running_has_nologs; then
         log login "restarting daemon to enforce --no-logs-no-support"
@@ -304,8 +366,16 @@ login_logout_locked() {
         fail not_running
         return 1
     fi
+    # Logging out must still work when the prefs cannot be saved.
+    login_save_prefs || log login "could not save prefs before logout: ${BIFROST_ERR:-internal}"
+    BIFROST_ERR=""
     login_cli "$BIFROST_LOGOUT_TIMEOUT" logout || return 1
     daemon_clean_stale_authkey
+    # The new profile starts from Tailscale's defaults.
+    daemon_fix_prefs || log login "could not fix prefs after logout: ${BIFROST_ERR:-internal}"
+    BIFROST_ERR=""
+    login_restore_prefs || log login "could not restore saved prefs: ${BIFROST_ERR:-internal}"
+    BIFROST_ERR=""
     dns_clear || true
     status_refresh || true
     log login "logged out"
