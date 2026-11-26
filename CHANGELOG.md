@@ -7,6 +7,8 @@ plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-11-26
+
 ### Changed
 
 - Text on every tab balances its last line, so a description no longer ends with one word ("console.") or one Chinese character ("希。") alone. Browsers without `text-wrap: pretty` wrap as before.
