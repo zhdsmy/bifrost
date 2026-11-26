@@ -15,6 +15,7 @@ plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 - Devices tab: the OS column is wide enough for "windows" and "android", and the English Handshake header no longer runs into the fade of the pinned Action column on a router-width page. Widths you set yourself are kept.
 - Confirmation popovers balance their lines, so a Chinese sentence no longer leaves one character ("断。") alone on its last line.
+- Settings: the unchecked "Advertise router LAN subnet" checkbox has a visible border in dark and light mode. Its border was about 1.2:1 against the card and is now about 4:1.
 
 ## [0.2.6] - 2026-11-26
 

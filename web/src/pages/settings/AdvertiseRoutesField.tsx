@@ -84,6 +84,9 @@ export function AdvertiseRoutesField({
 
       {lanCidr && validCidr4(lanCidr) && (
         <Checkbox
+          // Kumo draws the unchecked box with a kumo-hairline ring on a kumo-base fill, which is
+          // about 1.2:1 against the card. neutral-500 keeps it above 3:1 in dark and light mode.
+          className="[--color-kumo-hairline:var(--color-neutral-500)]"
           label={t("settings.advertiseRoutes.useLan", { cidr: lanCidr })}
           checked={routesDraft.includes(lanCidr)}
           disabled={disabled}
