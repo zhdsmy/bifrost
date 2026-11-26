@@ -6,11 +6,11 @@
 
 - [PLAN.md](PLAN.md)：完整产品与技术方案（架构、核心编译、运行时、防火墙、DNS、迁移、核心签名更新、前端设计、测试与里程碑）。
 - [dev/contract.md](dev/contract.md)：模块间接口约定（文件归属、shell 编写约定、错误码表、状态 / 任务 JSON 格式、跨包函数签名与质量门槛）。
-- [../AGENTS.md](../AGENTS.md)：项目硬规则（BusyBox 1.25 兼容性、禁止 UPX 与 `--extra-small`、禁止提交私密信息、路由器操作规程）。
+- [../AGENTS.md](../AGENTS.md)：项目硬规则（BusyBox 1.25 兼容性、默认不 UPX 压缩、禁止 `--extra-small`、禁止提交私密信息、路由器操作规程）。
 - [../NOTICE.md](../NOTICE.md)：第三方软件许可证与代码来源声明。
 - [../packaging/THIRD_PARTY_NOTICES.core.md](../packaging/THIRD_PARTY_NOTICES.core.md)：由 `go version -m` 生成的核心静态链接 Go 模块许可证清单。
 - [../CHANGELOG.md](../CHANGELOG.md)：版本变更记录。
-- [../release-notes/v0.1.0.md](../release-notes/v0.1.0.md)：首个插件版本的发布说明（由发布工作流直接读取）。
+- [../release-notes/](../release-notes/)：各插件版本的发布说明（发布工作流按 `release-notes/v<版本>.md` 直接读取）。
 
 ## 本地检查与测试
 

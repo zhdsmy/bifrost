@@ -9,7 +9,7 @@ English | [简体中文](README.md)
 
 ## How Bifrost Differs from the Original Plugin
 
-- **Transparent, reproducible core builds**: Cross-compiled from official Tailscale stable releases (currently v1.104.7) using a public recipe (`core/recipe.json`), build script, complete feature-tag inventory, and omitted-feature list, so anyone can rebuild and compare hashes. The default core is installed uncompressed on JFFS with ~0.02 s CLI startup latency. An optional UPX core shrinks the arm core file from 25.1 MB to 7.7 MB (JFFS already compresses files, so the real saving is smaller), but each CLI call takes ~0.33 s on an RT-AX86U and each process decompresses its own copy without sharing memory. Core files are stored gzipped inside offline packages to keep software-center free-space checks low.
+- **Transparent, reproducible core builds**: Cross-compiled from official Tailscale stable releases (currently v1.104.7) using a public recipe (`core/recipe.json`), build script, complete feature-tag inventory, and omitted-feature list, so anyone can rebuild and compare hashes. The default core is installed uncompressed on JFFS with ~0.02 s CLI startup latency. An optional UPX core shrinks the arm core file from 25.1 MB to 7.7 MB (internal flash filesystems such as JFFS2 and UBIFS already compress files, so the real saving is smaller), but each CLI call takes ~0.33 s on an RT-AX86U and each process decompresses its own copy without sharing memory. Core files are stored gzipped inside offline packages to keep software-center free-space checks low.
 - **Open-source router scripts**: Every script is plain BusyBox POSIX `/bin/sh` with no obfuscation or `shc` wrapping. External inputs pass whitelist validation, `eval` is not used, and state-mutating operations run under an exclusive lock.
 - **Bifrost-managed firewall chains**: `tailscaled` runs with `--netfilter-mode=off`, while Bifrost maintains its own `BIFROST_*` chains. Firmware firewall rebuilds reapply rules without restarting the daemon or dropping tailnet sessions. The local router access toggle works as expected, and CGNAT WAN traffic (`100.64.0.0/10`) is not dropped.
 - **Rebuilt web UI**: Runs inside a Shadow DOM so firmware chrome stays intact. Displays device tables, path and relay indicators, route approval status, signed core updates, and redacted diagnostics. Supports Chinese / English and dark / light switching persisted in router config.
@@ -60,7 +60,7 @@ English | [简体中文](README.md)
 - Upload the newer `.tar.gz` package directly in **Software Center** → **Offline Install** to overwrite the existing installation.
 - Existing settings and the login state directory are preserved.
 - A running daemon restarts automatically after upgrading; if an upgrade aborts after stopping the daemon, the installer attempts to restore the previous service.
-- If a newer core (`serial`) is already installed, an older package will not downgrade it.
+- If a newer core (`serial`) is already installed, an older package will not downgrade it. If the package has the same `serial` with a different architecture or core type, it replaces the installed core (pick the matching `arm64` or UPX package when upgrading). An identical core is not written again.
 
 ## Migrating from the Original Plugin
 
@@ -82,21 +82,21 @@ Bifrost uses its own module name, dbus keys, file paths, socket, and state direc
 ### Post-Migration & Switching Back
 
 - Tailscale preferences (advertised routes, accept routes, etc.) live inside the state file and carry over automatically.
-- `/koolshare/configs/tailscale/` is left untouched. However, after a **re-login** or **key rotation** in Bifrost, the original plugin's copy becomes stale and will require logging in again if you switch back later.
-- **Manual rollback to the original plugin**: disable Bifrost in its UI, then re-enable the original plugin in its own page.
+- `/koolshare/configs/tailscale/` is left untouched. However, after using **Re-authenticate** or a **key rotation** in Bifrost, the original plugin's copy becomes stale and will require logging in again if you switch back later.
+- **Manual rollback to the original plugin**: open the Bifrost **Overview** tab and click **Disable**, then re-enable the original plugin in its own page.
 
 ## Self-Hosted Control Servers (headscale)
 
 Bifrost supports connecting as a client to self-hosted control servers (container-tested with **headscale v0.29.7**):
 
-- Open **Advanced options** during login and enter your control server URL (`https://...` or `http://...`). HTTPS with a publicly trusted CA certificate is recommended; routers use the system CA bundle plus bundled Let's Encrypt roots, and **self-signed certificates are not supported**.
+- Open **Advanced Options (Control Server / Auth Key)** during login and enter your **Control Server URL** (`https://...` or `http://...`). HTTPS with a publicly trusted CA certificate is recommended; routers use the system CA bundle plus bundled Let's Encrypt roots, and **self-signed certificates are not supported**.
 - Supports both **interactive login** (`AuthURL` and QR code, approved by an admin on your server) and **pre-auth keys**.
 - Non-official control servers force `--no-logs-no-support` so telemetry logs are never sent to Tailscale.
 - Advertised subnet routes and exit nodes must be approved on your control server (`headscale nodes approve-routes` or `autoApprovers`).
 - Switching control servers creates a new login profile while keeping the previous profile in the state directory; use `bifrost switch` over SSH to switch back.
 
 > [!WARNING]
-> **Pre-auth key security**: Use single-use, short-lived pre-auth keys. Keys are never written to dbus or logs, and temporary key files are deleted immediately after the command finishes. However, the key passes briefly through request and script arguments, and travels in cleartext over LAN if the router admin UI uses HTTP (same security boundary as your router admin password).
+> **Pre-auth key security**: Use single-use, short-lived pre-auth keys. Keys are never written to dbus or logs. The temporary key file is unlinked before the key is written and passed to the core over a file descriptor, so no key file stays on disk. However, the key passes briefly through request and script arguments, and travels in cleartext over LAN if the router admin UI uses HTTP (same security boundary as your router admin password).
 
 ## Settings Reference
 
@@ -112,7 +112,7 @@ Bifrost supports connecting as a client to self-hosted control servers (containe
 | LAN Access to Tailnet | On | Masquerades outbound `tailscale0` traffic so LAN devices without Tailscale installed can reach the tailnet; disable for site-to-site setups requiring original source IPs. |
 | SNAT into LAN | Auto | `Auto`: off in router mode, on in AP mode; `On`: always masquerade to the router LAN IP; `Off`: preserve tailnet source IPs. |
 | Resolve Tailnet Hostnames on LAN | Off | Writes `/jffs/configs/dnsmasq.d/bifrost.conf` forwarding the MagicDNS suffix to `100.100.100.100` and restarts dnsmasq; removed on stop or uninstall. |
-| Disable Tailscale Log Uploads | On | Enables `--no-logs-no-support`; locked On when using a custom control server. |
+| Disable Tailscale Log Uploads | On | Enables `--no-logs-no-support`; changing it restarts the daemon; locked On when using a custom control server. |
 | Download Mirror Prefix | Empty | Optional `https://.../` prefix for core updates, tried before GitHub. Without it, downloads use the GitHub API first and then github.com. Manifest signatures and file hashes are always verified before installation. |
 
 ### Coexistence with Transparent Proxy Plugins
@@ -123,7 +123,7 @@ Bifrost supports connecting as a client to self-hosted control servers (containe
 ### CLI Notes
 
 - Over SSH, run `bifrost <subcommand>` (e.g., `bifrost status`, `bifrost ping`, `bifrost switch`) to talk to Bifrost's dedicated socket directly.
-- Re-logging in through the web UI runs `tailscale up --reset` with only the UI-managed flags; any extra CLI-only preferences reset to defaults.
+- Using Re-authenticate in the web UI runs `tailscale up --reset` with only the UI-managed flags; any extra CLI-only preferences reset to defaults.
 - After Log Out in the web UI, the UI-managed advertised routes, exit node, accepted routes, and device name are kept until the next login, also across a router restart. Other CLI-only preferences reset to defaults.
 - At Log Out, Bifrost records the tags of a tagged device. Request Previous Tags on the login card and in the Re-authenticate confirmation is checked by default and requests these tags from the same control server; the account that logs in must own them (`tagOwners`). If cleared, the router becomes a device of the account that logs in: its tags are removed, so the access rules and key expiry of untagged devices apply. headscale does not give tags to a user's pre-auth key: it refuses the login, or logs the device in without the tags. The page reports both. Use a tagged auth key there, or set the tags in the admin console after the login.
 
@@ -132,7 +132,7 @@ Bifrost supports connecting as a client to self-hosted control servers (containe
 - Core binaries are released separately under `core-<tailscale-version>-<revision>` tags and update `core.json` and `core.json.sig` in the `channel-stable` release.
 - When the page opens, it performs at most one background check after 24 hours without a check and when no other job is running. Failures stay silent and the result and timestamp are kept on JFFS. A new core is only offered for manual installation. A new plugin version includes a release-page link and is still installed through a Software Center offline package.
 - **Signing algorithm**: ECDSA P-256 with SHA-256 (verified by the router's OpenSSL 1.1.1w). Public keys live in `/koolshare/bifrost/keys/*.pub.pem` with multi-key rotation support.
-- **Anti-downgrade & rollback**: Monotonic `serial` numbers block replay and downgrade attacks; the router rejects cores whose `serial` is not greater than the current one. Updates verify the manifest signature, check `.gz` and unpacked `raw_sha256`, test `--version`, then swap and verify that the service recovers within 60 s. On failure, Bifrost automatically restores the previous core and state snapshot. When JFFS space permits, `bifrostd.prev.gz` is kept for manual rollback.
+- **Anti-downgrade & rollback**: Monotonic `serial` numbers block replay and downgrade attacks. The router rejects any core whose `serial` is lower than the installed core or the highest channel `serial` already seen (updates require a higher `serial`, while switching architecture or core type accepts the same `serial`). Updates verify the manifest signature, check `.gz` and unpacked `raw_sha256`, test `--version`, then swap and verify that the service recovers within 60 s. On failure, Bifrost automatically restores the previous core and state snapshot. On router internal flash (`jffs2`, `ubifs`, `yaffs`, or `mtd`/`ubi` devices), no previous core backup is kept and manual rollback is unavailable; upgrading the plugin also removes any backup left there by an older release. On external USB or other storage, `bifrostd.prev.gz` is kept only when remaining free space can still hold another copy of the current core plus 2 MB, and can be restored with **Roll Back to Previous** or removed with **Delete** on the **Core** tab.
 - **Verifying offline release tarballs**: Verify the `SHA256SUMS` signature first, then check the tarball hash (works even if you downloaded only one architecture tarball). Take the public key from `plugin/bifrost/keys/` in this repository at the release tag:
 
 ```sh
