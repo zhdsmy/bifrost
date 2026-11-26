@@ -793,7 +793,7 @@ tailscaled 的防火墙模式固定为 `off`，所有规则由 Bifrost 自己的
 
 - 每个文件按顺序试三个来源，传输失败才换下一个：
   1. `bifrost_mirror` 不为空时，先用「镜像前缀 + 原始地址」。
-  2. GitHub API：先请求 `api.github.com/repos/<仓库>/releases/tags/<tag>`，按文件名找到 asset id；再带 `Accept: application/octet-stream` 请求 `/releases/assets/<id>`，它会跳转到 `release-assets.githubusercontent.com`。每个 tag 在一次任务里只查一次，查询失败也记下，不再重查。
+  2. GitHub API（只在发布地址是 `github.com/<仓库>/releases/download` 时；fork 改了发布地址就自动用 fork 的 API）：先请求 `api.github.com/repos/<仓库>/releases/tags/<tag>`，按文件名找到 asset id；再带 `Accept: application/octet-stream` 请求 `/releases/assets/<id>`，它会跳转到 `release-assets.githubusercontent.com`。每个 tag 在一次任务里只查一次，查询失败也记下，不再重查。
   3. 原始地址 `github.com/<仓库>/releases/download/<tag>/<文件>`。
 - 原因：在一些网络里，`github.com` 经常卡住或连不上，`api.github.com` 和文件 CDN 却正常。在中国大陆的一台路由器上实测：原始地址 3 次只成功 1 次，API 3 次都成功，9.6 MB 的核心 3 秒下完。
 - 不登录的 GitHub API 每个公网 IP 每小时限 60 次。一次检查或一次更新大约用 5 次。超限时 API 返回错误，自动改用原始地址。插件不保存 GitHub token。

@@ -38,8 +38,17 @@
 : "${BIFROST_TUN_DEV:=/dev/net/tun}"
 : "${BIFROST_RELEASE_BASE:=https://github.com/zhdsmy/bifrost/releases/download}"
 : "${BIFROST_CHANNEL_URL:=$BIFROST_RELEASE_BASE/channel-stable/core.json}"
-# Same releases through the GitHub API (PLAN 12.7). Empty turns it off.
-: "${BIFROST_RELEASE_API=https://api.github.com/repos/zhdsmy/bifrost/releases}"
+# The same releases through the GitHub API (PLAN 12.7), only when the release
+# base is github.com/<owner>/<repo>/releases/download. Empty turns it off.
+if [ -z "${BIFROST_RELEASE_API+set}" ]; then
+    BIFROST_RELEASE_API=""
+    _env_repo=${BIFROST_RELEASE_BASE#https://github.com/}
+    _env_repo=${_env_repo%/releases/download}
+    case "$_env_repo" in
+        "$BIFROST_RELEASE_BASE" | */*/* | /* | */) ;;
+        ?*/?*) BIFROST_RELEASE_API="https://api.github.com/repos/$_env_repo/releases" ;;
+    esac
+fi
 
 # The original Koolshare plugin (read only; Bifrost never changes its files).
 : "${BIFROST_ORIG_STATE:=$BIFROST_KSROOT/configs/tailscale}"

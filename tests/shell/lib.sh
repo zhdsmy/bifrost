@@ -67,7 +67,7 @@ t_setup() {
     for _ts_v in $(sed -n 's/^: "\${\(BIFROST_[A-Z0-9_]*\):=.*/\1/p' "$T_SRC/plugin/bifrost/lib/env.sh"); do
         unset "$_ts_v"
     done
-    unset BIFROST_REQ_ID BIFROST_ERR BIFROST_RESULT BIFROST_NO_MAIN BIFROST_BG_SYNC
+    unset BIFROST_REQ_ID BIFROST_ERR BIFROST_RESULT BIFROST_NO_MAIN BIFROST_BG_SYNC BIFROST_RELEASE_API
     export MOCK_STATE="$T/state"
     export BIFROST_KSROOT="$T/koolshare"
     export BIFROST_RUN="$T/run"

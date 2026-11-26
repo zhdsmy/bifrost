@@ -352,6 +352,12 @@ job_end update fail no_prev
 # ---- 6b. GitHub API downloads (PLAN 12.7) ----
 # Order: mirror, then the API asset, then the release URL.
 API=$BIFROST_RELEASE_API
+eq api-from-base "https://api.github.com/repos/zhdsmy/bifrost/releases" "$API"
+api_for() { BIFROST_RELEASE_BASE=$1 sh -c 'unset BIFROST_RELEASE_API; . "$1"; printf %s "$BIFROST_RELEASE_API"' sh "$T_SRC/plugin/bifrost/lib/env.sh"; }
+eq api-fork "https://api.github.com/repos/someone/fork/releases" "$(api_for https://github.com/someone/fork/releases/download)"
+eq api-off-local "" "$(api_for http://127.0.0.1:18082)"
+eq api-off-other-host "" "$(api_for https://example.com/a/b/releases/download)"
+eq api-off-deep-path "" "$(api_for https://github.com/a/b/c/releases/download)"
 jq -n '{assets: [{id: 101, name: "core.json"}, {id: 102, name: "core.json.sig"}]}' >"$T/rel-channel.json"
 jq -n '{assets: [{id: 201, name: "bifrost-core-1.105.0-1-linux-arm.gz"}]}' >"$T/rel-core.json"
 curl_map_reset
