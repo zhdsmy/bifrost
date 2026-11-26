@@ -93,8 +93,8 @@ calls the function below through `run_act`, which sends exactly one response.
 | `enable` | — | `act_enable` (P2) | job | `daemon` |
 | `disable` | — | `act_disable` (P2) | job | `daemon` |
 | `connect` | — | `act_connect` (P2) | sync | — |
-| `login` | server, auth key (`-` = empty) | `act_login` (P2) | job | `login` |
-| `relogin` | — | `act_relogin` (P2) | job | `login` |
+| `login` | server, auth key (`-` = empty), keep tags (`0` or `1`) | `act_login` (P2) | job | `login` |
+| `relogin` | keep tags (`0` or `1`) | `act_relogin` (P2) | job | `login` |
 | `logout` | — | `act_logout` (P2) | sync | — |
 | `purge` | — | `act_purge` (P2) | job | `daemon` |
 | `set` | key, value (`-` = empty) | `act_set` (P2) | sync, or job `daemon` when a restart is needed | — / `daemon` |
@@ -131,6 +131,12 @@ daemon running (`not_running` otherwise). After a sync `set`, `BIFROST_RESULT`
 is `{"value":<read-back value>}`: a string for text keys, a boolean for 0/1
 keys, a number for `port`, an array for `advertise_routes`.
 
+Keep tags `1` passes `--advertise-tags` with the tags the device had (PLAN
+7.5): `saved_tags.tags` (6.1) while logged out, else `Self.Tags` of `status
+--json`. The tags are requested only from the server that gave them, and not
+in the `recorded` mode, which omits all flags. Keep tags `0`, or no tags,
+passes an empty `--advertise-tags=`, so the control server removes the tags.
+
 `ping` result fields: `{"latency_ms":<int>,"path":"direct"|"derp"|"peer-relay","relay":"<derp code or empty>"}`.
 Only IPs that `valid_tailnet_ip` accepts and that belong to a peer in the
 current status are pinged (`unknown_peer` otherwise).
@@ -158,6 +164,7 @@ The page translates these. Scripts use no other codes.
 | `cli_failed` | a `tailscale` command failed |
 | `not_logged_in` | the action needs a logged-in device |
 | `login_expired` | the interactive login was not finished in 10 minutes |
+| `tags_rejected` | the control server did not allow the requested tags (`requested tags [...] are invalid or not permitted`) |
 | `bad_server` | the control server URL is not accepted |
 | `bad_authkey` | the auth key has the wrong format |
 | `no_conf_dir` | dnsmasq has no `conf-dir` for `/jffs/configs/dnsmasq.d` |
@@ -213,12 +220,14 @@ All in `$BIFROST_UPLOAD` (`/tmp/upload`), written with `json_write` or
     "hostname": "router", "dns_name": "router.example.ts.net",
     "ips": ["100.64.0.1", "fd7a:115c:a1e0::1"], "tailnet": "example.ts.net",
     "magicdns_suffix": "example.ts.net", "control": "", "official": true,
-    "key_expiry": "2027-05-01T00:00:00Z", "relay": "tok", "online": true
+    "key_expiry": "2027-05-01T00:00:00Z", "relay": "tok", "online": true,
+    "tags": ["tag:router"]
   },
   "prefs": {
     "advertise_routes": ["192.168.1.0/24"], "advertise_exit_node": false,
     "accept_routes": false, "hostname": ""
   },
+  "saved_tags": null,
   "routes": [{ "cidr": "192.168.1.0/24", "approved": true }],
   "exit_node": { "advertised": false, "approved": false },
   "settings": {
@@ -250,6 +259,11 @@ All in `$BIFROST_UPLOAD` (`/tmp/upload`), written with `json_write` or
   `stopped`, `Running` → `running`.
 - `self`, `prefs` are `null` when the daemon does not answer. `peers` is `[]`.
 - `control` is `""` for Tailscale's own server; `official` is true then.
+- `self.tags`: `Self.Tags` of `status --json`, `[]` for a device owned by a
+  user. `saved_tags`: `{"tags":[...],"control":"<server>"}` from
+  `$BIFROST_STATE/saved-prefs.json`, which logout writes and login removes
+  (PLAN 7.5); `null` without the file or without tags. Its `control` uses the
+  same form as `self.control`.
 - `core.update` is `null` or `{"tailscale","revision","serial","tag","variant"}`
   when the latest known serial is larger than the installed one. The latest
   is `core.latest` of `core-check.json` (6.3), else
@@ -309,7 +323,7 @@ own time limit, as long as it keeps refreshing status.
 | Job | Phases | `data` |
 |---|---|---|
 | `daemon` | `queued start precheck starting waiting prefs firewall dns stopping cleanup purge done` | `{"action":"start"\|"stop"\|"restart"\|"purge"}` |
-| `login` | `queued start running done` | `{"action":"login"\|"relogin","official":bool}` |
+| `login` | `queued start running done` | `{"action":"login"\|"relogin","official":bool,"tags":bool,"tags_applied":bool}`. `tags`: the login requested tags. `tags_applied` (only when `tags` is true and the login succeeded): the device has every requested tag in `Self.Tags`. With a user's auth key, headscale 0.29.7 logs in a device that was registered with that user's key and then tagged by an admin, but drops the tags: the job ends `ok` with `tags_applied:false`. A new device, or one tagged at registration, gets `tags_rejected` |
 | `migrate` | `queued start precheck record backup stop_original wait_original copy starting verify rollback done` | `{"manual_stop":bool,"rolled_back":bool,"cleanup_error":"<code>","backup_cleanup_pending":bool}`. `cleanup_error` (may be absent): the daemon stopped during rollback but `fw_clear` or `dns_clear` failed; the rollback still finished. `backup_cleanup_pending:true`: the pre-migration backup (it holds the old private key) could not be deleted; the job result is unchanged and the next migration, purge, or uninstall retries |
 | `update` | `queued start manifest verify_manifest space download verify unpack test snapshot swap verify_running finalize rollback done` | `{"action":"check"\|"update"\|"rollback"\|"arch"\|"type","latest":{tailscale,revision,serial,tag,variant}\|null,"up_to_date":bool,"kept_prev":bool}`, plus `"variant":"normal"\|"upx"` for `update`, `arch` and `type`, and `"plugin_update":{version,tag,url}\|null` for `check`. `arch` and `type` accept a channel serial equal to the installed one when the architecture or type changes. `check` ends `ok` both with and without an update; `up_to_date:true` means the channel serial equals the installed one (the page then shows the `up_to_date` text). A lower channel serial fails with `old_serial`; `update` with a channel serial equal to the installed one fails with `up_to_date` |
 | `netcheck` | `queued start running done` | `{"report":{...}}` (below) |

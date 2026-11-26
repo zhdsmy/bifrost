@@ -90,6 +90,23 @@ valid_hostname() {
     [ "${#1}" -le 63 ]
 }
 
+# ACL tag, as tailcfg.CheckTag: "tag:", a letter, then letters, digits and "-".
+valid_tag() {
+    case "$1" in tag:[A-Za-z]*) ;; *) return 1 ;; esac
+    case "${1#tag:}" in *[!A-Za-z0-9-]*) return 1 ;; esac
+}
+
+# Comma-separated ACL tags.
+valid_tag_list() (
+    case "$1" in '' | ,* | *, | *,,*) exit 1 ;; esac
+    IFS=,
+    # shellcheck disable=SC2086
+    set -- $1
+    for _vtl_t in "$@"; do
+        valid_tag "$_vtl_t" || exit 1
+    done
+)
+
 # DNS name: lower-case labels of letters, digits and "-", joined by ".".
 valid_dns_name() {
     case "$1" in '' | .* | *. | *..* | -* | *.-* | *-.* | *[!a-z0-9.-]*) return 1 ;; esac

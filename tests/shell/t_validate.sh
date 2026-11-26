@@ -59,6 +59,11 @@ a63=$(printf '%063d' 0 | tr 0 a)
 ok hostname-63 valid_hostname "$a63"
 for v in '' -a a- 'a b' a.b a_b "${a63}a"; do no "hostname '$v'" valid_hostname "$v"; done
 
+for v in tag:a tag:router tag:Edge-1; do ok "tag $v" valid_tag "$v"; done
+for v in '' tag: router tag:1a tag:-a tag:a_b 'tag:a b' tag:a.b 'tag:a,b' TAG:a; do no "tag '$v'" valid_tag "$v"; done
+ok tag-list valid_tag_list tag:router,tag:edge
+for v in '' ',' 'tag:a,' ',tag:a' 'tag:a,,tag:b' 'tag:a,b'; do no "tag list '$v'" valid_tag_list "$v"; done
+
 for v in example.ts.net tail-1234.example.ts.net a.b-c.d; do ok "dns $v" valid_dns_name "$v"; done
 for v in '' Example.ts.net .a a. a..b -a.b a-.b a.-b 'a b' a_b; do no "dns '$v'" valid_dns_name "$v"; done
 

@@ -12,6 +12,7 @@ import { describeState, type PrimaryActionKind } from "../core/format";
 import type { LoginJobData } from "../core/types";
 import { isAccessingFromTailnet } from "../core/validate";
 import { HealthCard } from "./overview/HealthCard";
+import { KeepTagsCheckbox, loginTagsMissing } from "./overview/KeepTagsCheckbox";
 import { LoginCard } from "./overview/LoginCard";
 import { MigrateCard } from "./overview/MigrateCard";
 import { OverviewDetails } from "./overview/OverviewDetails";
@@ -41,12 +42,15 @@ export function OverviewPage() {
 
   const [syncActionBusy, setSyncActionBusy] = useState(false);
   const [confirmState, setConfirmState] = useState<OverviewConfirmState | null>(null);
+  const [reloginKeepTags, setReloginKeepTags] = useState(true);
 
   if (!status) return null;
 
   const presentation = describeState(status);
   const actionDisabled = busy || syncActionBusy;
   const fromTailnet = isAccessingFromTailnet(window.location.hostname, status.self);
+  // A status file from an older release has no tags.
+  const selfTags = status.self?.tags ?? [];
 
   async function runSync(action: () => Promise<unknown>) {
     setSyncActionBusy(true);
@@ -74,7 +78,14 @@ export function OverviewPage() {
       return;
     }
     if (kind === "relogin") {
-      await runJob<LoginJobData>("login", () => api.relogin());
+      const keepTags = selfTags.length > 0 && reloginKeepTags;
+      await runJob<LoginJobData>("login", () => api.relogin(keepTags), {
+        onDone: (final) => {
+          if (loginTagsMissing(final)) {
+            notify({ title: t("login.tagsNotApplied"), description: t("login.tagsNotAppliedDesc"), variant: "warning" });
+          }
+        },
+      });
       return;
     }
     await runJob("migrate", api.migrate);
@@ -228,7 +239,10 @@ export function OverviewPage() {
                 <Button
                   variant="secondary"
                   disabled={actionDisabled || jobs.login?.running}
-                  onClick={(e) => setConfirmState({ kind: "relogin", anchor: e.currentTarget })}
+                  onClick={(e) => {
+                    setReloginKeepTags(true);
+                    setConfirmState({ kind: "relogin", anchor: e.currentTarget });
+                  }}
                 >
                   {t("overview.action.relogin")}
                 </Button>
@@ -281,7 +295,16 @@ export function OverviewPage() {
           confirmVariant={confirmConfig.variant}
           disruptive={confirmConfig.disruptive}
           onConfirm={() => executeConfirm(confirmState.kind)}
-        />
+        >
+          {confirmState.kind === "relogin" && selfTags.length > 0 && (
+            <KeepTagsCheckbox
+              tags={selfTags}
+              dense
+              checked={reloginKeepTags}
+              onCheckedChange={setReloginKeepTags}
+            />
+          )}
+        </ConfirmDialog>
       )}
     </div>
   );

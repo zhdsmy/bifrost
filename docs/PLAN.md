@@ -549,6 +549,11 @@ TS_LOGS_DIR=/tmp/bifrost-run/logs \
   2. 退出后、daemon 每次启动后、登录前，档案没有登录就用 `tailscale set` 把这四项设回去；档案已经登录，说明文件过期，删除它。
   3. 退出期间在设置页改这四项，读回的值同步写进文件。
   4. 登录成功后删除文件。「清除登录状态」删除整个 state 目录，也删除它。
+- **保留标签**：用户交互式登录、不申请标签时，控制服务器把设备改成用户所有，去掉它的标签【已核实，Tailscale 官方服务器和 headscale 0.29.7】。带标签的设备默认不过期，去掉标签后密钥又会过期。所以：
+  1. 退出前，把设备的标签（`status --json` 的 `Self.Tags`）和发出它们的服务器一起写进 `saved-prefs.json`。
+  2. 登录卡片和「重新登录」的确认框各有一个「申请原有标签」勾选项，有标签时显示，默认勾选。登录用保存的标签，重新登录用设备当前的标签。只向发出标签的服务器申请；登录卡片里换了服务器就不显示这一项。
+  3. 勾选时加 `--advertise-tags=<标签>`。登录的账号必须是这些标签的 `tagOwners`；预授权密钥自己带标签设置。headscale 不给用户的预授权密钥加标签，分两种处理【已核实，headscale 0.29.7】：设备先用这个用户的密钥登记、后由管理员加标签时，照常登录，但不给标签；新设备，或登记时就带标签的设备（例如交互式登录申请了标签），被拒。被拒时返回 `tags_rejected`，页面提示取消勾选后重试。登录成功后，Bifrost 比对 `Self.Tags` 和申请的标签；缺标签时，任务数据写 `tags_applied:false`，页面用警告代替成功提示，请用户在控制台设置标签，或改用带标签的密钥。交互式登录被拒时，命令行收不到错误，一直等到超时【已核实，headscale 0.29.7】；页面在超时提示里提醒标签可能被拒。
+  4. 不勾选时传空的 `--advertise-tags=`，控制服务器去掉标签。
 - **清除登录状态**：诊断页的按钮。先退出登录，再停止 daemon，再删除 state 目录。二次确认。
 
 ### 7.6 登录命令的构造
@@ -560,6 +565,7 @@ tailscale up --reset
   --accept-dns=false --netfilter-mode=off
   --accept-routes=<当前值> --advertise-routes=<当前值>
   --advertise-exit-node=<当前值> --hostname=<当前值>
+  --advertise-tags=<7.5 节保留的标签，或空>
   [--login-server=<地址>] [--auth-key=file:<路径>] [--force-reauth]
   --timeout=10m
 ```
@@ -972,8 +978,9 @@ tailscaled 的防火墙模式固定为 `off`，所有规则由 Bifrost 自己的
 | `bifrost_status.sh` | — | — | 刷新 `/tmp/upload/bifrost_status.json` 并回应。页面可见时每 3 秒调一次，不可见时停止 |
 | `bifrost_config.sh` | `enable` / `disable` | — | 启用或停用 |
 | | `connect` | — | 「已停止」时重新连接 |
-| | `login` | 服务器地址、预授权密钥，都可以为空 | 后台执行 |
-| | `relogin` / `logout` / `purge` | — | 7.5 节 |
+| | `login` | 服务器地址、预授权密钥（都可以为空），是否申请原有标签 | 后台执行 |
+| | `relogin` | 是否申请原有标签 | 7.5 节 |
+| | `logout` / `purge` | — | 7.5 节 |
 | | `set` | 键、值 | 第 8 节里的一项 |
 | | `migrate` | — | 后台执行，结果在 `bifrost_migrate.json` |
 | | `core-check` / `core-update` / `core-rollback` / `core-arch` | `core-arch` 带架构名 | 后台执行，进度在 `bifrost_update.json` |

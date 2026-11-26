@@ -43,5 +43,9 @@ log:
 logtail:
   enabled: false
 
+policy:
+  mode: file
+  path: /etc/headscale/acl.hujson
+
 unix_socket: /var/run/headscale/headscale.sock
 unix_socket_permission: "0770"

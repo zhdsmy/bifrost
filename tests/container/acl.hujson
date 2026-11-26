@@ -1,0 +1,6 @@
+// Allow all traffic, as without a policy. The test user owns tag:it, so a
+// login can request it (suite.sh B9, PLAN 7.5).
+{
+  "tagOwners": { "tag:it": ["bifrost-test@"] },
+  "acls": [{ "action": "accept", "src": ["*"], "dst": ["*:*"] }]
+}

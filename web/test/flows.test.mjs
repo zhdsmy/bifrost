@@ -136,7 +136,7 @@ test("login flow: interactive QR, custom server notice, http warning, authkey lo
   await page.getByRole("heading", { name: "运行中" }).waitFor();
   assert.equal(loginPosts.length, 1);
   assert.deepEqual(loginPosts[0].fields, {});
-  assert.deepEqual(loginPosts[0].params, ["login", "https://hs.example.org", "bifrost_test_authkey_001"]);
+  assert.deepEqual(loginPosts[0].params, ["login", "https://hs.example.org", "bifrost_test_authkey_001", "0"]);
   // Custom server is displayed in Overview and locks no_logs in Settings.
   await page.getByText("https://hs.example.org", { exact: true }).waitFor();
   await clickTab(page, "设置");
@@ -174,6 +174,129 @@ test("login flow: interactive QR, custom server notice, http warning, authkey lo
     ).length;
   });
   assert.equal(badLinks, 0);
+});
+
+// Resolves to the params of the next POST for <action> that click() causes.
+async function postedParams(page, action, click) {
+  const [req] = await Promise.all([
+    page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/_api/") &&
+      JSON.parse(r.postData() || "{}").params?.[0] === action),
+    click(),
+  ]);
+  return JSON.parse(req.postData()).params;
+}
+
+test("PLAN 7.5: login and relogin request the previous tags only when asked", async (t) => {
+  const keepName = "申请原有标签：tag:router";
+
+  // Logged out with saved tags: the login card offers them, checked, for the same server only.
+  const login = await openPreview(t, {
+    initialState: "needs_login_tagged", rejectTags: true, fastJobPoll: true, jobStepMs: 20,
+  });
+  await login.page.goto(login.url);
+  await ready(login.page);
+  const keep = login.page.getByRole("checkbox", { name: keepName, exact: true });
+  assert.equal(await keep.isChecked(), true);
+  await login.page.getByRole("button", { name: /高级选项/ }).click();
+  const serverInput = login.page.getByLabel("控制服务器地址", { exact: true });
+  await serverInput.fill("https://hs.example.org");
+  assert.equal(await keep.count(), 0);
+  await serverInput.fill("https://controlplane.tailscale.com/");
+  await keep.waitFor();
+  await serverInput.fill("");
+  await login.page.getByLabel("预授权密钥", { exact: true }).fill("bifrost_test_authkey_001");
+  const keyButton = login.page.getByRole("button", { name: "使用预授权密钥登录", exact: true });
+  assert.deepEqual(await postedParams(login.page, "login", () => keyButton.click()),
+    ["login", "-", "bifrost_test_authkey_001", "1"]);
+  await login.page.getByRole("alert").getByText(/^控制服务器不允许申请的标签。/).waitFor();
+
+  // Cleared, the login requests no tags.
+  await keep.click();
+  assert.equal(await keep.isChecked(), false);
+  assert.deepEqual(await postedParams(login.page, "login", () => keyButton.click()),
+    ["login", "-", "bifrost_test_authkey_001", "0"]);
+  await login.page.getByRole("heading", { name: "运行中" }).waitFor();
+
+  // An interactive login with tags can only time out; the expiry banner names the tags.
+  const expired = await openPreview(t, {
+    initialState: "needs_login_tagged", rejectTags: true, fastJobPoll: true, jobStepMs: 20,
+  });
+  await expired.page.goto(expired.url);
+  await ready(expired.page);
+  await expired.page.getByRole("button", { name: "获取登录链接", exact: true }).click();
+  await expired.page.getByText("控制服务器不允许申请的标签时，登录也会停在这一步。取消勾选「申请原有标签」后重试。",
+    { exact: true }).waitFor();
+
+  // Relogin: the popover offers the node's tags, checked each time it opens.
+  const tagged = await openPreview(t, { initialState: "running_tagged", fastJobPoll: true, jobStepMs: 20 });
+  await tagged.page.goto(tagged.url);
+  await ready(tagged.page);
+  const reloginButton = tagged.page.getByRole("button", { name: "重新登录", exact: true });
+  const dialog = tagged.page.getByRole("alertdialog");
+  const reloginKeep = dialog.getByRole("checkbox", { name: keepName, exact: true });
+  await reloginButton.click();
+  assert.equal(await reloginKeep.isChecked(), true);
+  await reloginKeep.click();
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+  await reloginButton.click();
+  assert.equal(await reloginKeep.isChecked(), true);
+  await reloginKeep.click();
+  assert.deepEqual(await postedParams(tagged.page, "relogin",
+    () => dialog.getByRole("button", { name: "确认", exact: true }).click()), ["relogin", "0"]);
+
+  const kept = await openPreview(t, { initialState: "running_tagged", fastJobPoll: true, jobStepMs: 20 });
+  await kept.page.goto(kept.url);
+  await ready(kept.page);
+  await kept.page.getByRole("button", { name: "重新登录", exact: true }).click();
+  assert.deepEqual(await postedParams(kept.page, "relogin",
+    () => kept.page.getByRole("alertdialog").getByRole("button", { name: "确认", exact: true }).click()),
+  ["relogin", "1"]);
+
+  // A device without tags gets no checkbox.
+  const plain = await openPreview(t, { initialState: "running", fastJobPoll: true, jobStepMs: 20 });
+  await plain.page.goto(plain.url);
+  await ready(plain.page);
+  await plain.page.getByRole("button", { name: "重新登录", exact: true }).click();
+  const plainDialog = plain.page.getByRole("alertdialog");
+  await plainDialog.waitFor();
+  assert.equal(await plainDialog.getByRole("checkbox").count(), 0);
+  assert.deepEqual(await postedParams(plain.page, "relogin",
+    () => plainDialog.getByRole("button", { name: "确认", exact: true }).click()), ["relogin", "0"]);
+});
+
+test("PLAN 7.5: a login that did not get the requested tags shows a warning", async (t) => {
+  const title = "已登录，但设备没有拿到申请的标签";
+
+  const login = await openPreview(t, {
+    initialState: "needs_login_tagged", dropTags: true, fastJobPoll: true, jobStepMs: 20,
+  });
+  await login.page.goto(login.url);
+  await ready(login.page);
+  await login.page.getByRole("button", { name: /高级选项/ }).click();
+  await login.page.getByLabel("预授权密钥", { exact: true }).fill("bifrost_test_authkey_001");
+  await login.page.getByRole("button", { name: "使用预授权密钥登录", exact: true }).click();
+  await login.page.getByText(title, { exact: true }).waitFor();
+  await login.page.getByText(/^控制服务器没有给这些标签。/).waitFor();
+  assert.equal(await login.page.getByText("操作已完成", { exact: true }).count(), 0);
+
+  const relogin = await openPreview(t, {
+    initialState: "running_tagged", dropTags: true, fastJobPoll: true, jobStepMs: 20,
+  });
+  await relogin.page.goto(relogin.url);
+  await ready(relogin.page);
+  await relogin.page.getByRole("button", { name: "重新登录", exact: true }).click();
+  await relogin.page.getByRole("alertdialog").getByRole("button", { name: "确认", exact: true }).click();
+  await relogin.page.getByText(title, { exact: true }).waitFor();
+
+  // Without the option, the same login gets its tags and shows no warning.
+  const granted = await openPreview(t, { initialState: "needs_login_tagged", fastJobPoll: true, jobStepMs: 20 });
+  await granted.page.goto(granted.url);
+  await ready(granted.page);
+  await granted.page.getByRole("button", { name: /高级选项/ }).click();
+  await granted.page.getByLabel("预授权密钥", { exact: true }).fill("bifrost_test_authkey_001");
+  await granted.page.getByRole("button", { name: "使用预授权密钥登录", exact: true }).click();
+  await granted.page.getByText("操作已完成", { exact: true }).first().waitFor();
+  assert.equal(await granted.page.getByText(title, { exact: true }).count(), 0);
 });
 
 test("an oversized authorization URL keeps a usable link across reloads", async (t) => {

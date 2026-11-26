@@ -27,6 +27,7 @@ import {
   isAccessingFromTailnet,
   isHttpLoginServer,
   isSafeHttpUrl,
+  sameControlServer,
   validArch,
   validAuthKey,
   validBool01,
@@ -112,6 +113,8 @@ describe("validate.ts parity with plugin/bifrost/lib/validate.sh (via tests/shel
     valid_mirror: validMirror,
     valid_tailnet_ip: validTailnetIp,
   };
+  // The page never sends tags; the scripts read them from Tailscale (PLAN 7.5).
+  const shellOnly = new Set(["valid_tag", "valid_tag_list"]);
 
   it("matches the one-argument validator test vectors in tests/shell/t_validate.sh", () => {
     const cases = extractShellValidateCases();
@@ -119,6 +122,7 @@ describe("validate.ts parity with plugin/bifrost/lib/validate.sh (via tests/shel
 
     const seenFns = new Set();
     for (const c of cases) {
+      if (shellOnly.has(c.fn)) continue;
       const validator = tsValidators[c.fn];
       assert.ok(validator, `unmapped shell validator in t_validate.sh: ${c.fn}`);
       seenFns.add(c.fn);
@@ -131,6 +135,14 @@ describe("validate.ts parity with plugin/bifrost/lib/validate.sh (via tests/shel
     for (const fn of Object.keys(tsValidators)) {
       assert.ok(seenFns.has(fn), `expected t_validate.sh to cover ${fn}`);
     }
+  });
+
+  it("compares control servers like login_same_server", () => {
+    assert.equal(sameControlServer("", "https://controlplane.tailscale.com/"), true);
+    assert.equal(sameControlServer("https://login.tailscale.com", ""), true);
+    assert.equal(sameControlServer("https://hs.example.org/", "https://hs.example.org"), true);
+    assert.equal(sameControlServer("https://hs.example.org", ""), false);
+    assert.equal(sameControlServer("https://hs.example.org", "https://hs.example.org:8443"), false);
   });
 
   it("validates http(s) URL safety and http login server warning helper", () => {

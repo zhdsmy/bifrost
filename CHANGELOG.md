@@ -7,6 +7,15 @@ plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Added
+
+- Logging out records the device's tags. The login card and the Re-authenticate confirmation have a Request Previous Tags checkbox, checked by default when the device has tags, that requests them again with `--advertise-tags`, only from the control server that gave them. Without it, an interactive login made the router a device of the account that logged in and removed its tags. When the server refuses the tags, the page says so (`tags_rejected`) and asks to clear the checkbox and try again. An interactive login whose tags are refused can only time out; the expiry notice then mentions the tags. A login that succeeds without the requested tags shows a warning instead of the success message; headscale can do this with a user's auth key.
+
+### Changed
+
+- Page contract: `login` takes a third parameter and `relogin` one parameter, whether to request the previous tags. The status file has `self.tags` and `saved_tags`, and the login job data has `tags` and `tags_applied`.
+- The fallback of Connect for a stopped device mentions the profile's advertised tags, which a login with Request Previous Tags sets, so Tailscale's check for unmentioned settings accepts it.
+
 ## [0.2.7] - 2026-11-26
 
 ### Changed

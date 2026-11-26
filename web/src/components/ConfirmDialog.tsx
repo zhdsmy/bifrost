@@ -1,7 +1,7 @@
 // Non-modal confirmation popover anchored to the triggering control (PLAN 13.2 fallback).
 // Kumo Dialog (Base UI 1.9.0) was tested inside Shadow DOM first: its backdrop covered the shell
 // and Escape cleared it, but Tab escaped the ShadowRoot into the host document (#hidden_frame).
-import { useId } from "react";
+import { useId, type ReactNode } from "react";
 import { Banner } from "@cloudflare/kumo/components/banner";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Popover } from "@cloudflare/kumo/components/popover";
@@ -17,6 +17,8 @@ export interface ConfirmDialogProps {
   confirmVariant?: "primary" | "destructive";
   disruptive?: boolean;
   onConfirm: () => void | Promise<void>;
+  // Extra controls between the description and the buttons.
+  children?: ReactNode;
 }
 
 export function ConfirmDialog({
@@ -29,6 +31,7 @@ export function ConfirmDialog({
   confirmVariant = "primary",
   disruptive = false,
   onConfirm,
+  children,
 }: ConfirmDialogProps) {
   const { overlays, t } = useApp();
   const titleId = useId();
@@ -58,6 +61,7 @@ export function ConfirmDialog({
               {description}
             </Popover.Description>
           </div>
+          {children}
           {disruptive && (
             <Banner variant="alert" size="sm" description={t("common.disruptNotice")} />
           )}

@@ -15,9 +15,11 @@ import type { JobProgressState, LoginJobData, StatusData } from "../../core/type
 import {
   isHttpLoginServer,
   isSafeHttpUrl,
+  sameControlServer,
   validAuthKey,
   validLoginServer,
 } from "../../core/validate";
+import { KeepTagsCheckbox, loginTagsMissing } from "./KeepTagsCheckbox";
 
 export function LoginCard({
   status,
@@ -31,6 +33,7 @@ export function LoginCard({
   const [authKeyDraft, setAuthKeyDraft] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [keepTags, setKeepTags] = useState(true);
 
   const loginJob = jobs.login as JobProgressState<LoginJobData> | undefined;
   const loginDisabled = disabled || Boolean(loginJob?.running);
@@ -41,6 +44,9 @@ export function LoginCard({
   const loginExpired = !loginJob?.running && loginJob?.code === "login_expired";
   const hasAuthUrl = Boolean(status.auth_url) && !loginExpired;
   const safeAuthUrl = hasAuthUrl && isSafeHttpUrl(status.auth_url);
+  // PLAN 7.5: the saved tags are requested only from the server that gave them.
+  const savedTags = status.saved_tags;
+  const tagsOffered = Boolean(savedTags?.tags.length) && sameControlServer(serverDraft.trim(), savedTags!.control);
 
   async function handleStartLogin() {
     const server = serverDraft.trim();
@@ -54,11 +60,15 @@ export function LoginCard({
       return;
     }
     setValidationError(null);
-    await runJob<LoginJobData>("login", () => api.login(server, authKey), {
+    await runJob<LoginJobData>("login", () => api.login(server, authKey, tagsOffered && keepTags), {
       onDone: (final) => {
         if (final.ok) {
           setAuthKeyDraft("");
-          notify({ title: t("common.actionSuccess"), variant: "success" });
+          if (loginTagsMissing(final)) {
+            notify({ title: t("login.tagsNotApplied"), description: t("login.tagsNotAppliedDesc"), variant: "warning" });
+          } else {
+            notify({ title: t("common.actionSuccess"), variant: "success" });
+          }
         }
       },
     });
@@ -67,7 +77,12 @@ export function LoginCard({
   return (
     <SectionCard title={t("login.title")} description={t("login.subtitle")}>
       {loginExpired && (
-        <Banner variant="alert" role="alert" title={t("login.expiredBanner")} />
+        <Banner
+          variant="alert"
+          role="alert"
+          title={t("login.expiredBanner")}
+          description={loginJob?.data?.tags ? t("login.expiredTagsHint") : undefined}
+        />
       )}
 
       {hasAuthUrl && !safeAuthUrl && (
@@ -156,6 +171,15 @@ export function LoginCard({
           />
         </Collapsible.Panel>
       </Collapsible.Root>
+
+      {tagsOffered && (
+        <KeepTagsCheckbox
+          tags={savedTags!.tags}
+          checked={keepTags}
+          disabled={loginDisabled}
+          onCheckedChange={setKeepTags}
+        />
+      )}
 
       {validationError && (
         <Banner variant="error" role="alert" size="sm" title={validationError} />

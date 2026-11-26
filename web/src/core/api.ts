@@ -252,9 +252,14 @@ export const api = {
   enable: (signal?: AbortSignal) => postScript<JobStartResult>("bifrost_config.sh", ["enable"], signal),
   disable: (signal?: AbortSignal) => postScript<JobStartResult>("bifrost_config.sh", ["disable"], signal),
   connect: (signal?: AbortSignal) => postScript("bifrost_config.sh", ["connect"], signal),
-  login: (server: string, authKey: string, signal?: AbortSignal) =>
-    postScript<JobStartResult>("bifrost_config.sh", ["login", dash(server), dash(authKey)], signal),
-  relogin: (signal?: AbortSignal) => postScript<JobStartResult>("bifrost_config.sh", ["relogin"], signal),
+  login: (server: string, authKey: string, keepTags: boolean, signal?: AbortSignal) =>
+    postScript<JobStartResult>(
+      "bifrost_config.sh",
+      ["login", dash(server), dash(authKey), keepTags ? "1" : "0"],
+      signal,
+    ),
+  relogin: (keepTags: boolean, signal?: AbortSignal) =>
+    postScript<JobStartResult>("bifrost_config.sh", ["relogin", keepTags ? "1" : "0"], signal),
   logout: (signal?: AbortSignal) => postScript("bifrost_config.sh", ["logout"], signal),
   purge: (signal?: AbortSignal) => postScript<JobStartResult>("bifrost_config.sh", ["purge"], signal),
   set: (key: SettingKey, value: string, signal?: AbortSignal) =>

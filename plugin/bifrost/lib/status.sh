@@ -81,6 +81,7 @@ _status_render_jq() {
         --rawfile previous_routes "$_sr_routes_file" \
         --rawfile lat_text "$_sr_lat_file" \
         --rawfile chk_text "$_sr_chk_file" \
+        --rawfile saved_text "$_sr_saved_file" \
         --argjson now "$_sr_now" \
         --arg fstate "$_sr_fstate" \
         --arg ferr "$_sr_ferr" \
@@ -145,6 +146,7 @@ _status_render_jq() {
         ($prev_text | object_or_null) as $prev_man |
         ($lat_text | object_or_null) as $lat |
         ($chk_text | object_or_null) as $chk |
+        ($saved_text | object_or_null) as $saved |
 
         (if $fstate != "" then {s: $fstate, e: $ferr}
          elif $st == null then {s: "error", e: "cli_failed"}
@@ -202,7 +204,8 @@ _status_render_jq() {
                 official: $official,
                 key_expiry: ($st.Self.KeyExpiry | clean_expiry),
                 relay: ($st.Self.Relay // ""),
-                online: ($st.Self.Online == true)
+                online: ($st.Self.Online == true),
+                tags: [($st.Self.Tags // [])[] | strings]
             }
          end) as $self_obj |
 
@@ -319,6 +322,10 @@ _status_render_jq() {
             conflict: { original_installed: $oinst, original_running: $orun },
             self: $self_obj,
             prefs: $prefs_obj,
+            # PLAN 7.5: tags saved at logout, for the next login.
+            saved_tags: (if $saved != null and ($saved.tags | type) == "array" and ($saved.control | type) == "string" and
+                    ([$saved.tags[] | strings] | length) > 0
+                then {tags: [$saved.tags[] | strings], control: $saved.control} else null end),
             routes: $routes_arr,
             exit_node: $exit_obj,
             settings: {
@@ -493,6 +500,8 @@ status_refresh() {
     _sr_prev_file=/dev/null
     _sr_lat_file=/dev/null
     _sr_chk_file=/dev/null
+    _sr_saved_file=$(login_saved_prefs_file)
+    [ -f "$_sr_saved_file" ] || _sr_saved_file=/dev/null
     [ -f "$BIFROST_MANIFEST" ] && _sr_man_file=$BIFROST_MANIFEST
     [ -f "$BIFROST_BIN/bifrostd.prev.json" ] && _sr_prev_file="$BIFROST_BIN/bifrostd.prev.json"
     [ -f "$BIFROST_RUN/core_latest.json" ] && _sr_lat_file="$BIFROST_RUN/core_latest.json"

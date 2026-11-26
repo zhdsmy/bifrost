@@ -109,6 +109,12 @@ export interface SelfInfo {
   key_expiry: string;
   relay: string;
   online: boolean;
+  tags: string[];
+}
+
+export interface SavedTags {
+  tags: string[];
+  control: string;
 }
 
 export interface PrefsInfo {
@@ -173,6 +179,7 @@ export interface StatusData {
   };
   self: SelfInfo | null;
   prefs: PrefsInfo | null;
+  saved_tags: SavedTags | null;
   routes: RouteStatus[];
   exit_node: {
     advertised: boolean;
@@ -216,6 +223,9 @@ export type JobProgressState<TData = unknown> = Pick<JobState<TData>,
 export interface LoginJobData {
   action?: "login" | "relogin";
   official?: boolean;
+  tags?: boolean;
+  // Set when tags were requested: whether the device has them after the login.
+  tags_applied?: boolean;
 }
 
 export interface MigrateJobData {

@@ -83,20 +83,26 @@ page() {
         }
     done
     case "$_pg_act" in
-        enable | disable | connect | relogin | logout | purge | migrate | \
+        enable | disable | connect | logout | purge | migrate | \
             core-check | core-update | core-rollback | core-drop-prev | netcheck | logs)
             nargs 0 $# || {
                 respond_err invalid_param
                 return 1
             }
             ;;
-        login | set | ui)
+        set | ui)
             nargs 2 $# || {
                 respond_err invalid_param
                 return 1
             }
             ;;
-        core-arch | core-type | ping)
+        login)
+            nargs 3 $# || {
+                respond_err invalid_param
+                return 1
+            }
+            ;;
+        relogin | core-arch | core-type | ping)
             nargs 1 $# || {
                 respond_err invalid_param
                 return 1
@@ -112,8 +118,8 @@ page() {
         enable) run_act act_enable ;;
         disable) run_act act_disable ;;
         connect) run_act act_connect ;;
-        login) run_act act_login "$(undash "$1")" "$(undash "$2")" ;;
-        relogin) run_act act_relogin ;;
+        login) run_act act_login "$(undash "$1")" "$(undash "$2")" "$3" ;;
+        relogin) run_act act_relogin "$1" ;;
         logout) run_act act_logout ;;
         purge) run_act act_purge ;;
         set) run_act act_set "$1" "$(undash "$2")" ;;

@@ -27,7 +27,11 @@ login_cli() {
     _lc_rc=$?
     [ "$_lc_rc" -eq 0 ] && return 0
     _lc_code=cli_failed
-    case "$_lc_err" in *"timeout waiting for Tailscale"*) _lc_code=timeout ;; esac
+    case "$_lc_err" in
+        *"timeout waiting for Tailscale"*) _lc_code=timeout ;;
+        # Tailscale and headscale: "requested tags [...] are invalid or not permitted".
+        *"requested tags"*) _lc_code=tags_rejected ;;
+    esac
     if [ "$_lc_rc" -eq 124 ] || [ "$(($(now) - _lc_start))" -ge "$1" ]; then
         _lc_code=timeout
     fi
@@ -35,14 +39,15 @@ login_cli() {
 }
 
 # login_read_prefs: populate _lrp_ctrl, _lrp_acc_routes, _lrp_adv_routes,
-# _lrp_adv_exit, _lrp_hostname from "debug prefs". Returns 1 on read error
-# (preserving BIFROST_ERR in-shell) with defaults populated.
+# _lrp_adv_exit, _lrp_hostname, _lrp_adv_tags from "debug prefs". Returns 1 on
+# read error (preserving BIFROST_ERR in-shell) with defaults populated.
 login_read_prefs() {
     _lrp_ctrl=""
     _lrp_acc_routes="false"
     _lrp_adv_routes=""
     _lrp_adv_exit="false"
     _lrp_hostname=""
+    _lrp_adv_tags=""
 
     daemon_read_prefs || return 1
 
@@ -71,6 +76,11 @@ login_read_prefs() {
     if [ -n "$_lrp_raw_host" ] && valid_hostname "$_lrp_raw_host"; then
         _lrp_hostname=$_lrp_raw_host
     fi
+
+    _lrp_raw_tags=$(printf '%s\n' "$_BIFROST_PREFS_JSON" | jq -r '(.AdvertiseTags // []) | join(",")' 2>/dev/null)
+    if [ -n "$_lrp_raw_tags" ] && valid_tag_list "$_lrp_raw_tags"; then
+        _lrp_adv_tags=$_lrp_raw_tags
+    fi
     return 0
 }
 
@@ -87,18 +97,63 @@ login_logged_in_prefs() {
         jq -e '((.Config.NodeID // "") != "") or ((.Config.UserProfile.LoginName // "") != "")' >/dev/null 2>&1
 }
 
-# login_save_prefs: record the prefs of the logged-in profile before logout.
-# A logged-out profile already holds the saved values, so the file is kept.
+# login_save_prefs: record the prefs of the logged-in profile before logout,
+# with the device's tags and the server that gave them (PLAN 7.5). A
+# logged-out profile already holds the saved values, so the file is kept.
 login_save_prefs() {
     daemon_read_prefs || return 1
     login_logged_in_prefs || return 0
     mkdir -p "$BIFROST_STATE" 2>/dev/null || { fail state_not_writable; return 1; }
-    printf '%s\n' "$_BIFROST_PREFS_JSON" | jq -c '{
+    _lsp_tags=$(login_node_tags)
+    _lsp_ctrl=$(printf '%s\n' "$_BIFROST_PREFS_JSON" | jq -r '.ControlURL // ""' 2>/dev/null)
+    daemon_is_official_url "$_lsp_ctrl" && _lsp_ctrl=""
+    printf '%s\n' "$_BIFROST_PREFS_JSON" | jq -c --arg tags "$_lsp_tags" --arg ctrl "${_lsp_ctrl%/}" '{
         advertise_routes: [(.AdvertiseRoutes // [])[] | select(. != "0.0.0.0/0" and . != "::/0")],
         advertise_exit_node: ((.AdvertiseRoutes // []) | (index("0.0.0.0/0") != null and index("::/0") != null)),
         accept_routes: (.RouteAll == true),
-        hostname: (.Hostname // "")
+        hostname: (.Hostname // ""),
+        tags: ($tags | if . == "" then [] else split(",") end),
+        control: $ctrl
     }' 2>/dev/null | json_write "$(login_saved_prefs_file)"
+}
+
+# login_node_tags: print the current node's tags as a comma list, or nothing.
+login_node_tags() {
+    _lnt_tags=$(ts_cli status --json 2>/dev/null | jq -r '(.Self.Tags // []) | join(",")' 2>/dev/null)
+    if [ -n "$_lnt_tags" ] && valid_tag_list "$_lnt_tags"; then
+        printf '%s\n' "$_lnt_tags"
+    fi
+}
+
+# login_tags_applied <tags>: 0 when the node has every tag in the comma list.
+login_tags_applied() (
+    _lta_have=",$(login_node_tags),"
+    IFS=,
+    for _lta_t in $1; do
+        case "$_lta_have" in *",$_lta_t,"*) ;; *) exit 1 ;; esac
+    done
+)
+
+# login_pick_tags <target>: set _ljb_tags to the tags to request when logging
+# in to <target>: the saved tags while logged out, else the node's own tags,
+# only when they come from the same server.
+login_pick_tags() {
+    _ljb_tags=""
+    _lpt_f=$(login_saved_prefs_file)
+    if [ -f "$_lpt_f" ]; then
+        _lpt_line=$(jq -r 'select((.tags | type) == "array" and (.control | type) == "string") |
+            "\(.tags | join(",") | if . == "" then "-" else . end) \(.control)"' "$_lpt_f" 2>/dev/null)
+        read -r _lpt_tags _lpt_ctrl <<EOF
+$_lpt_line
+EOF
+    else
+        _lpt_tags=$(login_node_tags)
+        _lpt_ctrl=$_lrp_ctrl
+    fi
+    case "$_lpt_tags" in '' | -) return 0 ;; esac
+    valid_tag_list "$_lpt_tags" || return 0
+    login_same_server "$_lpt_ctrl" "$1" || return 0
+    _ljb_tags=$_lpt_tags
 }
 
 # login_restore_prefs: set the saved prefs on a logged-out profile. A logged-in
@@ -134,11 +189,13 @@ EOF
 }
 
 # PLAN 7.6. The bare reconnect fallback shares the same prefs as login.
+# login_run_ts <limit> <mode> <server> <keyfile> <tags>
 login_run_ts() {
     _lrt_limit=$1
     _lrt_mode=$2
     _lrt_server=$3
     _lrt_keyfile=$4
+    _lrt_tags=$5
 
     case "$_lrt_mode" in
         switch) set -- login ;;
@@ -150,7 +207,8 @@ login_run_ts() {
     # them and --reset so Tailscale's accidental-revert check protects them.
     if [ "$_lrt_mode" != recorded ]; then
         set -- "$@" "--accept-routes=$_lrp_acc_routes" "--advertise-routes=$_lrp_adv_routes" \
-            "--advertise-exit-node=$_lrp_adv_exit" "--hostname=$_lrp_hostname"
+            "--advertise-exit-node=$_lrp_adv_exit" "--hostname=$_lrp_hostname" \
+            "--advertise-tags=$_lrt_tags"
     fi
     [ -n "$_lrt_server" ] && set -- "$@" "--login-server=$_lrt_server"
     [ -n "$_lrt_keyfile" ] && set -- "$@" "--auth-key=file:$_lrt_keyfile"
@@ -167,10 +225,12 @@ login_queue_key() {
         fail internal
         return 1
     fi
-    job_start login login "$1" 1 4>&-
+    job_start login login "$1" 1 "$3" 4>&-
 }
 
+# login_queue_locked <login|relogin> <server> <auth key> <keep tags 0|1>
 login_queue_locked() {
+    case "$4" in 0 | 1) ;; *) fail invalid_param; return 1 ;; esac
     if job_running login; then
         fail busy
         return 1
@@ -179,27 +239,27 @@ login_queue_locked() {
     rm -f "$BIFROST_RUN/authkey" "$BIFROST_RUN"/authkey.tmp.* || return 1
     daemon_running || { fail not_running; return 1; }
     if [ "$1" = relogin ]; then
-        job_start login relogin - 0
+        job_start login relogin - 0 "$4"
         return $?
     fi
     [ -z "$2" ] || valid_login_server "$2" || { fail bad_server; return 1; }
     if [ -z "$3" ]; then
-        job_start login login "${2:--}" 0
+        job_start login login "${2:--}" 0 "$4"
         return $?
     fi
     valid_authkey "$3" || { fail bad_authkey; return 1; }
     (umask 077 && : >"$BIFROST_RUN/authkey") || { fail internal; return 1; }
     # Independent file descriptions keep the worker's read offset at zero.
     # shellcheck disable=SC2094
-    login_queue_key "${2:--}" "$3" 3<"$BIFROST_RUN/authkey" 4>"$BIFROST_RUN/authkey"
+    login_queue_key "${2:--}" "$3" "$4" 3<"$BIFROST_RUN/authkey" 4>"$BIFROST_RUN/authkey"
 }
 
 act_login() {
-    with_lock state "$BIFROST_LOCK_WAIT" login_queue_locked login "${1:-}" "${2:-}"
+    with_lock state "$BIFROST_LOCK_WAIT" login_queue_locked login "${1:-}" "${2:-}" "${3:-}"
 }
 
 act_relogin() {
-    with_lock state "$BIFROST_LOCK_WAIT" login_queue_locked relogin
+    with_lock state "$BIFROST_LOCK_WAIT" login_queue_locked relogin "" "" "${1:-}"
 }
 
 # Tailscale can create a machine key before the first login. Treat unknown
@@ -269,6 +329,11 @@ login_prepare_locked() {
 
     _ljb_official="true"
     daemon_is_official_url "$_ljb_target" || _ljb_official="false"
+    _ljb_tags=""
+    # Without the prefs (recorded) the flags are omitted, the tags too.
+    if [ "$_ljb_keep" = 1 ] && [ "$_ljb_mode" != recorded ]; then
+        login_pick_tags "$_ljb_target"
+    fi
     return 0
 }
 
@@ -301,6 +366,7 @@ login_post_locked() {
 job_login() {
     _ljb_act=${1:-login}
     _ljb_srv=${2:--}
+    _ljb_keep=${4:-0}
     [ "$_ljb_srv" = - ] && _ljb_srv=""
     case "$_ljb_act" in login | relogin) ;; *) fail invalid_param; return 1 ;; esac
     [ -z "$_ljb_srv" ] || valid_login_server "$_ljb_srv" || { fail bad_server; return 1; }
@@ -314,12 +380,24 @@ job_login() {
             return 1
         fi
     fi
-    job_data login "{\"action\":\"$_ljb_act\",\"official\":$_ljb_official}"
+    _ljb_tags_j=false
+    [ -n "$_ljb_tags" ] && _ljb_tags_j=true
+    job_data login "{\"action\":\"$_ljb_act\",\"official\":$_ljb_official,\"tags\":$_ljb_tags_j}"
     job_phase login running 20
-    log login "running $_ljb_act (official=$_ljb_official)"
-    if ! login_run_ts "$BIFROST_LOGIN_CLI_TIMEOUT" "$_ljb_mode" "$_ljb_target" "$_ljb_kf"; then
+    log login "running $_ljb_act (official=$_ljb_official, tags=$_ljb_tags_j)"
+    if ! login_run_ts "$BIFROST_LOGIN_CLI_TIMEOUT" "$_ljb_mode" "$_ljb_target" "$_ljb_kf" "$_ljb_tags"; then
         [ "$BIFROST_ERR" = timeout ] && fail login_expired
         return 1
+    fi
+    # A server can log the device in without the tags it does not grant
+    # (headscale 0.29.7 with a user's auth key), so check them (PLAN 7.5).
+    if [ -n "$_ljb_tags" ]; then
+        if login_tags_applied "$_ljb_tags"; then
+            job_data login '{"tags_applied":true}'
+        else
+            log login "the control server did not give the requested tags"
+            job_data login '{"tags_applied":false}'
+        fi
     fi
     # A post-login daemon restart must not inherit the credential.
     with_lock state 60 login_post_locked 3<&- || return 1
@@ -346,7 +424,7 @@ login_connect_locked() {
         [ "$BIFROST_ERR" = cli_failed ] || return 1
         case "$_lc_err" in *"requires mentioning all"*) ;; *) return 1 ;; esac
         login_read_prefs || return 1
-        login_run_ts "$BIFROST_CONNECT_TIMEOUT" connect "$_lrp_ctrl" "" || return 1
+        login_run_ts "$BIFROST_CONNECT_TIMEOUT" connect "$_lrp_ctrl" "" "$_lrp_adv_tags" || return 1
     fi
 
     daemon_fix_prefs || true

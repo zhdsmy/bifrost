@@ -125,7 +125,7 @@ Bifrost supports connecting as a client to self-hosted control servers (containe
 - Over SSH, run `bifrost <subcommand>` (e.g., `bifrost status`, `bifrost ping`, `bifrost switch`) to talk to Bifrost's dedicated socket directly.
 - Re-logging in through the web UI runs `tailscale up --reset` with only the UI-managed flags; any extra CLI-only preferences reset to defaults.
 - After Log Out in the web UI, the UI-managed advertised routes, exit node, accepted routes, and device name are kept until the next login, also across a router restart. Other CLI-only preferences reset to defaults.
-- An interactive login after a logout makes the router a device of the account that logs in. Its tags are removed, so the access rules and key expiry of untagged devices apply. Set the tags again in the admin console after the login, or log in with a tagged auth key.
+- At Log Out, Bifrost records the tags of a tagged device. Request Previous Tags on the login card and in the Re-authenticate confirmation is checked by default and requests these tags from the same control server; the account that logs in must own them (`tagOwners`). If cleared, the router becomes a device of the account that logs in: its tags are removed, so the access rules and key expiry of untagged devices apply. headscale does not give tags to a user's pre-auth key: it refuses the login, or logs the device in without the tags. The page reports both. Use a tagged auth key there, or set the tags in the admin console after the login.
 
 ## Core Updates & Signatures
 

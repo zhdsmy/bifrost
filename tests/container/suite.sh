@@ -67,7 +67,7 @@ wait_for 30 r_job_done /tmp/upload/bifrost_daemon.json || {
     fail_case "enable-job" "daemon job did not finish"
     exit 1
 }
-if ! r_exec "/koolshare/scripts/bifrost_config.sh 2 login '$HS_URL' '$AUTHKEY'" >/dev/null ||
+if ! r_exec "/koolshare/scripts/bifrost_config.sh 2 login '$HS_URL' '$AUTHKEY' 0" >/dev/null ||
    ! wait_for 45 r_state_is running; then
     sh "$(dirname "$0")/diagnostics.sh" "$HS_CTR" "$ROUTER_CTR" >&2 || true
     fail_case "headscale-login" "router did not reach running state"
@@ -302,15 +302,100 @@ if [ "$got_prefs" = "$want_prefs" ]; then
 else
     fail_case "restart-while-logged-out-keeps-prefs" "got $got_prefs"
 fi
-r_exec "/koolshare/scripts/bifrost_config.sh 19 login '$HS_URL' '$AUTHKEY'" >/dev/null
+r_exec "/koolshare/scripts/bifrost_config.sh 19 login '$HS_URL' '$AUTHKEY' 0" >/dev/null
 if wait_for 45 r_state_is running && [ "$(r_prefs)" = "$want_prefs" ] && ! r_saved; then
     pass "login-after-logout-restores-prefs"
 else
     fail_case "login-after-logout-restores-prefs" "got $(r_prefs)"
 fi
 
-# 9. Uninstall cleanly.
-echo "==> [B9] Uninstalling Bifrost..."
+# 9. Logout keeps the tags, and a login can request them (PLAN 7.5).
+echo "==> [B9] Testing that logout keeps the tags for the next login..."
+r_tags() {
+    r_exec '/koolshare/scripts/bifrost_status.sh 20 >/dev/null && jq -c .self.tags /tmp/upload/bifrost_status.json'
+}
+r_tags_are() { [ "$(r_tags)" = "$1" ]; }
+r_auth_url() {
+    r_exec '/koolshare/scripts/bifrost_status.sh 21 >/dev/null && jq -er ".auth_url | select(. != \"\")" /tmp/upload/bifrost_status.json'
+}
+# Tailscale 1.104.7 dials only port 443 for 2 minutes after a control dial
+# (controlhttp forceNoise443), and headscale here serves 8080. A daemon
+# restart clears that, so the steps below restart between control calls.
+r_restart() {
+    r_exec "/koolshare/scripts/bifrost_config.sh $1 disable" >/dev/null
+    wait_for 30 r_job_done /tmp/upload/bifrost_daemon.json || true
+    r_exec "/koolshare/scripts/bifrost_config.sh $2 enable" >/dev/null
+    wait_for 30 r_job_done /tmp/upload/bifrost_daemon.json || true
+}
+r_tag_node() {
+    _rt_ip=$(r_exec 'jq -r ".self.ips[]" /tmp/upload/bifrost_status.json' | grep '^100\.' | head -n 1)
+    _rt_id=$(hs_exec nodes list -o json | jq -r --arg ip "$_rt_ip" '.[] | select(.ip_addresses[]? == $ip) | .id' | head -n 1)
+    hs_exec nodes tag -i "$_rt_id" -t tag:it >/dev/null || true
+    wait_for 30 r_tags_are '["tag:it"]'
+}
+r_login_tags() { r_exec 'jq -c "{ok, code, tags: .data.tags, applied: .data.tags_applied}" /tmp/upload/bifrost_login.json'; }
+if r_tag_node; then
+    pass "admin-tags-in-status"
+else
+    fail_case "admin-tags-in-status" "got $(r_tags)"
+fi
+r_exec "/koolshare/scripts/bifrost_config.sh 22 logout" >/dev/null
+wait_for 20 r_state_is needs_login || true
+want_saved="{\"tags\":[\"tag:it\"],\"control\":\"$HS_URL\"}"
+got_saved=$(r_exec 'jq -c "{tags, control}" /koolshare/configs/bifrost/saved-prefs.json' || true)
+got_status=$(r_exec 'jq -c .saved_tags /tmp/upload/bifrost_status.json' || true)
+if [ "$got_saved" = "$want_saved" ] && [ "$got_status" = "$want_saved" ]; then
+    pass "logout-keeps-tags"
+else
+    fail_case "logout-keeps-tags" "file $got_saved status $got_status"
+fi
+# headscale gives no tags to a user's pre-auth key. This node was registered
+# with the key and tagged by the admin: it logs in, without the tags, and the
+# job reports them missing.
+r_restart 23 24
+r_exec "/koolshare/scripts/bifrost_config.sh 25 login '$HS_URL' '$AUTHKEY' 1" >/dev/null
+wait_for 60 r_job_done /tmp/upload/bifrost_login.json || true
+got_job=$(r_login_tags || true)
+if [ "$got_job" = '{"ok":true,"code":null,"tags":true,"applied":false}' ] && r_state_is running && r_tags_are '[]'; then
+    pass "authkey-login-reports-dropped-tags"
+else
+    fail_case "authkey-login-reports-dropped-tags" "job $got_job, tags $(r_tags)"
+fi
+# The tag owner's interactive login keeps the tags.
+r_tag_node || true
+r_exec "/koolshare/scripts/bifrost_config.sh 26 logout" >/dev/null
+wait_for 20 r_state_is needs_login || true
+r_restart 27 28
+r_exec "/koolshare/scripts/bifrost_config.sh 29 login '$HS_URL' - 1" >/dev/null
+auth_id=""
+if wait_for 30 r_auth_url; then
+    auth_id=$(r_auth_url | sed 's|.*/||')
+    hs_exec auth register --user bifrost-test --auth-id "$auth_id" >/dev/null || true
+fi
+wait_for 60 r_job_done /tmp/upload/bifrost_login.json || true
+got_job=$(r_login_tags || true)
+if wait_for 30 r_tags_are '["tag:it"]' && r_state_is running && ! r_saved &&
+    [ "$got_job" = '{"ok":true,"code":null,"tags":true,"applied":true}' ]; then
+    pass "interactive-login-keeps-tags"
+else
+    fail_case "interactive-login-keeps-tags" "auth id ${auth_id:-none}, tags $(r_tags), job $got_job"
+fi
+# The node was tagged at registration, so headscale takes a user-key login for
+# a new node and refuses the tags.
+r_exec "/koolshare/scripts/bifrost_config.sh 30 logout" >/dev/null
+wait_for 20 r_state_is needs_login || true
+r_restart 31 32
+r_exec "/koolshare/scripts/bifrost_config.sh 33 login '$HS_URL' '$AUTHKEY' 1" >/dev/null
+wait_for 60 r_job_done /tmp/upload/bifrost_login.json || true
+got_job=$(r_login_tags || true)
+if [ "$got_job" = '{"ok":false,"code":"tags_rejected","tags":true,"applied":null}' ]; then
+    pass "authkey-login-tags-rejected"
+else
+    fail_case "authkey-login-tags-rejected" "job $got_job"
+fi
+
+# 10. Uninstall cleanly.
+echo "==> [B10] Uninstalling Bifrost..."
 r_exec '/koolshare/scripts/uninstall_bifrost.sh >/dev/null'
 if r_exec '[ ! -e /koolshare/bifrost ] && [ -d /koolshare/configs/bifrost ]'; then
     pass "uninstall-clean-and-state-kept"

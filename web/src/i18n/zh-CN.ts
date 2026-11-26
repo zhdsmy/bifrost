@@ -156,6 +156,11 @@ export const zhCN = {
   "login.unsafeUrlWarning": "控制服务器返回的授权链接协议不受支持（仅允许 http:// 或 https://），已阻止打开。",
   "login.expiredBanner": "登录链接已过期，请点击下方按钮重新获取。",
   "login.startingNotice": "正在启动登录流程…",
+  "login.keepTags": "申请原有标签：{tags}",
+  "login.keepTagsDesc": "登录的账号要是这些标签的所有者。不勾选时，登录后设备不再带标签。",
+  "login.tagsNotApplied": "已登录，但设备没有拿到申请的标签",
+  "login.tagsNotAppliedDesc": "控制服务器没有给这些标签。请在控制台给设备设置标签，或改用带标签的预授权密钥。",
+  "login.expiredTagsHint": "控制服务器不允许申请的标签时，登录也会停在这一步。取消勾选「申请原有标签」后重试。",
 
   // Migration (PLAN 11.2)
   "migrate.title": "从原版插件迁移",
@@ -434,6 +439,7 @@ export const zhCN = {
   "err.cli_failed": "Tailscale 命令执行失败，请查看诊断日志。",
   "err.not_logged_in": "设备尚未登录，请先完成登录。",
   "err.login_expired": "交互式登录超过 10 分钟未完成，链接已过期。",
+  "err.tags_rejected": "控制服务器不允许申请的标签。取消勾选「申请原有标签」后重试；要用预授权密钥保留标签，请用带标签的密钥。",
   "err.bad_server": "控制服务器地址无效。",
   "err.bad_authkey": "预授权密钥格式不正确。",
   "err.no_conf_dir": "固件 dnsmasq 未启用 conf-dir，无法写入转发配置。",

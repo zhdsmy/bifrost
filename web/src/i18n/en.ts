@@ -158,6 +158,11 @@ export const en: Record<MessageKey, string> = {
   "login.unsafeUrlWarning": "The control server returned an unsupported auth URL protocol (only http:// and https:// are allowed).",
   "login.expiredBanner": "The login URL expired. Click below to request a new one.",
   "login.startingNotice": "Starting login flow…",
+  "login.keepTags": "Request Previous Tags: {tags}",
+  "login.keepTagsDesc": "The account that logs in must own these tags. If cleared, the device has no tags after the login.",
+  "login.tagsNotApplied": "Logged in, but the device did not get the requested tags",
+  "login.tagsNotAppliedDesc": "The control server did not grant them. Set the tags in the admin console, or use a tagged auth key.",
+  "login.expiredTagsHint": "A login also stops here when the control server does not allow the requested tags. Clear Request Previous Tags and try again.",
 
   // Migration (PLAN 11.2)
   "migrate.title": "Migrate from Original Plugin",
@@ -436,6 +441,7 @@ export const en: Record<MessageKey, string> = {
   "err.cli_failed": "Tailscale CLI command failed. Inspect diagnostics logs.",
   "err.not_logged_in": "Device is not logged in yet.",
   "err.login_expired": "Interactive login was not completed within 10 minutes and expired.",
+  "err.tags_rejected": "The control server did not allow the requested tags. Clear Request Previous Tags and try again. To keep tags with an auth key, use a tagged key.",
   "err.bad_server": "Control server URL is not accepted.",
   "err.bad_authkey": "Auth key format is invalid.",
   "err.no_conf_dir": "dnsmasq has no conf-dir configured for /jffs/configs/dnsmasq.d.",

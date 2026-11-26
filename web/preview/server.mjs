@@ -11,6 +11,7 @@ import {
   createStatusFixture,
 } from "../test/fixtures/index.mjs";
 import {
+  sameControlServer,
   validArch,
   validAuthKey,
   validBool01,
@@ -73,6 +74,10 @@ export function createPreviewServer({
   migrateMode = "ok",
   loginExpires = false,
   loginStayWaiting = false,
+  rejectTags = false,
+  // Like headscale with a user's auth key on an existing node: the login
+  // succeeds without the requested tags.
+  dropTags = false,
   onSetReadBack,
 } = {}) {
   const dbus = {};
@@ -309,15 +314,17 @@ export function createPreviewServer({
       }
 
       case "login": {
-        if (args.length !== 2) return { ok: false, code: "invalid_param" };
+        if (args.length !== 3 || !validBool01(args[2])) return { ok: false, code: "invalid_param" };
         const server = undash(args[0]);
         const authKey = undash(args[1]);
         if (server && !validLoginServer(server)) return { ok: false, code: "bad_server" };
         if (authKey && !validAuthKey(authKey)) return { ok: false, code: "bad_authkey" };
         const official = server === "";
+        const saved = status.saved_tags;
+        const tags = args[2] === "1" && saved && sameControlServer(saved.control, server) ? saved.tags : [];
         const ok = scheduleJob(
           "login",
-          { action: "login", official },
+          { action: "login", official, tags: tags.length > 0 },
           [
             {
               phase: "running",
@@ -337,7 +344,11 @@ export function createPreviewServer({
               },
             },
           ],
-          () => {
+          (state) => {
+            if (rejectTags && tags.length > 0) {
+              return { ok: false, code: authKey ? "tags_rejected" : "login_expired" };
+            }
+            if (tags.length > 0) state.data.tags_applied = !dropTags;
             if (loginExpires && !authKey) {
               status.auth_url = "";
               return { ok: false, code: "login_expired" };
@@ -346,10 +357,12 @@ export function createPreviewServer({
               const running = createStatusFixture("running");
               status.state = "running";
               status.auth_url = "";
+              status.saved_tags = null;
               status.self = {
                 ...running.self,
                 official,
                 control: server,
+                tags: dropTags ? [] : tags,
               };
               status.settings.no_logs_forced = !official;
               if (!official) status.settings.no_logs = true;
@@ -364,11 +377,12 @@ export function createPreviewServer({
       }
 
       case "relogin": {
-        if (args.length !== 0) return { ok: false, code: "invalid_param" };
+        if (args.length !== 1 || !validBool01(args[0])) return { ok: false, code: "invalid_param" };
         if (!status.daemon.running) return { ok: false, code: "not_running" };
+        const tags = args[0] === "1" ? (status.self?.tags ?? []) : [];
         const ok = scheduleJob(
           "login",
-          { action: "relogin", official: status.self?.official ?? true },
+          { action: "relogin", official: status.self?.official ?? true, tags: tags.length > 0 },
           [
             {
               phase: "running",
@@ -379,7 +393,14 @@ export function createPreviewServer({
               },
             },
           ],
-          () => ({ ok: true }),
+          (state) => {
+            if (rejectTags && tags.length > 0) return { ok: false, code: "tags_rejected" };
+            if (tags.length > 0) {
+              state.data.tags_applied = !dropTags;
+              if (dropTags && status.self) status.self.tags = [];
+            }
+            return { ok: true };
+          },
         );
         return ok ? { ok: true, job: "login" } : { ok: false, code: "busy" };
       }

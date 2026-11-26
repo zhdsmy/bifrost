@@ -12,7 +12,7 @@
 #   builds native test core, builds real web/dist, packages Bifrost, installs
 #   via real install.sh, and runs tests/container/suite.sh (login, status,
 #   3 SNAT modes, local_access, fw_clear, watchdog, core update failures &
-#   rollback, logout keeping settings, uninstall).
+#   rollback, logout keeping settings and tags, uninstall).
 #
 # Usage:
 #   tests/container/run.sh [--smoke-only | --full]
@@ -104,6 +104,7 @@ echo "==> Starting headscale v0.29.7..."
 mkdir -p "$WORK/hs-etc/headscale" "$WORK/hs-var/lib/headscale" "$WORK/hs-var/run/headscale"
 cp "$SCRIPT_DIR/headscale.yaml" "$WORK/hs-etc/headscale/config.yaml"
 cp "$SCRIPT_DIR/derp.yaml" "$WORK/hs-etc/headscale/derp.yaml"
+cp "$SCRIPT_DIR/acl.hujson" "$WORK/hs-etc/headscale/acl.hujson"
 docker create --name "$HS_CTR" \
     --network "$WAN_NET" --ip 198.51.100.10 \
     "$HEADSCALE_IMG" serve >/dev/null

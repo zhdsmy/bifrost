@@ -33,10 +33,10 @@ start_mock() {
 fresh
 mkdir -p "$BIFROST_RUN"
 echo "stale_secret_key_1234567890" >"$BIFROST_RUN/authkey"
-no login-not-running act_login "" ""
+no login-not-running act_login "" "" 0
 eq login-not-running-err not_running "$BIFROST_ERR"
 no login-stale-key-cleaned [ -f "$BIFROST_RUN/authkey" ]
-no relogin-not-running act_relogin
+no relogin-not-running act_relogin 0
 eq relogin-not-running-err not_running "$BIFROST_ERR"
 no connect-not-running act_connect
 eq connect-not-running-err not_running "$BIFROST_ERR"
@@ -44,59 +44,59 @@ no logout-not-running act_logout
 eq logout-not-running-err not_running "$BIFROST_ERR"
 
 start_mock
-no login-bad-server act_login "ftp://bad.example.com" ""
+no login-bad-server act_login "ftp://bad.example.com" "" 0
 eq login-bad-server-err bad_server "$BIFROST_ERR"
-no login-bad-key act_login "" "short"
+no login-bad-key act_login "" "short" 0
 eq login-bad-key-err bad_authkey "$BIFROST_ERR"
-no login-bad-key-chars act_login "" "invalid!key@1234567890"
+no login-bad-key-chars act_login "" "invalid!key@1234567890" 0
 eq login-bad-key-chars-err bad_authkey "$BIFROST_ERR"
 
 # --- 2. First login (empty ControlURL) ---
 
 ts_out debug-prefs '{}'
-ok login-first act_login "" ""
+ok login-first act_login "" "" 0
 eq login-first-res '{"job":"login"}' "$BIFROST_RESULT"
 bg_drain
 jf=$(job_file login)
 eq login-first-job "false true done login true" "$(jq -r '"\(.running) \(.ok) \(.phase) \(.data.action) \(.data.official)"' "$jf")"
 line=$(grep '^up ' "$MOCK_STATE/ts.log" | tail -n 1)
-eq login-first-args "up --reset --accept-dns=false --netfilter-mode=off --accept-routes=false --advertise-routes= --advertise-exit-node=false --hostname= --timeout=10m" "$line"
+eq login-first-args "up --reset --accept-dns=false --netfilter-mode=off --accept-routes=false --advertise-routes= --advertise-exit-node=false --hostname= --advertise-tags= --timeout=10m" "$line"
 ok login-first-fw-applied fw_check
 
 # --- 3. Existing prefs preserved on official re-up ---
 
 : >"$MOCK_STATE/ts.log"
 ts_out_file debug-prefs "$FIX/prefs_drifted.json"
-ok login-existing act_login "" ""
+ok login-existing act_login "" "" 0
 bg_drain
 line=$(grep '^up ' "$MOCK_STATE/ts.log" | tail -n 1)
-eq login-existing-args "up --reset --accept-dns=false --netfilter-mode=off --accept-routes=true --advertise-routes=192.168.1.0/24 --advertise-exit-node=true --hostname=home-router --timeout=10m" "$line"
+eq login-existing-args "up --reset --accept-dns=false --netfilter-mode=off --accept-routes=true --advertise-routes=192.168.1.0/24 --advertise-exit-node=true --hostname=home-router --advertise-tags= --timeout=10m" "$line"
 
 # --- 4. Switch control server uses "tailscale login" (no --reset, no --force-reauth) ---
 
 : >"$MOCK_STATE/ts.log"
 ts_out_file debug-prefs "$FIX/prefs_ok.json"
-ok login-switch act_login "https://headscale.example.com" ""
+ok login-switch act_login "https://headscale.example.com" "" 0
 bg_drain
 eq login-switch-job "true false" "$(jq -r '"\(.ok) \(.data.official)"' "$jf")"
 line=$(grep '^login ' "$MOCK_STATE/ts.log" | tail -n 1)
-eq login-switch-args "login --accept-dns=false --netfilter-mode=off --accept-routes=false --advertise-routes= --advertise-exit-node=false --hostname= --login-server=https://headscale.example.com --timeout=10m" "$line"
+eq login-switch-args "login --accept-dns=false --netfilter-mode=off --accept-routes=false --advertise-routes= --advertise-exit-node=false --hostname= --advertise-tags= --login-server=https://headscale.example.com --timeout=10m" "$line"
 eq login-switch-recorded "https://headscale.example.com" "$(daemon_control_server)"
 
 # Switch back from custom server to official uses "tailscale login" without --login-server
 : >"$MOCK_STATE/ts.log"
 ts_out_file debug-prefs "$FIX/prefs_custom.json"
-ok login-back-official act_login "" ""
+ok login-back-official act_login "" "" 0
 bg_drain
 eq login-back-job "true true" "$(jq -r '"\(.ok) \(.data.official)"' "$jf")"
 line=$(grep '^login ' "$MOCK_STATE/ts.log" | tail -n 1)
-eq login-back-args "login --accept-dns=false --netfilter-mode=off --accept-routes=true --advertise-routes=192.168.1.0/24,198.51.100.0/24 --advertise-exit-node=false --hostname=edge-router --timeout=10m" "$line"
+eq login-back-args "login --accept-dns=false --netfilter-mode=off --accept-routes=true --advertise-routes=192.168.1.0/24,198.51.100.0/24 --advertise-exit-node=false --hostname=edge-router --advertise-tags= --timeout=10m" "$line"
 eq login-back-cleared "" "$(daemon_control_server)"
 
 # http:// control server is accepted by scripts (page warns)
 : >"$MOCK_STATE/ts.log"
 ts_out_file debug-prefs "$FIX/prefs_ok.json"
-ok login-http act_login "http://headscale.example.com:8080" ""
+ok login-http act_login "http://headscale.example.com:8080" "" 0
 bg_drain
 eq login-http-ok true "$(jq -r .ok "$jf")"
 has login-http-arg "--login-server=http://headscale.example.com:8080" "$(ts_log)"
@@ -110,7 +110,7 @@ ts_out_file debug-prefs "$FIX/prefs_ok.json"
 ok login-nologs-start daemon_start
 no login-nologs-initially-off daemon_running_has_nologs
 p_before=$(daemon_pid)
-ok login-nologs-custom act_login "https://headscale.example.com" ""
+ok login-nologs-custom act_login "https://headscale.example.com" "" 0
 bg_drain
 eq login-nologs-ok true "$(jq -r .ok "$jf")"
 ok login-nologs-restarted [ "$p_before" != "$(daemon_pid)" ]
@@ -142,7 +142,7 @@ exec "$BIFROST_KSROOT/bifrost/bin/tailscale" "$@"
 EOF
 chmod 755 "$T/key-cli"
 async_key() {
-    env BIFROST_CLI="$T/key-cli" BIFROST_BG_SYNC=0 sh "$BIFROST_SCRIPTS/bifrost_config.sh" 1 login "https://headscale.example.com" "$secret" || return 1
+    env BIFROST_CLI="$T/key-cli" BIFROST_BG_SYNC=0 sh "$BIFROST_SCRIPTS/bifrost_config.sh" 1 login "https://headscale.example.com" "$secret" 0 || return 1
     _ak_i=0
     while [ "$_ak_i" -lt 60 ]; do
         [ "$(jq -r .running "$jf")" = false ] && return 0
@@ -161,9 +161,9 @@ no authkey-not-in-tslog grep -Fq "$secret" "$MOCK_STATE/ts.log"
 no authkey-not-in-log grep -Fq "$secret" "$BIFROST_LOG"
 no authkey-not-in-jobfile grep -Fq "$secret" "$jf"
 # A queue request exposes only a descriptor indicator, even in a test queue.
-ok authkey-queue act_login "" "$secret"
+ok authkey-queue act_login "" "$secret" 0
 ok authkey-queue-exists [ -s "$BIFROST_RUN/bg_queue" ]
-eq authkey-queue-args "login login - 1" "$(cat "$BIFROST_RUN/bg_queue")"
+eq authkey-queue-args "login login - 1 0" "$(cat "$BIFROST_RUN/bg_queue")"
 no authkey-before-worker [ -e "$BIFROST_RUN/authkey" ]
 bg_drain
 eq authkey-worker-without-descriptor bad_authkey "$(jq -r .code "$jf")"
@@ -180,7 +180,7 @@ no authkey-killed-before-launch sh -c '
     BIFROST_NO_MAIN=1
     . "$BIFROST_KSROOT/scripts/bifrost_config.sh"
     bg_job() { : >"$MOCK_STATE/at-handoff"; kill -KILL "$$"; }
-    act_login "" fake_preauth_key_0123456789abcdef
+    act_login "" fake_preauth_key_0123456789abcdef 0
 ' 2>/dev/null
 ok authkey-kill-reached-handoff [ -f "$MOCK_STATE/at-handoff" ]
 no authkey-no-orphan-after-kill [ -e "$BIFROST_RUN/authkey" ]
@@ -188,7 +188,7 @@ no authkey-no-live-job-after-kill job_running login
 
 # Auth key deleted when job_start fails (fault stub)
 job_start() { fail internal; return 1; }
-no login-jobstart-fail act_login "https://headscale.example.com" "$secret"
+no login-jobstart-fail act_login "https://headscale.example.com" "$secret" 0
 no authkey-deleted-start-fail [ -f "$BIFROST_RUN/authkey" ]
 t_load
 BIFROST_FW_RETRY_SLEEP=0
@@ -197,7 +197,7 @@ BIFROST_CONNECT_TIMEOUT=5
 BIFROST_LOGOUT_TIMEOUT=5
 
 # job_login when daemon stopped before job runs -> not_running + key deleted
-ok login-stop-before-job act_login "" "$secret"
+ok login-stop-before-job act_login "" "$secret" 0
 daemon_stop
 bg_drain
 eq login-stopped-code not_running "$(jq -r .code "$jf")"
@@ -208,7 +208,7 @@ no authkey-deleted-not-running [ -f "$BIFROST_RUN/authkey" ]
 start_mock
 : >"$MOCK_STATE/ts.log"
 ts_out_file debug-prefs "$FIX/prefs_custom.json"
-ok relogin-ok act_relogin
+ok relogin-ok act_relogin 0
 bg_drain
 eq relogin-job "true relogin false" "$(jq -r '"\(.ok) \(.data.action) \(.data.official)"' "$jf")"
 line=$(grep '^up ' "$MOCK_STATE/ts.log" | tail -n 1)
@@ -220,7 +220,7 @@ has relogin-srv "--login-server=https://headscale.example.com" "$line"
 daemon_set_control_server ""
 ts_rc debug-prefs 1
 : >"$MOCK_STATE/ts.log"
-ok relogin-noprefs-start act_relogin
+ok relogin-noprefs-start act_relogin 0
 bg_drain
 eq relogin-noprefs-fail "false cli_failed" "$(jq -r '"\(.ok) \(.code)"' "$jf")"
 no relogin-noprefs-no-up grep -q '^up ' "$MOCK_STATE/ts.log"
@@ -228,17 +228,17 @@ no relogin-noprefs-no-up grep -q '^up ' "$MOCK_STATE/ts.log"
 # Relogin when prefs fail BUT control_url IS recorded -> uses recorded custom server
 daemon_set_control_server "https://headscale.example.com"
 : >"$MOCK_STATE/ts.log"
-ok relogin-recorded-start act_relogin
+ok relogin-recorded-start act_relogin 0
 bg_drain
 eq relogin-recorded-ok "true false" "$(jq -r '"\(.ok) \(.data.official)"' "$jf")"
-no relogin-recorded-no-reset grep -E -- '--reset|--hostname=|--advertise-routes=' "$MOCK_STATE/ts.log"
+no relogin-recorded-no-reset grep -E -- '--reset|--hostname=|--advertise-routes=|--advertise-tags' "$MOCK_STATE/ts.log"
 has relogin-recorded-srv "--login-server=https://headscale.example.com" "$(grep '^up ' "$MOCK_STATE/ts.log")"
 rm -f "$MOCK_STATE/ts/debug-prefs.rc"
 
 # Relogin when prefs have empty ControlURL and no recorded control_url -> not_logged_in
 daemon_set_control_server ""
 ts_out debug-prefs '{}'
-ok relogin-empty-ctrl act_relogin
+ok relogin-empty-ctrl act_relogin 0
 bg_drain
 eq relogin-empty-ctrl-err "false not_logged_in" "$(jq -r '"\(.ok) \(.code)"' "$jf")"
 
@@ -283,7 +283,7 @@ start_mock
 ts_out_file debug-prefs "$FIX/prefs_ok.json"
 printf '\nTo authenticate, visit:\n\n\thttps://login.example.com/a/secret_auth_token\n\ntimeout waiting for Tailscale service to enter a Running state\n' >"$MOCK_STATE/ts/up.err"
 ts_rc up 1
-ok login-expire-start act_login "" ""
+ok login-expire-start act_login "" "" 0
 bg_drain
 eq login-expire-code login_expired "$(jq -r .code "$jf")"
 no login-authurl-not-logged grep -Fq "secret_auth_token" "$BIFROST_LOG"
@@ -300,7 +300,7 @@ chmod 755 "$T/sigterm_cli"
 SAVED_CLI=$BIFROST_CLI
 BIFROST_CLI="$T/sigterm_cli"
 BIFROST_LOGIN_CLI_TIMEOUT=1
-ok login-sigterm-start act_login "" ""
+ok login-sigterm-start act_login "" "" 0
 bg_drain
 eq login-sigterm-expired login_expired "$(jq -r .code "$jf")"
 BIFROST_CLI=$SAVED_CLI
@@ -308,7 +308,7 @@ BIFROST_LOGIN_CLI_TIMEOUT=10
 
 # Busy when login job already running
 job_begin login
-no login-busy act_login "" ""
+no login-busy act_login "" "" 0
 eq login-busy-err busy "$BIFROST_ERR"
 job_end login ok
 
@@ -399,7 +399,7 @@ BIFROST_LOGOUT_TIMEOUT=5
 
 saved=$(login_saved_prefs_file)
 rm -f "$saved"
-SAVED_JSON='{"advertise_routes":["192.168.1.0/24"],"advertise_exit_node":true,"accept_routes":true,"hostname":"home-router"}'
+SAVED_JSON='{"advertise_routes":["192.168.1.0/24"],"advertise_exit_node":true,"accept_routes":true,"hostname":"home-router","tags":[],"control":""}'
 SAVED_SET="set --advertise-routes=192.168.1.0/24 --advertise-exit-node=true --accept-routes=true --hostname=home-router"
 # The profile that "tailscale logout" leaves behind: defaults and no login.
 LOGGED_OUT='{"ControlURL":"","RouteAll":false,"CorpDNS":true,"WantRunning":false,"LoggedOut":false,"Hostname":"","AdvertiseRoutes":null,"NetfilterMode":2,"Config":null}'
@@ -464,11 +464,113 @@ eq saved-edit-file "edge-router true" "$(jq -r '"\(.hostname) \(.accept_routes)"
 # Login applies the saved prefs before reading them, then drops the file.
 ts_out debug-prefs "$LOGGED_OUT"
 : >"$MOCK_STATE/ts.log"
-ok login-after-logout act_login "" ""
+ok login-after-logout act_login "" "" 0
 bg_drain
 eq login-after-logout-ok true "$(jq -r .ok "$(job_file login)")"
 ok login-after-logout-set grep -q '^set --advertise-routes=192.168.1.0/24 --advertise-exit-node=true --accept-routes=true --hostname=edge-router$' "$MOCK_STATE/ts.log"
 no login-after-logout-removed [ -f "$saved" ]
+
+# --- 11c. Logout keeps the tags; login and relogin request them when asked (PLAN 7.5) ---
+
+jq -c '.Self.Tags = ["tag:router", "tag:edge"]' "$FIX/status_running.json" >"$T/status_tagged.json"
+ts_out_file status "$T/status_tagged.json"
+ts_out_file debug-prefs "$FIX/prefs_custom.json"
+BIFROST_CLI="$T/logout_cli"
+ok tags-logout act_logout
+BIFROST_CLI=$SAVED_CLI
+TAGGED_SAVED=$(cat "$saved")
+eq tags-saved "tag:router,tag:edge https://headscale.example.com" "$(jq -r '"\(.tags | join(",")) \(.control)"' "$saved")"
+eq tags-status "tag:router,tag:edge https://headscale.example.com" \
+    "$(jq -r '.saved_tags | "\(.tags | join(",")) \(.control)"' "$BIFROST_UPLOAD/bifrost_status.json")"
+eq tags-self-status "tag:router,tag:edge" "$(jq -r '.self.tags | join(",")' "$BIFROST_UPLOAD/bifrost_status.json")"
+
+# Tags are requested only from the server that gave them.
+: >"$MOCK_STATE/ts.log"
+ok tags-other-server act_login "" "" 1
+bg_drain
+eq tags-other-server-job "true false null" "$(jq -r '"\(.ok) \(.data.tags) \(.data.tags_applied)"' "$jf")"
+ok tags-other-server-empty grep -Eq -- '--advertise-tags=( |$)' "$MOCK_STATE/ts.log"
+
+printf '%s\n' "$TAGGED_SAVED" >"$saved"
+ts_out debug-prefs "$LOGGED_OUT"
+: >"$MOCK_STATE/ts.log"
+ok tags-login act_login https://headscale.example.com "" 1
+bg_drain
+eq tags-login-job "true true true" "$(jq -r '"\(.ok) \(.data.tags) \(.data.tags_applied)"' "$jf")"
+has tags-login-flag "--advertise-tags=tag:router,tag:edge " "$(ts_log)"
+no tags-login-removed [ -f "$saved" ]
+
+# The server logged the device in without the tags (headscale with a user's key).
+printf '%s\n' "$TAGGED_SAVED" >"$saved"
+ts_out debug-prefs "$LOGGED_OUT"
+jq -c '.Self.Tags = ["tag:router"]' "$FIX/status_running.json" >"$T/status_one_tag.json"
+ts_out_file status "$T/status_one_tag.json"
+ok tags-dropped act_login https://headscale.example.com "" 1
+bg_drain
+eq tags-dropped-job "true true false" "$(jq -r '"\(.ok) \(.data.tags) \(.data.tags_applied)"' "$jf")"
+ts_out_file status "$T/status_tagged.json"
+
+printf '%s\n' "$TAGGED_SAVED" >"$saved"
+ts_out debug-prefs "$LOGGED_OUT"
+: >"$MOCK_STATE/ts.log"
+ok tags-login-unchecked act_login https://headscale.example.com "" 0
+bg_drain
+eq tags-login-unchecked-job "true false" "$(jq -r '"\(.ok) \(.data.tags)"' "$jf")"
+ok tags-login-unchecked-empty grep -Eq -- '--advertise-tags=( |$)' "$MOCK_STATE/ts.log"
+
+# Logged in: relogin requests the node's own tags.
+rm -f "$saved"
+ts_out_file debug-prefs "$FIX/prefs_custom.json"
+: >"$MOCK_STATE/ts.log"
+ok tags-relogin act_relogin 1
+bg_drain
+eq tags-relogin-job "true true" "$(jq -r '"\(.ok) \(.data.tags)"' "$jf")"
+has tags-relogin-flag "--advertise-tags=tag:router,tag:edge " "$(grep '^up ' "$MOCK_STATE/ts.log")"
+
+: >"$MOCK_STATE/ts.log"
+ok tags-relogin-unchecked act_relogin 0
+bg_drain
+ok tags-relogin-unchecked-empty grep -Eq -- '--advertise-tags=( |$)' "$MOCK_STATE/ts.log"
+
+ts_out_file status "$FIX/status_running.json"
+ok tags-relogin-untagged act_relogin 1
+bg_drain
+eq tags-relogin-untagged-job "true false" "$(jq -r '"\(.ok) \(.data.tags)"' "$jf")"
+ts_out_file status "$T/status_tagged.json"
+
+# The control server refuses the tags.
+echo "backend error: requested tags [tag:router] are invalid or not permitted" >"$MOCK_STATE/ts/up.err"
+ts_rc up 1
+ok tags-rejected-start act_relogin 1
+bg_drain
+eq tags-rejected "false tags_rejected" "$(jq -r '"\(.ok) \(.code)"' "$jf")"
+rm -f "$MOCK_STATE/ts/up.err" "$MOCK_STATE/ts/up.rc"
+
+# Without the prefs (recorded), no flags and no tags.
+ts_rc debug-prefs 1
+daemon_set_control_server "https://headscale.example.com"
+: >"$MOCK_STATE/ts.log"
+ok tags-recorded act_relogin 1
+bg_drain
+eq tags-recorded-job "true false" "$(jq -r '"\(.ok) \(.data.tags)"' "$jf")"
+no tags-recorded-no-flag grep -q -- '--advertise-tags' "$MOCK_STATE/ts.log"
+rm -f "$MOCK_STATE/ts/debug-prefs.rc"
+
+# The reconnect fallback mentions the profile's tags.
+ts_out_file status "$FIX/status_stopped.json"
+ts_out debug-prefs "$(jq -c '.AdvertiseTags = ["tag:router"]' "$FIX/prefs_custom.json")"
+echo "Error: changing settings via 'tailscale up' requires mentioning all non-default flags" >"$MOCK_STATE/ts/up.err"
+ts_rc up 1
+: >"$MOCK_STATE/ts.log"
+no connect-tags act_connect
+has connect-tags-flag "--advertise-tags=tag:router " "$(ts_log)"
+rm -f "$MOCK_STATE/ts/up.err" "$MOCK_STATE/ts/up.rc"
+ts_out_file status "$FIX/status_running.json"
+
+no login-bad-keep act_login "" "" 2
+eq login-bad-keep-err invalid_param "$BIFROST_ERR"
+no relogin-bad-keep act_relogin ""
+eq relogin-bad-keep-err invalid_param "$BIFROST_ERR"
 
 daemon_stop
 fresh
@@ -477,24 +579,24 @@ ok login-post-start start_mock
 ts_rc debug-prefs 1
 ts_out_file status "$FIX/status_needs_login.json"
 echo existing >"$BIFROST_STATE/tailscaled.state"
-ok login-unknown-queued act_login "" ""
+ok login-unknown-queued act_login "" "" 0
 bg_drain
 eq login-unknown-preserves-error cli_failed "$(jq -r .code "$jf")"
 no login-unknown-no-up grep -Eq '^(login|up) ' "$MOCK_STATE/ts.log"
 rm "$BIFROST_STATE/tailscaled.state"
 daemon_set_control_server https://headscale.example.com
-ok login-record-only-queued act_login "" ""
+ok login-record-only-queued act_login "" "" 0
 bg_drain
 eq login-record-only-error cli_failed "$(jq -r .code "$jf")"
 no login-record-only-no-reset grep -q -- --reset "$MOCK_STATE/ts.log"
 daemon_set_control_server ""
 ts_out_file status "$FIX/status_running.json"
-ok login-live-identity-queued act_login "" ""
+ok login-live-identity-queued act_login "" "" 0
 bg_drain
 eq login-live-identity-error cli_failed "$(jq -r .code "$jf")"
 ts_out_file status "$FIX/status_needs_login.json"
 echo '{"_machinekey":"fixture"}' >"$BIFROST_STATE/tailscaled.state"
-ok login-confirmed-new act_login "" ""
+ok login-confirmed-new act_login "" "" 0
 bg_drain
 eq login-confirmed-new-ok true "$(jq -r .ok "$jf")"
 has login-confirmed-new-up "up --reset" "$(ts_log)"
@@ -503,7 +605,7 @@ ts_out_file status "$FIX/status_running.json"
 
 dbus_seed bifrost_magicdns=1
 : >"$BIFROST_DNSMASQ_MAIN"
-ok login-dns-queued act_login "" ""
+ok login-dns-queued act_login "" "" 0
 bg_drain
 eq login-dns-authenticated true "$(jq -r .ok "$jf")"
 eq login-dns-page-error no_conf_dir "$(jq -r .error "$BIFROST_UPLOAD/bifrost_status.json")"
@@ -517,7 +619,7 @@ ok login-dns-forwarding dns_check
 iptables -t filter -D INPUT -j BIFROST_INPUT
 echo 4 >"$MOCK_STATE/iptables.fail_count"
 echo '-A BIFROST_INPUT' >"$MOCK_STATE/iptables.fail_match"
-ok login-fw-queued act_login "" ""
+ok login-fw-queued act_login "" "" 0
 bg_drain
 eq login-fw-visible fw_failed "$(cat "$BIFROST_DAEMON_ERR")"
 ok login-fw-repaired watchdog_run
@@ -525,7 +627,7 @@ no login-fw-cleared [ -e "$BIFROST_DAEMON_ERR" ]
 ok login-fw-complete fw_check
 
 : >"$MOCK_STATE/daemon.fail"
-ok login-restart-error-queued act_login https://headscale.example.com ""
+ok login-restart-error-queued act_login https://headscale.example.com "" 0
 bg_drain
 eq login-restart-error-code start_failed "$(jq -r .code "$jf")"
 no login-restart-error-stopped daemon_running

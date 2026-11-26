@@ -16,6 +16,8 @@ eq bad-param '{"ok":false,"code":"invalid_param"}' "$(t_page ui 'en;' dark)"
 eq bad-param-space '{"ok":false,"code":"invalid_param"}' "$(t_page ui 'en x' dark)"
 eq wrong-count '{"ok":false,"code":"invalid_param"}' "$(t_page ui en)"
 eq wrong-count2 '{"ok":false,"code":"invalid_param"}' "$(t_page enable extra)"
+eq login-two-params '{"ok":false,"code":"invalid_param"}' "$(t_page login - -)"
+eq relogin-no-param '{"ok":false,"code":"invalid_param"}' "$(t_page relogin)"
 eq no-action '{"ok":false,"code":"invalid_param"}' "$(t_page)"
 
 : >"$MOCK_STATE/resp.log"

@@ -119,6 +119,7 @@ function baseRunningStatus() {
       key_expiry: "2027-05-01T00:00:00Z",
       relay: "tok",
       online: true,
+      tags: [],
     },
     prefs: {
       advertise_routes: ["192.168.1.0/24", "192.0.2.0/24"],
@@ -126,6 +127,7 @@ function baseRunningStatus() {
       accept_routes: false,
       hostname: "home-router",
     },
+    saved_tags: null,
     routes: [
       { cidr: "192.168.1.0/24", approved: true },
       { cidr: "192.0.2.0/24", approved: false },
@@ -229,6 +231,19 @@ export function createStatusFixture(name = "running") {
         routes: [],
         peers: [],
         auth_url: "https://example.org/a/demo-auth-session-001",
+      };
+    // PLAN 7.5: a tagged device, and the tags it had before a logout.
+    case "running_tagged":
+      return { ...s, self: { ...s.self, tags: ["tag:router"] } };
+    case "needs_login_tagged":
+      return {
+        ...s,
+        state: "needs_login",
+        self: { ...s.self, ips: [], dns_name: "", tailnet: "", magicdns_suffix: "", online: false, relay: "" },
+        saved_tags: { tags: ["tag:router"], control: "" },
+        routes: [],
+        peers: [],
+        auth_url: "",
       };
     case "needs_approval":
       return {

@@ -122,6 +122,21 @@ export function validLoginServer(value: string): boolean {
   return /^[A-Za-z0-9.-]+$/.test(host);
 }
 
+const OFFICIAL_CONTROL_URLS = new Set([
+  "",
+  "https://controlplane.tailscale.com",
+  "https://controlplane.tailscale.com/",
+  "https://login.tailscale.com",
+  "https://login.tailscale.com/",
+]);
+
+// Same comparison as login_same_server in login.sh.
+export function sameControlServer(a: string, b: string): boolean {
+  if (OFFICIAL_CONTROL_URLS.has(a) && OFFICIAL_CONTROL_URLS.has(b)) return true;
+  const strip = (url: string) => (url.endsWith("/") ? url.slice(0, -1) : url);
+  return strip(a) === strip(b);
+}
+
 export function isHttpLoginServer(value: string): boolean {
   return value.startsWith("http://");
 }

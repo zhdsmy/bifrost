@@ -153,8 +153,19 @@ ok refresh-running status_refresh
 eq cli-at-most-2 2 "$(wc -l <"$MOCK_STATE/ts.log" | tr -d ' ')"
 
 # Exact top-level keys match contract 6.1
-eq top-keys '["auth_url","checks","conflict","core","daemon","dns","error","exit_node","health","lan","peers","plugin","prefs","routes","schema","self","settings","state","time"]' \
+eq top-keys '["auth_url","checks","conflict","core","daemon","dns","error","exit_node","health","lan","peers","plugin","prefs","routes","saved_tags","schema","self","settings","state","time"]' \
     "$(jq -c 'keys' "$ST_OUT")"
+eq no-saved-tags null "$(jq -c '.saved_tags' "$ST_OUT")"
+eq self-tags-untagged '[]' "$(jq -c '.self.tags' "$ST_OUT")"
+# PLAN 7.5: tags saved at logout; a file without tags (0.2.7) shows none.
+printf '%s\n' '{"tags":["tag:router",7],"control":"https://hs.example.org"}' >"$(login_saved_prefs_file)"
+ok refresh-saved-tags status_refresh
+eq saved-tags '{"control":"https://hs.example.org","tags":["tag:router"]}' "$(jq -Sc '.saved_tags' "$ST_OUT")"
+printf '%s\n' '{"advertise_routes":[],"advertise_exit_node":false,"accept_routes":false,"hostname":""}' >"$(login_saved_prefs_file)"
+ok refresh-saved-no-tags status_refresh
+eq saved-no-tags null "$(jq -c '.saved_tags' "$ST_OUT")"
+rm -f "$(login_saved_prefs_file)"
+ok refresh-running-again status_refresh
 eq core-keys '["arch","build","check","installed","kernel_arch","prev","prev_info","prev_size","revision","serial","sha256","size","storage","tailscale","update","variant"]' \
     "$(jq -c '.core | keys' "$ST_OUT")"
 eq core-prev-size 3 "$(jq -r '.core.prev_size' "$ST_OUT")"
