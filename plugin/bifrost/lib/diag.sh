@@ -702,7 +702,7 @@ act_logs() {
         printf 'Redacted: public IPv4 (<ipv4>), non-tailnet IPv6 (<ipv6>), emails (<email>), tailnet/MagicDNS (<tailnet>), auth URLs (<auth-url>), auth keys (<key>), MAC addresses (<mac>).\n'
         {
             printf '== summary ==\n'
-            printf 'time: %s\n' "$_al_now"
+            printf 'time: %s (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S %z')" "$_al_now"
             printf 'plugin_version: %s\n' "$_al_pver"
             printf 'core_version: %s\n' "$_al_cver"
             printf 'core_arch: %s\n' "$_al_carch"

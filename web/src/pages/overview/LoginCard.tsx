@@ -120,7 +120,7 @@ export function LoginCard({
         <Collapsible.DefaultTrigger className="w-full py-1 text-sm font-medium text-kumo-default">
           {t("login.advancedToggle")}
         </Collapsible.DefaultTrigger>
-        <Collapsible.DefaultPanel className="grid gap-4 pt-3 pb-2">
+        <Collapsible.Panel className="grid gap-4 pt-3 pb-2">
           <Input
             id="login-control-server"
             label={t("login.serverLabel")}
@@ -151,9 +151,10 @@ export function LoginCard({
               setValidationError(null);
             }}
             autoComplete="off"
+            passwordManagerIgnore
             spellCheck={false}
           />
-        </Collapsible.DefaultPanel>
+        </Collapsible.Panel>
       </Collapsible.Root>
 
       {validationError && (

@@ -48,7 +48,7 @@ export const en: Record<MessageKey, string> = {
   "kumo.breadcrumbLabel": "Breadcrumb",
 
   // Relative time
-  "time.never": "Never",
+  "time.never": "Not yet",
   "time.secondsAgo": "{n}s ago",
   "time.minutesAgo": "{n}m ago",
   "time.hoursAgo": "{n}h ago",
@@ -96,6 +96,7 @@ export const en: Record<MessageKey, string> = {
   "overview.field.keyExpiry": "Key Expiry",
   "overview.keyExpiringSoon": "Device key expires in {days} days. Consider re-authenticating soon.",
   "overview.keyExpired": "Device key has expired. Re-authenticate to restore connectivity.",
+  "overview.keyNoExpiry": "Never",
   "overview.section.connection": "Connectivity",
   "overview.field.preferredDerp": "Preferred DERP",
   "overview.field.udp": "UDP Reachable",
@@ -209,7 +210,7 @@ export const en: Record<MessageKey, string> = {
   "settings.group.other": "Other",
 
   "settings.advertiseRoutes.label": "Subnet Router (Advertise Routes)",
-  "settings.advertiseRoutes.desc": "When enabled, tailnet devices can reach these local IPv4 subnets through this router (up to 16 CIDRs; 0.0.0.0/0 is disallowed).",
+  "settings.advertiseRoutes.desc": "Tailnet devices can reach these local IPv4 subnets through this router (up to 16 CIDRs; 0.0.0.0/0 is disallowed).",
   "settings.advertiseRoutes.placeholder": "Enter IPv4 CIDR, e.g. 192.168.1.0/24",
   "settings.advertiseRoutes.add": "Add",
   "settings.advertiseRoutes.useLan": "Advertise router LAN subnet ({cidr})",
@@ -344,7 +345,7 @@ export const en: Record<MessageKey, string> = {
   "diag.env.fw": "Firewall Rules Complete",
   "diag.env.conflict": "Original Plugin Conflict",
   "diag.env.cgnat": "WAN Carrier-Grade NAT",
-  "diag.env.jffs": "JFFS Free Space",
+  "diag.env.jffs": "Plugin Storage Free Space",
   "diag.env.time": "System Clock Synced",
   "diag.env.confDir": "dnsmasq conf-dir Support",
   "diag.env.ok": "OK",

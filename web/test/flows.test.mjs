@@ -129,6 +129,8 @@ test("login flow: interactive QR, custom server notice, http warning, authkey lo
     }
   });
   const authInput = page.getByLabel("预授权密钥", { exact: true });
+  // Password managers would offer the router login here.
+  assert.equal(await authInput.getAttribute("data-1p-ignore"), "true");
   await authInput.fill("bifrost_test_authkey_001");
   await page.getByRole("button", { name: "使用预授权密钥登录", exact: true }).click();
   await page.getByRole("heading", { name: "运行中" }).waitFor();
@@ -431,6 +433,19 @@ test("diagnostics page: the DERP list shows at most ten rows, scrolls the rest, 
   assert.ok(Math.abs(view.barRatio - 1.7) < 0.1, JSON.stringify(view));
   assert.equal(await list.locator("li").filter({ hasText: "（首选）" }).getByText("r01", { exact: true }).count(), 1);
   assert.equal(await list.getByText("（首选）").count(), 1);
+  // The preferred region is a value: plain text with its latency, as on the Overview tab.
+  await page.locator("main dl").getByText("r01 (17 ms)", { exact: true }).waitFor();
+});
+
+test("overview: a device whose key never expires says so", async (t) => {
+  const { page, url } = await openPreview(t, {
+    initialState: "running",
+    mutateStatus: (s) => { s.self.key_expiry = ""; },
+  });
+  await page.goto(url);
+  await ready(page);
+  const expiry = page.locator("main dl div").filter({ hasText: /^密钥到期/ });
+  await expiry.getByText("不过期", { exact: true }).waitFor();
 });
 
 test("a fresh page omits finished daemon, migration and update mutation results", async (t) => {
@@ -655,6 +670,14 @@ test("settings page: saves send requests and display server read-back values, va
   await ready(page);
   await clickTab(page, "设置");
 
+  // Save stays off until a value differs from the stored one.
+  const saveRoutes = page.getByRole("button", { name: "保存 宣告网段", exact: true });
+  for (const name of ["保存 宣告网段", "保存 设备名", "保存 监听端口", "保存 下载镜像"]) {
+    assert.equal(await page.getByRole("button", { name, exact: true }).isDisabled(), true, name);
+  }
+  await page.locator("#setting-hostname").fill(" home-router ");
+  assert.equal(await page.getByRole("button", { name: "保存 设备名", exact: true }).isDisabled(), true);
+
   // 1. Advertise routes: reject invalid CIDR, add valid CIDR, verify POST and server read-back.
   const routeInput = page.locator("#setting-advertise-routes-input");
   await routeInput.fill("0.0.0.0/0");
@@ -664,9 +687,11 @@ test("settings page: saves send requests and display server read-back values, va
   await routeInput.fill("198.51.100.0/24");
   await page.getByRole("button", { name: "添加", exact: true }).click();
   await withStatusReadHeld(page, async () => {
-    await page.getByRole("button", { name: "保存", exact: true }).first().click();
+    await saveRoutes.click();
     await page.getByText(/当前读回值：.*198\.51\.100\.128\/25/).waitFor();
   });
+  // The read-back route list is the new stored value.
+  assert.equal(await saveRoutes.isDisabled(), true);
   assert.deepEqual(sentSets.at(-1).fields, {});
   assert.deepEqual(sentSets.at(-1).params, [
     "set",
@@ -807,6 +832,17 @@ test("core page: core.build display, null build fallback, update flow, up_to_dat
   assert.equal(await page.getByText("aws", { exact: true }).isVisible(), false);
   await page.getByRole("button", { name: /^省略功能（\d+ 项）$/ }).click();
   await page.getByText("aws", { exact: true }).waitFor();
+  // The folded list sits in its own bordered box, without a second rule on the left.
+  const innerLeftBorders = await page.getByText("aws", { exact: true }).evaluate((el) => {
+    const widths = [];
+    for (let node = el.parentElement; node && !node.matches(".rounded-lg"); node = node.parentElement) {
+      widths.push(getComputedStyle(node).borderLeftWidth);
+    }
+    return widths.filter((w) => w !== "0px");
+  });
+  assert.deepEqual(innerLeftBorders, []);
+  await page.getByText("r1", { exact: true }).waitFor();
+  assert.equal(await page.getByText(/\(#\d+\)/).count(), 0);
 
   await page.getByRole("button", { name: "检查更新", exact: true }).click();
   await page.getByText(/发现新核心：1\.106\.0/).waitFor();

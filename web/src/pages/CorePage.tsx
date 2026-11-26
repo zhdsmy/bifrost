@@ -117,7 +117,7 @@ export function CorePage() {
         <DetailList>
           <DetailItem label={t("core.field.version")}>{core.tailscale || "—"}</DetailItem>
           <DetailItem label={t("core.field.revision")}>
-            {core.revision ? `r${core.revision} (#${core.serial})` : "—"}
+            {core.revision ? `r${core.revision}` : "—"}
           </DetailItem>
           <DetailItem label={t("core.field.arch")}>{core.arch || "—"}</DetailItem>
           <DetailItem label={t("core.field.kernelArch")}>{core.kernel_arch || "—"}</DetailItem>
@@ -308,7 +308,7 @@ export function CorePage() {
             <Collapsible.DefaultTrigger className="w-full py-1 text-sm font-medium text-kumo-default">
               {t("core.recipe.omit", { count: omit.length })}
             </Collapsible.DefaultTrigger>
-            <Collapsible.DefaultPanel className="pt-3 pb-2">
+            <Collapsible.Panel className="pt-3 pb-2">
               <div data-raw-value="true" className="flex flex-wrap gap-1.5">
                 {omit.map((tag) => (
                   <Badge key={tag} variant="outline" className="border-kumo-line">
@@ -316,7 +316,7 @@ export function CorePage() {
                   </Badge>
                 ))}
               </div>
-            </Collapsible.DefaultPanel>
+            </Collapsible.Panel>
           </Collapsible.Root>
         ) : (
           <div className="grid gap-0.5">

@@ -73,7 +73,8 @@ export function OverviewDetails({ status }: { status: StatusData }) {
               </DetailItem>
             )}
             <DetailItem label={t("overview.field.keyExpiry")}>
-              {formatIsoDate(self.key_expiry)}
+              {/* tailscale omits KeyExpiry when key expiry is disabled for the device. */}
+              {self.key_expiry ? formatIsoDate(self.key_expiry) : t("overview.keyNoExpiry")}
             </DetailItem>
           </DetailList>
         </SectionCard>
@@ -153,7 +154,7 @@ export function OverviewDetails({ status }: { status: StatusData }) {
             <DetailList>
               <DetailItem label={t("overview.field.exitNode")}>
                 {!status.exit_node.advertised ? (
-                  <span className="text-kumo-subtle">{t("overview.exitNode.off")}</span>
+                  <Badge variant="secondary">{t("overview.exitNode.off")}</Badge>
                 ) : (
                   <Badge variant={status.exit_node.approved ? "success" : "warning"}>
                     {status.exit_node.approved

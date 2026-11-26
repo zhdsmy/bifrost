@@ -36,6 +36,7 @@ export function AdvertiseRoutesField({
   const { t } = useApp();
   const [routeInput, setRouteInput] = useState("");
   const routeApprovalMap = new Map(routeStatuses.map((r) => [r.cidr, r.approved]));
+  const unchanged = readBackRoutes !== null && routesDraft.join(",") === readBackRoutes.join(",");
 
   function addRoute() {
     const trimmed = routeInput.trim();
@@ -167,7 +168,13 @@ export function AdvertiseRoutesField({
             value: readBackRoutes === null ? t("common.unknown") : readBackRoutes.join(", ") || t("common.none"),
           })}
         </span>
-        <Button variant="primary" loading={saving} disabled={disabled} onClick={onSave}>
+        <Button
+          variant="secondary"
+          loading={saving}
+          disabled={disabled || unchanged}
+          aria-label={`${t("common.save")} ${t("settings.advertiseRoutes.label")}`}
+          onClick={onSave}
+        >
           {t("common.save")}
         </Button>
       </div>

@@ -27,6 +27,7 @@ export function DiagnosticsPage() {
   const netcheckJob = jobs.netcheck as JobProgressState<NetcheckJobData> | undefined;
   const report = netcheckJob?.data?.report ?? null;
   const maxDerpLatency = Math.max(1, ...(report?.derp ?? []).map((d) => d.latency_ms));
+  const preferredLatency = report?.derp.find((d) => d.code === report.preferred_derp)?.latency_ms;
 
   const fetchLogsAndDiag = useCallback(async () => {
     setLogsLoading(true);
@@ -106,19 +107,22 @@ export function DiagnosticsPage() {
                 </Badge>
               </DetailItem>
               <DetailItem label={t("diag.netcheck.mappingVaries")}>
-                {report.mapping_varies === null
-                  ? t("common.unknown")
-                  : report.mapping_varies
-                    ? t("common.yes")
-                    : t("common.no")}
+                {report.mapping_varies === null ? (
+                  <Badge variant="secondary">{t("common.unknown")}</Badge>
+                ) : (
+                  <Badge variant={report.mapping_varies ? "warning" : "success"}>
+                    {report.mapping_varies ? t("common.yes") : t("common.no")}
+                  </Badge>
+                )}
               </DetailItem>
               <DetailItem label={t("diag.netcheck.portmap")}>
                 <span data-raw-value="true">{report.portmap || t("common.none")}</span>
               </DetailItem>
               <DetailItem label={t("diag.netcheck.preferred")}>
-                <Badge variant="info">
-                  <span data-raw-value="true">{report.preferred_derp || "—"}</span>
-                </Badge>
+                <span data-raw-value="true" className="font-mono">
+                  {report.preferred_derp || "—"}
+                  {preferredLatency !== undefined ? ` (${t("common.latency", { ms: preferredLatency })})` : ""}
+                </span>
               </DetailItem>
             </DetailList>
 

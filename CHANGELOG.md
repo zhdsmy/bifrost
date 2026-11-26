@@ -7,6 +7,20 @@ plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Changed
+
+- Settings: each Save button is enabled only when its value differs from the stored one. The Save button for advertised routes is a secondary button like the others, and the routes description no longer starts with "when enabled", since the list is not a switch.
+- Yes/no and on/off values are status badges, and names and numbers are text, on every tab: "not advertised" for the exit node on the Overview tab and "mapping varies by destination" on the Diagnostics tab are now badges, and the preferred DERP region on the Diagnostics tab is text with its latency, as on the Overview tab.
+- Diagnostics: "JFFS free space" is now "plugin storage free space". It has always measured the partition that holds `/koolshare`, which is a USB disk on some routers.
+- Overview: a device whose key never expires shows "Never" instead of "—".
+- Devices: a peer without a WireGuard handshake yet shows "Not yet" instead of "Never". Idle peers have no handshake.
+- Core tab: the build revision no longer shows the internal serial number (`r2 (#2)` is now `r2`).
+- The copied diagnostics show the router's local time and offset next to the epoch seconds.
+
+### Fixed
+
+- The folded list of omitted features on the Core tab, and the advanced login options, no longer draw a second line on the left inside their box.
+
 ## [0.2.5] - 2026-11-26
 
 ### Added

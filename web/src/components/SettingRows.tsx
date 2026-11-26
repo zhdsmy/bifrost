@@ -56,6 +56,7 @@ export function TextSettingRow({
   description,
   placeholder,
   value,
+  savedValue,
   inputMode,
   disabled,
   saving,
@@ -69,6 +70,8 @@ export function TextSettingRow({
   description: string;
   placeholder?: string;
   value: string;
+  /** The stored value; Save stays disabled until the trimmed input differs. */
+  savedValue: string;
   inputMode?: "text" | "numeric";
   disabled: boolean;
   saving: boolean;
@@ -101,7 +104,7 @@ export function TextSettingRow({
         <Button
           variant="secondary"
           loading={saving}
-          disabled={disabled}
+          disabled={disabled || value.trim() === savedValue}
           aria-label={`${t("common.save")} ${label}`}
           onClick={(e) => onSave(e.currentTarget)}
         >

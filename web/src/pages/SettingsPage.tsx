@@ -317,6 +317,7 @@ export function SettingsPage() {
             description={t("settings.hostname.desc")}
             placeholder={t("settings.hostname.placeholder")}
             value={hostnameDraft}
+            savedValue={syncedHostname}
             disabled={prefsDisabled}
             saving={savingKey === "hostname"}
             error={fieldErrors.hostname}
@@ -331,6 +332,7 @@ export function SettingsPage() {
             label={t("settings.port.label")}
             description={t("settings.port.desc")}
             value={portDraft}
+            savedValue={syncedPort}
             inputMode="numeric"
             disabled={isDisabled}
             saving={savingKey === "port"}
@@ -360,6 +362,7 @@ export function SettingsPage() {
             description={t("settings.mirror.desc")}
             placeholder={t("settings.mirror.placeholder")}
             value={mirrorDraft}
+            savedValue={syncedMirror}
             disabled={isDisabled}
             saving={savingKey === "mirror"}
             error={fieldErrors.mirror}

@@ -46,7 +46,7 @@ export const zhCN = {
   "kumo.breadcrumbLabel": "路径导航",
 
   // Relative time
-  "time.never": "无",
+  "time.never": "暂无",
   "time.secondsAgo": "{n} 秒前",
   "time.minutesAgo": "{n} 分钟前",
   "time.hoursAgo": "{n} 小时前",
@@ -94,6 +94,7 @@ export const zhCN = {
   "overview.field.keyExpiry": "密钥到期",
   "overview.keyExpiringSoon": "密钥将在 {days} 天后到期，建议尽快重新登录。",
   "overview.keyExpired": "设备密钥已到期，请点击重新登录恢复连接。",
+  "overview.keyNoExpiry": "不过期",
   "overview.section.connection": "连接状态",
   "overview.field.preferredDerp": "首选 DERP 中继",
   "overview.field.udp": "UDP 连通性",
@@ -207,10 +208,10 @@ export const zhCN = {
   "settings.group.other": "其他",
 
   "settings.advertiseRoutes.label": "宣告网段",
-  "settings.advertiseRoutes.desc": "打开后，tailnet 里的设备可以通过这台路由器访问以下局域网网段（IPv4 CIDR，最多 16 条，不允许 0.0.0.0/0）。",
+  "settings.advertiseRoutes.desc": "tailnet 里的设备可以通过这台路由器访问下列局域网网段（IPv4 CIDR，最多 16 条，不允许 0.0.0.0/0）。",
   "settings.advertiseRoutes.placeholder": "输入 IPv4 网段，例如 192.168.1.0/24",
   "settings.advertiseRoutes.add": "添加",
-  "settings.advertiseRoutes.useLan": "勾选宣告路由器局域网网段（{cidr}）",
+  "settings.advertiseRoutes.useLan": "宣告路由器局域网网段（{cidr}）",
   "settings.advertiseRoutes.empty": "尚未添加宣告网段",
   "settings.advertiseRoutes.remove": "移除 {cidr}",
   "settings.advertiseRoutes.current": "当前读回值：{value}",
@@ -342,7 +343,7 @@ export const zhCN = {
   "diag.env.fw": "防火墙规则齐全",
   "diag.env.conflict": "与原版冲突",
   "diag.env.cgnat": "WAN 为运营商级 NAT",
-  "diag.env.jffs": "JFFS 剩余空间",
+  "diag.env.jffs": "插件存储剩余空间",
   "diag.env.time": "系统时间已同步",
   "diag.env.confDir": "dnsmasq conf-dir 支持",
   "diag.env.ok": "正常",

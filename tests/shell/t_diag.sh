@@ -293,6 +293,8 @@ ok diag-jffs-int [ "$(jq -r '.jffs_free_kb' "$DF")" -ge 0 ]
 # Verify bifrost_logs.txt structure (contract 6.3)
 has logs-header "Redacted:" "$(head -n 1 "$LF")"
 ok logs-sec-summary grep -Fqx "== summary ==" "$LF"
+# Local time with its offset first, then the epoch seconds the JSON uses.
+ok logs-summary-time grep -Eqx "time: [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [+-][0-9]{4} \($(jq -r '.time' "$DF")\)" "$LF"
 ok logs-sec-script grep -Fqx "== bifrost.log ==" "$LF"
 ok logs-sec-daemon grep -Fqx "== bifrostd.log ==" "$LF"
 ok logs-has-backend grep -Fq "backend_state: Running" "$LF"

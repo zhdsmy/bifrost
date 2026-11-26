@@ -584,9 +584,9 @@ describe("format.ts state mapping and formatting", () => {
     const tZh = (k, vars) => t("zh-CN", k, vars);
     const tEn = (k, vars) => t("en", k, vars);
     const nowSec = 500_000;
-    assert.equal(formatHandshakeAge(0, nowSec, tZh), "无");
+    assert.equal(formatHandshakeAge(0, nowSec, tZh), "暂无");
     assert.equal(formatHandshakeAge(nowSec - 10, nowSec, tEn), "10s ago");
-    assert.equal(formatHandshakeAge(0, nowSec, tEn), "Never");
+    assert.equal(formatHandshakeAge(0, nowSec, tEn), "Not yet");
     assert.equal(formatHandshakeAge(nowSec - 180, nowSec, tZh), "3 分钟前");
     assert.equal(formatHandshakeAge(nowSec - 7200, nowSec, tEn), "2h ago");
     assert.equal(formatHandshakeAge(nowSec - 172800, nowSec, tZh), "2 天前");
