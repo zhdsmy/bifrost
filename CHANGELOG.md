@@ -7,6 +7,8 @@ plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-11-26
+
 ### Changed
 
 - Settings: each Save button is enabled only when its value differs from the stored one. The Save button for advertised routes is a secondary button like the others, and the routes description no longer starts with "when enabled", since the list is not a switch.
@@ -20,6 +22,7 @@ plugin versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 ### Fixed
 
 - The folded list of omitted features on the Core tab, and the advanced login options, no longer draw a second line on the left inside their box.
+- Password managers no longer offer to fill the router login into the auth key field of the login card.
 
 ## [0.2.5] - 2026-11-26
 
